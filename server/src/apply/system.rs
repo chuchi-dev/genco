@@ -129,9 +129,30 @@ pub(super) async fn certificates_for(
 		if r.run(&args).await {
 			r.info(format!("got a certificate for {domain}"));
 			added = true;
+		} else {
+			r.info(cert_hint(domain));
 		}
 	}
 	added
+}
+
+/// certbot only says "Some challenges have failed"; its log has Let's
+/// Encrypt's reason. The usual one is a firewall in front of the server.
+fn cert_hint(domain: &str) -> String {
+	let log = std::fs::read_to_string("/var/log/letsencrypt/letsencrypt.log")
+		.unwrap_or_default();
+	let detail = log
+		.lines()
+		.rev()
+		.find_map(|l| l.split_once("Detail: ").map(|(_, d)| d.trim()))
+		.map(|d| format!("Let's Encrypt says: {d}. "))
+		.unwrap_or_default();
+	format!(
+		"{detail}Let's Encrypt has to reach http://{domain}/.well-known/\
+		acme-challenge/ on port 80 from the internet: a cloud firewall or \
+		security group in front of the server (Hetzner, Infomaniak, AWS) \
+		blocks it until it allows ports 80 and 443; then run genco apply"
+	)
 }
 
 pub(super) async fn resolve(domain: &str) -> Vec<String> {
