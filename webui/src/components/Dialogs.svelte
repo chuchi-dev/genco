@@ -13,6 +13,7 @@
 	import SettingsDialog from '@/components/dialogs/SettingsDialog.svelte';
 	import TotpDialog from '@/components/dialogs/TotpDialog.svelte';
 	import TokensDialog from '@/components/dialogs/TokensDialog.svelte';
+	import AgentsDialog from '@/components/dialogs/AgentsDialog.svelte';
 	import ActivityDialog from '@/components/dialogs/ActivityDialog.svelte';
 	import PasswordsDialog from '@/components/dialogs/PasswordsDialog.svelte';
 	import MessageBox from '@/components/dialogs/MessageBox.svelte';
@@ -88,6 +89,8 @@
 	<TotpDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'tokens'}
 	<TokensDialog onclose={() => (dialogs.open = null)} />
+{:else if dialogs.open === 'agents'}
+	<AgentsDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'passwords'}
 	<PasswordsDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'activity'}

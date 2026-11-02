@@ -355,6 +355,33 @@ const MIGRATIONS: &[&str] = &[
 
 	ALTER TABLE domains ADD COLUMN upstream TEXT;
 "#,
+	r#"
+	CREATE TABLE peers (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE,
+		key TEXT NOT NULL,
+		key_hash TEXT NOT NULL UNIQUE,
+		webhook_url TEXT NOT NULL DEFAULT '',
+		webhook_all INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		last_used INTEGER
+	);
+
+	CREATE TABLE proposals (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		peer_id INTEGER NOT NULL REFERENCES peers(id) ON DELETE CASCADE,
+		text TEXT NOT NULL,
+		approver_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+		status TEXT NOT NULL,
+		decided_by TEXT,
+		conversation_id INTEGER
+			REFERENCES conversations(id) ON DELETE SET NULL,
+		answer TEXT,
+		created_at INTEGER NOT NULL,
+		decided_at INTEGER,
+		answered_at INTEGER
+	);
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

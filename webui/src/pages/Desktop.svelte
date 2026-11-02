@@ -156,6 +156,7 @@
 				label: 'Passwords…',
 				onclick: () => (dialogs.open = 'passwords'),
 			},
+			{ label: 'AI Agents…', onclick: () => (dialogs.open = 'agents') },
 			{ label: 'API Tokens…', onclick: () => (dialogs.open = 'tokens') },
 			{
 				label: 'Activity Log…',

@@ -34,7 +34,7 @@ const FIELDS: &[&str] = &["name", "email", "path", "from", "to", "ref"];
 pub struct Entry {
 	pub id: i64,
 	pub at: i64,
-	/// an admin, `token <name>`, `agent`, `terminal`, `systemd`, `genco`
+	/// an admin, `token <name>`, `AI agent <name>`, `agent`, `terminal`, `systemd`, `genco`
 	pub actor: String,
 	pub action: String,
 	/// the client, group, domain, … it was about
@@ -148,7 +148,14 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("POST", "/runners", "Add runner"),
 		("DELETE", "/runners/*", "Remove runner"),
 		("PUT", "/deploy/artifact", "Deploy upload"),
-		("POST", "/settings/notify/test", "Test webhook"),
+		("POST", "/peers", "Add AI agent"),
+		("POST", "/peers/*", "Change AI agent"),
+		("DELETE", "/peers/*", "Delete AI agent"),
+		("POST", "/peers/*/key", "New key for AI agent"),
+		("POST", "/peers/*/test", "Test webhook"),
+		("POST", "/proposals", "Propose a task"),
+		("POST", "/proposals/*/approve", "Approve proposal"),
+		("POST", "/proposals/*/reject", "Reject proposal"),
 		("POST", "/update/check", "Check for updates"),
 		("POST", "/update/install", "Start update"),
 		("POST", "/update/auto", "Change automatic updates"),
@@ -207,6 +214,11 @@ fn target(conn: &Connection, path: &str) -> String {
 			JOIN mail_domains d ON d.id = f.mail_domain_id WHERE f.id = ?1"
 		}
 		"conversations" => "SELECT title FROM conversations WHERE id = ?1",
+		"peers" => "SELECT name FROM peers WHERE id = ?1",
+		"proposals" => {
+			"SELECT p.name FROM proposals r JOIN peers p ON p.id = r.peer_id
+			WHERE r.id = ?1"
+		}
 		_ => return String::new(),
 	};
 	conn.query_row(sql, [id], |r| r.get(0))
@@ -248,23 +260,34 @@ fn actor(conn: &Connection, req: &Request) -> Option<String> {
 			.ok()
 			.flatten();
 	}
-	let bearer = tokens::bearer(req.headers())?;
-	conn.query_row(
-		"SELECT t.name, u.name FROM api_tokens t
-		LEFT JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?1",
-		[tokens::hash(bearer)],
-		|r| {
-			let name: String = r.get(0)?;
-			let user: Option<String> = r.get(1)?;
-			Ok(match user {
-				Some(u) => format!("token {name} ({u})"),
-				None => format!("token {name}"),
-			})
-		},
-	)
-	.optional()
-	.ok()
-	.flatten()
+	let bearer = tokens::hash(tokens::bearer(req.headers())?);
+	let token = conn
+		.query_row(
+			"SELECT t.name, u.name FROM api_tokens t
+			LEFT JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?1",
+			[&bearer],
+			|r| {
+				let name: String = r.get(0)?;
+				let user: Option<String> = r.get(1)?;
+				Ok(match user {
+					Some(u) => format!("token {name} ({u})"),
+					None => format!("token {name}"),
+				})
+			},
+		)
+		.optional()
+		.ok()
+		.flatten();
+	token.or_else(|| {
+		conn.query_row(
+			"SELECT name FROM peers WHERE key_hash = ?1",
+			[&bearer],
+			|r| Ok(format!("AI agent {}", r.get::<_, String>(0)?)),
+		)
+		.optional()
+		.ok()
+		.flatten()
+	})
 }
 
 /// `path=` and the names of a JSON body, nothing secret.

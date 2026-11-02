@@ -313,6 +313,28 @@ export type Token = {
 	lastUsed: number | null;
 };
 
+export type Peer = {
+	id: number;
+	name: string;
+	webhookUrl: string;
+	webhookAll: boolean;
+	createdAt: number;
+	lastUsed: number | null;
+};
+
+export type Proposal = {
+	id: number;
+	from: string;
+	text: string;
+	/** the admin who decides ("name <email>"), null for any */
+	approver: string | null;
+	status: 'pending' | 'approved' | 'answered' | 'rejected' | 'expired';
+	decidedBy: string | null;
+	conversationId: number | null;
+	answer: string | null;
+	createdAt: number;
+};
+
 export type Backup = {
 	id: number;
 	status: 'running' | 'done' | 'failed';

@@ -134,6 +134,9 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 	let cfg = Arc::new(cfg);
 	let db = Db::open(&cfg.db_path())?;
 	let events = Events::new();
+	if let Err(e) = peers::adopt_old_webhook(&db) {
+		tracing::error!("the old notification webhook: {e}");
+	}
 	let runner = Runner::new(cfg.clone(), db.clone(), events.clone());
 	runner.resume_interrupted();
 	end_interrupted(&db)?;
@@ -173,6 +176,8 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.merge(costs::routes())
 		.merge(imports::routes())
 		.merge(notify::routes())
+		.merge(peers::routes())
+		.merge(proposals::routes())
 		.merge(update::routes())
 		.merge(appenv::routes())
 		.merge(procs::routes())

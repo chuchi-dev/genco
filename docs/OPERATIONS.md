@@ -135,8 +135,8 @@ install script again.
 
 genco checks the server every minute and runs a health check every
 morning. When the agent can't run them (no credit, no key), the admins
-still get a mail "genco needs attention" with the problem (or the
-webhook a POST, Settings → Notifications).
+still get a mail "genco needs attention" with the problem (and the AI
+agents' webhooks a POST, Start → AI Agents).
 
 **If the agent has no credit:** the panel keeps working; only the agent
 window answers with an error. Top up the key, or put another one into
@@ -323,16 +323,18 @@ You need:
 
 ### Where reports go
 
-Settings → Notifications decides where the agent's reports go: its
-routines (daily health check, weekly update round, weekly security
-review), the minute checks' alerts and update notices.
+The agent's reports are its routines (daily health check, weekly update
+round, weekly security review), the minute checks' alerts and update
+notices.
 
-- **Mail**: the reports that need attention go to every admin.
-- **Webhook**: an `https://` address and a token. genco POSTs JSON with
-  `Authorization: Bearer <token>`, the reports that need attention, or
-  all of them with "OK reports too". "Send Test" sends one with kind
-  `test`. The receiver answers with any 2xx within 20 seconds; genco
-  doesn't retry, the report stays in the panel either way.
+- **Mail** (Settings → Notifications): the reports that need attention
+  go to every admin.
+- **Webhooks** of AI agents (Start → AI Agents): an `https://` address
+  per agent. genco POSTs JSON with the agent's key as
+  `Authorization: Bearer <key>`, the reports that need attention, or all
+  of them with "OK reports too". "Test" sends one with kind `test`. The
+  receiver answers with any 2xx within 20 seconds; genco doesn't retry,
+  the report stays in the panel either way.
 
 ```json
 {
@@ -347,11 +349,35 @@ review), the minute checks' alerts and update notices.
 ```
 
 `status` is `ok` or `attention`, `kind` is `report` (routines and
-alerts), `update` or `test`, `url` opens the conversation in the panel.
+alerts), `update`, `proposal` (the answer to a proposal, with its id in
+`proposal`) or `test`, `url` opens the conversation in the panel.
 Typical receivers are another agent that looks after several servers,
 or a small relay to a chat: Slack's or Teams' incoming webhooks expect
 their own JSON (`{"text": ...}`), so they need a few lines in between
 that turn `title` and `text` into it.
+
+### AI agents
+
+Start → AI Agents lists the other AI agents that look after the server.
+Each has one key, made when it is added (or with New Key…), shown once
+and not tied to an admin. With it as `Authorization: Bearer <key>` the
+agent may:
+
+- read the status: `GET /api/status`, `GET /api/stats`
+- download a database: `GET /api/databases/<name>/dump` (a Craft one
+  without its personal data)
+- propose a task: `POST /api/proposals` with `{"text": "...",
+  "approver": "admin@example.ch"}` answers `{"id": 3, "status":
+  "pending"}`. The admin with that email gets a mail and only they may
+  decide; without `approver` every admin gets it and any decides. The
+  task waits in the Proposals tab (it shows the approver) until it is
+  approved or rejected, it expires after 7 days. Approved, it becomes a conversation of the
+  server agent; when the agent is done, its answer goes to the agent's
+  webhook (kind `proposal`) and `GET /api/proposals/<id>` shows the
+  status and `answer`.
+
+An admin's own token that downloads every database is in Start → API
+Tokens; deploy tokens are in a group's Deploy tab.
 
 ### The agent's API key and model
 

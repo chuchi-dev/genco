@@ -274,9 +274,13 @@ terminal.
       services and last deploy, backups, problems, reports that need
       attention) and `GET /api/stats`, without the LLM; for the dashboard
       of all servers
-- Tasks from another agent are untrusted: they wait as a
-  proposal until an admin confirms them by mail, then the agent gets
-  them. Routine things go through scoped tokens without the LLM (deploy,
+- [x] Start → AI Agents (operator 2026-11-02): one key per agent, not
+      an admin's (read, databases, propose), its webhook gets the reports
+      (the notification webhook moved there) and the answers to its
+      proposals; an admin's own token only downloads databases
+- [x] Tasks from another agent are untrusted: they wait as a
+  proposal until an admin approves them (mail to all admins, Proposals
+  tab), then the agent gets them. Routine things go through scoped tokens without the LLM (deploy,
   database download). A cleaning LLM may flag suspicious requests in the
   mail, it is no protection on its own.
 

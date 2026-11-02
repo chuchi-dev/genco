@@ -110,11 +110,15 @@ pub fn create(
 		params![email, name.trim(), hash, now()],
 	)?;
 
-	Ok(conn.query_row(
+	Ok(by_id(conn, conn.last_insert_rowid())?)
+}
+
+pub fn by_id(conn: &Connection, id: i64) -> rusqlite::Result<User> {
+	conn.query_row(
 		&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"),
-		[conn.last_insert_rowid()],
+		[id],
 		User::from_row,
-	)?)
+	)
 }
 
 /// `hash` from `hash_password`

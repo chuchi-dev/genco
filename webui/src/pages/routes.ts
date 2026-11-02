@@ -30,6 +30,7 @@ export function registerRoutes() {
 				/^\/passwords\/(?<id>\d+)$/,
 				() => import('./PasswordLink.svelte'),
 			],
+			['/agents', () => import('./AgentsLink.svelte')],
 			[
 				/^\/confirm\/(?<token>[0-9a-f]+)$/,
 				() => import('./Confirm.svelte'),

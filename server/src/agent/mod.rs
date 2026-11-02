@@ -452,6 +452,12 @@ impl Runner {
 			return;
 		};
 		if before.kind == Kind::Chat {
+			// a conversation from an AI agent's proposal answers it
+			let cfg = self.0.cfg.clone();
+			let db = self.0.db.clone();
+			tokio::spawn(async move {
+				crate::proposals::answer(&cfg, &db, id, failed).await
+			});
 			return;
 		}
 
@@ -517,6 +523,7 @@ impl Runner {
 			title: c.title,
 			text: body,
 			url,
+			proposal: None,
 		};
 		crate::notify::send(&self.0.cfg, &self.0.db, notice).await;
 	}

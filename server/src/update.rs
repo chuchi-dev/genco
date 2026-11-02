@@ -452,6 +452,7 @@ async fn record(
 		},
 		text: format!("{message}\n\nThe log is {DIR}/update.log."),
 		url: cfg.domain.as_ref().map(|d| format!("https://{d}/")),
+		proposal: None,
 	};
 	crate::notify::send(cfg, &db, notice).await;
 	Ok(())

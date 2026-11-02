@@ -1,8 +1,8 @@
-//! API tokens for CI jobs, scripts and later other clients (e.g. a
-//! dashboard of all servers). A token belongs to the admin who created it
-//! and has scopes: `deploy:<group id>` deploys a group, `databases`
-//! downloads every database of the server, `read` reads the status and
-//! usage of the server. Only its hash is stored.
+//! API tokens for CI jobs and scripts. A token belongs to the admin who
+//! created it and has scopes: `deploy:<group id>` deploys a group,
+//! `databases` downloads every database of the server. Only its hash is
+//! stored. The keys of AI agents (peers.rs) are accepted here too, with
+//! the scopes `read`, `databases` and `propose`.
 
 use axum::extract::{FromRef, FromRequestParts, Path, State};
 use axum::http::request::Parts;
@@ -42,14 +42,16 @@ pub fn deploy_scope(group_id: i64) -> String {
 
 /// Downloads every database of the server.
 pub const DATABASES: &str = "databases";
-/// Reads the status and usage stats, changes nothing (a dashboard).
-const READ: &str = "read";
+/// Reads the status and usage stats, changes nothing (an AI agent).
+pub const READ: &str = "read";
+/// Proposes a task to genco's agent (an AI agent).
+pub const PROPOSE: &str = "propose";
 
-/// Scopes genco knows, others are refused.
+/// Scopes an admin's token may have, others are refused.
 fn check_scope(scope: &str) -> Result<()> {
 	match scope.split_once(':') {
 		Some(("deploy", id)) if id.parse::<i64>().is_ok() => Ok(()),
-		None if scope == DATABASES || scope == READ => Ok(()),
+		None if scope == DATABASES => Ok(()),
 		_ => Err(Error::Invalid(format!("unknown scope {scope}"))),
 	}
 }
@@ -117,6 +119,8 @@ pub fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
 pub struct ApiToken {
 	pub name: String,
 	scopes: Vec<String>,
+	/// the AI agent whose key it is
+	pub peer: Option<i64>,
 }
 
 impl ApiToken {
@@ -148,7 +152,7 @@ where
 	Ok(authed.user.name)
 }
 
-/// An admin or a `read` token.
+/// An admin or an AI agent's key.
 pub struct Reader {
 	/// a token sees no free text (problem details, report titles): what
 	/// comes from logs and the agent stays with the admins
@@ -189,7 +193,18 @@ where
 				|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
 			)
 			.optional()?;
-		let (id, name, scopes) = found.ok_or(Error::InvalidToken)?;
+		let Some((id, name, scopes)) = found else {
+			let (peer, name) = crate::peers::by_key(&conn, token)?
+				.ok_or(Error::InvalidToken)?;
+			return Ok(Self {
+				name,
+				scopes: crate::peers::SCOPES
+					.iter()
+					.map(|s| s.to_string())
+					.collect(),
+				peer: Some(peer),
+			});
+		};
 
 		conn.execute(
 			"UPDATE api_tokens SET last_used = ?1 WHERE id = ?2",
@@ -198,6 +213,7 @@ where
 		Ok(Self {
 			name,
 			scopes: serde_json::from_str(&scopes).unwrap_or_default(),
+			peer: None,
 		})
 	}
 }
@@ -256,6 +272,7 @@ mod tests {
 		assert!(check_scope("deploy:3").is_ok());
 		assert!(check_scope("deploy:x").is_err());
 		assert!(check_scope("databases").is_ok());
+		assert!(check_scope("read").is_err());
 		assert!(check_scope("admin").is_err());
 	}
 
