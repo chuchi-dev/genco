@@ -127,6 +127,38 @@ pub(crate) fn header(
 	)
 }
 
+/// The content security policy: the panel loads nothing from other
+/// origins and tells nobody where it came from; Monaco needs its
+/// same-origin worker and inline styles, the 2FA qr code is a data: image,
+/// the chat's attachments are blob: ones. Only the sites in
+/// `frame-ancestors` may frame it.
+fn csp(frame_ancestors: &[String]) -> Result<HeaderValue, String> {
+	for site in frame_ancestors {
+		let host = site.strip_prefix("https://").unwrap_or("");
+		let ok = !host.is_empty()
+			&& host.chars().all(|c| {
+				c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':')
+			});
+		if !ok {
+			return Err(format!(
+				"frame-ancestors: {site} is not an https://host address"
+			));
+		}
+	}
+	let ancestors = match frame_ancestors {
+		[] => "'none'".to_string(),
+		sites => sites.join(" "),
+	};
+	HeaderValue::from_str(&format!(
+		"default-src 'self'; script-src 'self'; worker-src 'self'; \
+		style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
+		font-src 'self' data:; connect-src 'self'; \
+		frame-ancestors {ancestors}; base-uri 'none'; form-action 'self'; \
+		object-src 'none'"
+	))
+	.map_err(|e| e.to_string())
+}
+
 pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 	std::fs::create_dir_all(&cfg.data_dir).map_err(|e| e.to_string())?;
 	// only root reads genco's database, logs and dumps
@@ -187,22 +219,18 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 			state.clone(),
 			activity::record,
 		));
-	let app = Router::new()
+	let mut app = Router::new()
 		.nest("/api", api)
 		.fallback(webui::serve)
-		// the panel may not be framed, loads nothing from other origins and
-		// tells nobody where it came from; Monaco needs its same-origin
-		// worker and inline styles, the 2FA qr code is a data: image, the
-		// chat's attachments are blob: ones
-		.layer(header(
-			"content-security-policy",
-			"default-src 'self'; script-src 'self'; worker-src 'self'; \
-			style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
-			font-src 'self' data:; connect-src 'self'; \
-			frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
-			object-src 'none'",
-		))
-		.layer(header("x-frame-options", "DENY"))
+		.layer(SetResponseHeaderLayer::overriding(
+			HeaderName::from_static("content-security-policy"),
+			csp(&cfg.frame_ancestors)?,
+		));
+	// for older browsers, which don't know frame-ancestors
+	if cfg.frame_ancestors.is_empty() {
+		app = app.layer(header("x-frame-options", "DENY"));
+	}
+	let app = app
 		.layer(header("x-content-type-options", "nosniff"))
 		.layer(header("referrer-policy", "no-referrer"))
 		.layer(TraceLayer::new_for_http())
@@ -226,4 +254,23 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		})
 		.await
 		.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn framed_only_by_the_configured_sites() {
+		let none = csp(&[]).unwrap();
+		assert!(none.to_str().unwrap().contains("frame-ancestors 'none';"));
+		let one = csp(&["https://noah.example".into()]).unwrap();
+		assert!(
+			one.to_str()
+				.unwrap()
+				.contains("frame-ancestors https://noah.example;")
+		);
+		assert!(csp(&["http://noah.example".into()]).is_err());
+		assert!(csp(&["https://a.example; script-src *".into()]).is_err());
+	}
 }

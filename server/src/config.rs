@@ -22,6 +22,10 @@ pub struct Config {
 	/// host name of IMAP, SMTP and webmail, `mail.<domain>` by default
 	pub mail_host: Option<String>,
 	pub openrouter_key: Option<String>,
+	/// sites that may show the panel in a frame (`https://host`), none by
+	/// default
+	#[serde(default)]
+	pub frame_ancestors: Vec<String>,
 }
 
 fn default_listen() -> String {

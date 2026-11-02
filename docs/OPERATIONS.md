@@ -402,3 +402,12 @@ in the config is the default until one is chosen there and may be any
 other OpenRouter id. After a change of the keys run `systemctl restart
 genco`. The costs are under the server's page in the Explorer (Agent
 costs).
+
+### Showing the panel in another site
+
+The panel refuses to be shown in a frame, so no other site can trick an
+admin into clicking in it. A dashboard that shows it in a frame is
+allowed with `frame-ancestors = ["https://dashboard.example.ch"]` in
+`/etc/genco/config.toml` (https addresses only), then `systemctl
+restart genco`. The login inside the frame is separate from the one in a
+browser tab.
