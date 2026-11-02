@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::util::sh;
 
+/// pgsql too: a PostgreSQL database may come later, and PostgreSQL itself
+/// may be there already without genco installing it
 const PHP_EXTENSIONS: &[&str] = &[
-	"fpm", "cli", "mysql", "gd", "intl", "mbstring", "xml", "zip", "curl",
-	"bcmath", "imagick",
+	"fpm", "cli", "mysql", "pgsql", "gd", "intl", "mbstring", "xml", "zip",
+	"curl", "bcmath", "imagick",
 ];
 const NODE_MAJOR: &str = "24";
 pub const INVENTORY: &str = "/var/lib/genco/inventory.txt";
@@ -356,8 +358,17 @@ async fn php() -> Result<(), String> {
 			packages.push(format!("php{v}-opcache"));
 		}
 		let packages: Vec<&str> = packages.iter().map(String::as_str).collect();
+		let missing =
+			sh(&format!("dpkg -s {} >/dev/null 2>&1", packages.join(" ")))
+				.await
+				.is_err();
 		apt(&packages).await?;
 		sh(&format!("systemctl disable -q --now php{v}-fpm")).await?;
+		// a new module only loads in a restarted php-fpm
+		if missing {
+			sh(&format!("systemctl try-restart 'genco-*-php{v}.service'"))
+				.await?;
+		}
 		// deploys put it first in PATH, composer and craft use the
 		// group's version
 		let bin = crate::render::php_bin_dir(v);
