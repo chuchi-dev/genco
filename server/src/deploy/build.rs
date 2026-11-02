@@ -197,6 +197,9 @@ impl Build<'_> {
 		if !self.release.join("genco.toml").exists() {
 			log.line("no genco.toml, detected the steps").await;
 		}
+		for hint in &cfg.hints {
+			log.line(&format!("note: {hint}")).await;
+		}
 		for s in cfg.build.iter().chain(&cfg.after_switch) {
 			s.check().map_err(|e| format!("genco.toml: {e}"))?;
 		}

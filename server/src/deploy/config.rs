@@ -5,29 +5,32 @@
 use super::*;
 
 /// `genco.toml` in the repository, or what `detect` finds without one.
-#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct DeployConfig {
 	/// files and directories that stay from release to release, kept in
 	/// `shared/`
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub shared: Vec<String>,
 	/// before the switch, a failing step stops the deploy
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub build: Vec<Step>,
 	/// after the switch, before the apps restart
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub after_switch: Vec<Step>,
 	/// commands that run all the time, restarted with every deploy
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub worker: Vec<WorkerCfg>,
 	/// commands that run at times
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub schedule: Vec<ScheduleCfg>,
+	/// what detection couldn't decide, for the deploy log
+	#[serde(skip)]
+	pub hints: Vec<String>,
 }
 
 /// `[[worker]]` in genco.toml.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerCfg {
 	pub name: String,
@@ -36,12 +39,12 @@ pub struct WorkerCfg {
 	pub dir: String,
 	pub run: String,
 	/// a port of its own, open to the internet
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub port: Option<u16>,
 }
 
 /// `[[schedule]]` in genco.toml.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScheduleCfg {
 	pub name: String,
@@ -51,7 +54,7 @@ pub struct ScheduleCfg {
 	/// systemd's OnCalendar: hourly, *:0/5, Mon *-*-* 03:00
 	pub every: String,
 	/// minutes, 60 by default
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub timeout: Option<u32>,
 }
 
@@ -113,7 +116,7 @@ fn check_path_or_dot(dir: &str) -> Res<()> {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
 	/// relative to the release
@@ -122,18 +125,18 @@ pub struct Step {
 	pub run: String,
 	/// `runner`: on a build runner in a container, see runners.rs; here
 	/// if none is online
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub on: Option<String>,
 	/// the runner's image, `{codename}` is this server's Debian release;
 	/// by default rust, node or debian for what `dir` holds
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub image: Option<String>,
 	/// files and folders the runner sends back into the release, relative
 	/// to `dir`
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub artifacts: Vec<String>,
 	/// minutes, 60 by default
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub timeout: Option<u32>,
 }
 
@@ -204,6 +207,8 @@ pub(super) fn detect(release: &Path, shared: &Path) -> DeployConfig {
 	}
 
 	let mut cfg = DeployConfig::default();
+	// schedules whose need the environment decides at runtime
+	let mut unsure = vec![];
 	for dir in dirs {
 		let path = release.join(&dir);
 		let rel = |p: &str| {
@@ -235,19 +240,22 @@ pub(super) fn detect(release: &Path, shared: &Path) -> DeployConfig {
 				});
 				// scheduled and expired entries change their status, only
 				// with staticStatuses
-				let statuses = craft_version(&path.join("composer.lock"))
-					>= Some((5, 7)) && static_statuses(
-					&read_small(&path.join("config/general.php")),
-					&read_small(&shared.join(rel(".env"))),
-				);
-				if statuses {
-					cfg.schedule.push(ScheduleCfg {
-						name: "craft-statuses".into(),
-						dir: dir.clone(),
-						run: "php craft update-statuses".into(),
-						every: "*:0/5".into(),
-						timeout: Some(10),
-					});
+				let statuses = ScheduleCfg {
+					name: "craft-statuses".into(),
+					dir: dir.clone(),
+					run: "php craft update-statuses".into(),
+					every: "*:0/5".into(),
+					timeout: Some(10),
+				};
+				if craft_version(&path.join("composer.lock")) >= Some((5, 7)) {
+					match static_statuses(
+						&read_small(&path.join("config/general.php")),
+						&read_small(&shared.join(rel(".env"))),
+					) {
+						Statuses::On => cfg.schedule.push(statuses),
+						Statuses::Off => {}
+						Statuses::Unsure => unsure.push(statuses),
+					}
 				}
 			}
 		}
@@ -282,18 +290,68 @@ pub(super) fn detect(release: &Path, shared: &Path) -> DeployConfig {
 			}
 		}
 	}
+
+	// the admins decide with a genco.toml, which turns detection off:
+	// it lists everything detected plus the schedule
+	if !unsure.is_empty() {
+		let with = DeployConfig {
+			schedule: cfg.schedule.iter().chain(&unsure).cloned().collect(),
+			..cfg.clone()
+		};
+		let toml = toml::to_string(&with).unwrap_or_default();
+		for s in &unsure {
+			cfg.hints.push(format!(
+				"{}/config/general.php takes staticStatuses from the \
+				environment, so genco doesn't know whether `{}` is needed \
+				and left the schedule {} out. If staticStatuses is on, \
+				commit this genco.toml (everything detected plus the \
+				schedule):\n\n{toml}",
+				s.dir, s.run, s.name
+			));
+		}
+	}
 	cfg
 }
 
-/// Craft's major and minor version from composer.lock.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Statuses {
+	On,
+	Off,
+	/// general.php takes it from the environment
+	Unsure,
+}
+
 /// Whether Craft's `staticStatuses` is on: general.php sets it (anything
 /// but false) or the .env has CRAFT_STATIC_STATUSES=true. Without it
-/// `craft update-statuses` does nothing.
-pub(super) fn static_statuses(general: &str, env: &str) -> bool {
-	let in_config = general.match_indices("staticStatuses").any(|(i, m)| {
-		let after: String = general[i + m.len()..].chars().take(30).collect();
-		!after.to_lowercase().contains("false")
-	});
+/// `craft update-statuses` does nothing. Comments don't count.
+pub(super) fn static_statuses(general: &str, env: &str) -> Statuses {
+	let mut found = Statuses::Off;
+	for line in general.lines() {
+		let code = line.trim_start();
+		if code.starts_with("//")
+			|| code.starts_with('*')
+			|| code.starts_with('#')
+		{
+			continue;
+		}
+		let Some(i) = code.find("staticStatuses") else {
+			continue;
+		};
+		// the value: up to the end of the call or of the array item
+		let value = code[i + "staticStatuses".len()..]
+			.chars()
+			.take_while(|c| *c != ';' && *c != ',')
+			.collect::<String>()
+			.to_lowercase();
+		if value.contains("false") {
+			continue;
+		}
+		if value.contains("env") {
+			found = Statuses::Unsure;
+		} else {
+			return Statuses::On;
+		}
+	}
 	let in_env = env.lines().any(|l| {
 		let Some((key, value)) = l.split_once('=') else {
 			return false;
@@ -308,9 +366,10 @@ pub(super) fn static_statuses(general: &str, env: &str) -> bool {
 				"true" | "1"
 			)
 	});
-	in_config || in_env
+	if in_env { Statuses::On } else { found }
 }
 
+/// Craft's major and minor version from composer.lock.
 pub(super) fn craft_version(lock: &Path) -> Option<(u32, u32)> {
 	let small = std::fs::symlink_metadata(lock)
 		.is_ok_and(|m| m.file_type().is_file() && m.len() <= 8 * 1024 * 1024);
@@ -477,6 +536,20 @@ mod tests {
 		assert_eq!(workers[0].command, "php craft queue/listen --verbose");
 		assert_eq!(schedules[0].command, "php craft update-statuses");
 
+		// from the environment: no schedule, a genco.toml in the log
+		std::fs::write(
+			dir.join("craft/config/general.php"),
+			r#"->staticStatuses(App::env("CACHING") === true);"#,
+		)
+		.unwrap();
+		let cfg = detect(&dir, &shared);
+		assert!(cfg.schedule.is_empty());
+		let (_, toml) = cfg.hints[0].split_once("\n\n").unwrap();
+		let with: DeployConfig = toml::from_str(toml).unwrap();
+		assert_eq!(with.schedule[0].name, "craft-statuses");
+		assert_eq!(with.build, cfg.build);
+		assert_eq!(with.shared, cfg.shared);
+
 		// without staticStatuses update-statuses does nothing
 		std::fs::write(dir.join("craft/config/general.php"), "").unwrap();
 		assert!(detect(&dir, &shared).schedule.is_empty());
@@ -494,15 +567,21 @@ mod tests {
 
 	#[test]
 	fn static_statuses_from_config_or_env() {
-		assert!(static_statuses("'staticStatuses' => true,", ""));
-		assert!(static_statuses("->staticStatuses()", ""));
-		assert!(!static_statuses("'staticStatuses' => false,", ""));
-		assert!(!static_statuses("->staticStatuses(false)", ""));
-		assert!(!static_statuses("", ""));
-		assert!(static_statuses("", "CRAFT_STATIC_STATUSES=true\n"));
-		assert!(static_statuses("", "CRAFT_STATIC_STATUSES=\"true\""));
-		assert!(!static_statuses("", "CRAFT_STATIC_STATUSES=false"));
-		assert!(!static_statuses("", "#CRAFT_STATIC_STATUSES"));
+		use Statuses::*;
+		let s = static_statuses;
+		assert_eq!(s("'staticStatuses' => true,", ""), On);
+		assert_eq!(s("->staticStatuses()", ""), On);
+		assert_eq!(s("'staticStatuses' => false,", ""), Off);
+		assert_eq!(s("->staticStatuses(false)", ""), Off);
+		assert_eq!(s("", ""), Off);
+		assert_eq!(s("// enable staticStatuses if CACHING", ""), Off);
+		let env = r#"->staticStatuses(App::env("CACHING") === true);"#;
+		assert_eq!(s(env, ""), Unsure);
+		assert_eq!(s(env, "CRAFT_STATIC_STATUSES=true"), On);
+		assert_eq!(s("", "CRAFT_STATIC_STATUSES=true\n"), On);
+		assert_eq!(s("", "CRAFT_STATIC_STATUSES=\"true\""), On);
+		assert_eq!(s("", "CRAFT_STATIC_STATUSES=false"), Off);
+		assert_eq!(s("", "#CRAFT_STATIC_STATUSES"), Off);
 	}
 
 	#[test]
