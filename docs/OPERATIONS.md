@@ -9,6 +9,7 @@ need neither the panel nor an LLM.
 3. [Restoring one site](#3-restoring-one-site)
 4. [Moving or rebuilding the whole server](#4-moving-or-rebuilding-the-whole-server)
 5. [Where things are](#5-where-things-are)
+6. [Notifications and the agent's model](#6-notifications-and-the-agents-model)
 
 **Do this today, not on the day you need it:** keep a copy of
 `/etc/genco/restic-password` outside the server, for example in your
@@ -317,3 +318,55 @@ You need:
 | Server inventory before genco | `/var/lib/genco/inventory.txt`, old firewall `/etc/nftables.conf.before-genco` |
 | Deleted via the panel (30 days) | `/var/backups/genco/trash` |
 | Logs | `journalctl -u genco`, `journalctl -u genco-backup`, `/srv/genco/<group>/logs` |
+
+## 6. Notifications and the agent's model
+
+### Where reports go
+
+Settings → Notifications decides where the agent's reports go: its
+routines (daily health check, weekly update round, weekly security
+review), the minute checks' alerts and update notices.
+
+- **Mail**: the reports that need attention go to every admin.
+- **Webhook**: an `https://` address and a token. genco POSTs JSON with
+  `Authorization: Bearer <token>`, the reports that need attention, or
+  all of them with "OK reports too". "Send Test" sends one with kind
+  `test`. The receiver answers with any 2xx within 20 seconds; genco
+  doesn't retry, the report stays in the panel either way.
+
+```json
+{
+  "server": "genco.example.ch",
+  "status": "attention",
+  "kind": "report",
+  "attention": true,
+  "title": "Daily health check",
+  "text": "the report in markdown",
+  "url": "https://genco.example.ch/conversations/12"
+}
+```
+
+`status` is `ok` or `attention`, `kind` is `report` (routines and
+alerts), `update` or `test`, `url` opens the conversation in the panel.
+Typical receivers are another agent that looks after several servers,
+or a small relay to a chat: Slack's or Teams' incoming webhooks expect
+their own JSON (`{"text": ...}`), so they need a few lines in between
+that turn `title` and `text` into it.
+
+### The agent's API key and model
+
+The agent needs an Anthropic or an OpenRouter key in
+`/etc/genco/config.toml`:
+
+```toml
+anthropic-key = "sk-ant-..."     # Claude directly at Anthropic
+openrouter-key = "sk-or-v1-..."  # or through OpenRouter, or as fallback
+model = "anthropic/claude-opus-5.5"  # an OpenRouter model id, the default
+```
+
+With `anthropic-key`, Anthropic's models go directly to Anthropic; if
+Anthropic refuses a request and there is an `openrouter-key`, it goes
+through OpenRouter. Another model (`anthropic/claude-sonnet-5.5`, or any
+other OpenRouter id) needs `model` and, for models not by Anthropic,
+`openrouter-key`. After a change run `systemctl restart genco`. The
+costs are under the server's page in the Explorer (Agent costs).

@@ -115,6 +115,9 @@ pub(crate) enum Cmd {
 	},
 	/// Print clients, groups, domains and databases as JSON
 	Tree,
+	/// Print genco's documentation: `readme` (what it does, install) or
+	/// `operations` (runbook, notifications, the agent's key and model)
+	Docs { topic: Option<String> },
 	/// Manage clients
 	#[clap(subcommand)]
 	Client(cli::ClientCmd),
@@ -184,7 +187,10 @@ impl Cmd {
 			self,
 			Cmd::Serve
 				| Cmd::Chat { .. }
-				| Cmd::Tree | Cmd::User(UserCmd::List)
+				| Cmd::Tree | Cmd::Docs { .. }
+				| Cmd::User(UserCmd::List)
+				| Cmd::Worker(cli::WorkerCmd::List)
+				| Cmd::Schedule(cli::ScheduleCmd::List)
 				| Cmd::Mail(
 					mailbox::MailCmd::List
 						| mailbox::MailCmd::Dns { .. }
@@ -260,6 +266,10 @@ async fn run(args: Args) -> Result<(), String> {
 	if let Cmd::Runner(cmd) = args.cmd {
 		return runner::main(cmd).await;
 	}
+	if let Cmd::Docs { topic } = &args.cmd {
+		print!("{}", commands::docs(topic.as_deref())?);
+		return Ok(());
+	}
 	let cfg = Config::load(&args.config)?;
 	if args.cmd.changes() {
 		log_cli(&cfg);
@@ -308,6 +318,7 @@ async fn run(args: Args) -> Result<(), String> {
 			println!("{}", serde_json::to_string_pretty(&tree).unwrap());
 			Ok(())
 		}
+		Cmd::Docs { .. } => unreachable!("read before the config"),
 		Cmd::User(cmd) => user(cfg, cmd),
 		Cmd::Activity { limit } => {
 			let db = Db::open(&cfg.db_path())?;

@@ -57,6 +57,11 @@ in the panel's chat (their name is in brackets before the message) or with
 
 genco keeps clients, groups, domains and databases in its database
 (`genco tree` prints them as JSON) and writes the server's config from it:
+Questions about genco itself (where reports go, a webhook, another AI
+key or model, a restore, moving the server): `genco docs readme` and
+`genco docs operations` print its documentation. Read the matching part
+before you answer and say where it is set (panel page or config key).
+
 `genco apply` creates the users and directories, writes the nginx sites,
 PHP-FPM pools and systemd units, the firewall rules, the databases and
 gets certificates. Admins change them in the panel, you with the CLI

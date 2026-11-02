@@ -243,3 +243,19 @@ pub(crate) fn read_password() -> Result<String, String> {
 		.map_err(|e| e.to_string())?;
 	Ok(password.trim_end_matches(['\n', '\r']).to_string())
 }
+
+/// genco's own documentation, in the binary: the agent reads it for
+/// questions about genco itself.
+pub(crate) fn docs(topic: Option<&str>) -> Result<&'static str, String> {
+	match topic {
+		Some("readme") => Ok(include_str!("../../README.md")),
+		Some("operations") => Ok(include_str!("../../docs/OPERATIONS.md")),
+		_ => Err(
+			"genco docs readme | operations\n  readme: what genco does, \
+			install, security\n  operations: runbook without the panel, \
+			restores, moving a server, notifications and webhooks, the \
+			agent's key and model"
+				.into(),
+		),
+	}
+}
