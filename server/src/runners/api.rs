@@ -190,7 +190,7 @@ pub(super) async fn artifacts(
 ) -> Result<Json<()>> {
 	mine(&db, &me, id)?;
 	let path = job_dir(id).join("artifacts.tar");
-	crate::util::body_to_file(body, &path)
+	crate::util::body_to_file(body, &path, 4 << 30)
 		.await
 		.map_err(|e| Error::Invalid(format!("upload: {e}")))?;
 	Ok(Json(()))

@@ -131,18 +131,14 @@ async fn upload(
 	std::fs::create_dir_all(parent)
 		.and_then(|()| crate::util::set_mode(&dir(&cfg), 0o700))
 		.map_err(|e| Error::Internal(format!("uploads: {e}")))?;
-	crate::util::body_to_file(body, &path)
-		.await
-		.map_err(|e| Error::Invalid(format!("upload: {e}")))?;
-	let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-	if size > MAX_FILE {
+	if let Err(e) = crate::util::body_to_file(body, &path, MAX_FILE).await {
 		let _ = std::fs::remove_dir_all(parent);
-		return Err(Error::Invalid(
-			"files for the agent are up to 100 MB, put bigger ones into a \
-			group's files"
-				.into(),
-		));
+		return Err(Error::Invalid(format!(
+			"upload: {e}; files for the agent are up to 100 MB, put bigger \
+			ones into a group's files"
+		)));
 	}
+	let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 	Ok(Json(Attachment {
 		id,
 		name: q.name,

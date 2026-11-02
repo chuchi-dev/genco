@@ -46,9 +46,11 @@ pub const UPLOAD_STALL: std::time::Duration =
 
 /// Writes an upload to `path`; a client that sends nothing for a minute
 /// or breaks off is an error, and what arrived goes.
+/// More than `max` bytes is an error too.
 pub async fn body_to_file(
 	body: axum::body::Body,
 	path: &Path,
+	max: u64,
 ) -> std::io::Result<()> {
 	use futures::StreamExt as _;
 	use tokio::io::AsyncWriteExt as _;
@@ -56,6 +58,7 @@ pub async fn body_to_file(
 	let written = async {
 		let mut file = tokio::fs::File::create(path).await?;
 		let mut stream = body.into_data_stream();
+		let mut size = 0;
 		loop {
 			let next = tokio::time::timeout(UPLOAD_STALL, stream.next())
 				.await
@@ -63,8 +66,15 @@ pub async fn body_to_file(
 					std::io::Error::other("nothing came for a minute")
 				})?;
 			let Some(chunk) = next else { break };
-			file.write_all(&chunk.map_err(std::io::Error::other)?)
-				.await?;
+			let chunk = chunk.map_err(std::io::Error::other)?;
+			size += chunk.len() as u64;
+			if size > max {
+				return Err(std::io::Error::other(format!(
+					"bigger than {} MB",
+					max >> 20
+				)));
+			}
+			file.write_all(&chunk).await?;
 		}
 		file.flush().await
 	}

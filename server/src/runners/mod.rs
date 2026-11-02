@@ -301,9 +301,14 @@ async fn delete_route(
 	Ok(Json(()))
 }
 
-/// What a CI build has to match, for any API token.
-async fn deploy_target(_token: crate::tokens::ApiToken) -> Json<Target> {
-	Json(target().await)
+/// What a CI build has to match, for the admins' API tokens.
+async fn deploy_target(
+	token: crate::tokens::ApiToken,
+) -> crate::error::Result<Json<Target>> {
+	if token.peer.is_some() {
+		return Err(crate::error::Error::Forbidden);
+	}
+	Ok(Json(target().await))
 }
 
 pub fn routes() -> Router<AppState> {

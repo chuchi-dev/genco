@@ -410,4 +410,5 @@ admin into clicking in it. A dashboard that shows it in a frame is
 allowed with `frame-ancestors = ["https://dashboard.example.ch"]` in
 `/etc/genco/config.toml` (https addresses only), then `systemctl
 restart genco`. The login inside the frame is separate from the one in a
-browser tab.
+browser tab. A listed site (or a bug in it) can make an admin click in
+the framed panel, so list only one host you trust.

@@ -249,7 +249,9 @@ async fn import_route(
 ) -> Result<Json<i64>> {
 	let (id, lock) = create(&db.conn(), database_id, &authed.user.name)?;
 	let path = upload_path(id);
-	if let Err(e) = crate::util::body_to_file(body, &path).await {
+	if let Err(e) =
+		crate::util::body_to_file(body, &path, MAX_UPLOAD as u64).await
+	{
 		set_status(&db, id, "failed");
 		return Err(Error::Invalid(format!("upload: {e}")));
 	}

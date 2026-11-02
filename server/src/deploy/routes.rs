@@ -111,7 +111,7 @@ pub(super) async fn upload_deploy(
 		id,
 		armed: true,
 	};
-	let written = util::body_to_file(body, &path).await;
+	let written = util::body_to_file(body, &path, 2 << 30).await;
 	if let Err(e) = written {
 		return Err(Error::Invalid(format!("upload: {e}")));
 	}

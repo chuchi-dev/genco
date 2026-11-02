@@ -271,18 +271,24 @@ struct ChangeReq {
 	webhook_url: String,
 	#[serde(default)]
 	webhook_all: bool,
+	/// the admin's, when the webhook changes: genco sends the key there
+	#[serde(default)]
+	password: String,
 }
 
 async fn change_route(
-	_authed: Authed,
+	authed: Authed,
 	State(db): State<Db>,
 	Path(id): Path<i64>,
 	Json(req): Json<ChangeReq>,
 ) -> Result<Json<()>> {
-	let conn = db.conn();
-	let peer = get(&conn, id)?;
+	let peer = get(&db.conn(), id)?;
 	let url = req.webhook_url.trim();
 	check(&peer.name, url)?;
+	if url != peer.webhook_url {
+		crate::users::verify_password(&db, &authed.user, &req.password).await?;
+	}
+	let conn = db.conn();
 	conn.execute(
 		"UPDATE peers SET webhook_url = ?1, webhook_all = ?2 WHERE id = ?3",
 		params![url, req.webhook_all, id],

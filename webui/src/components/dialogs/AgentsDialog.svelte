@@ -63,7 +63,18 @@
 
 	async function save() {
 		if (editing) {
-			await post(`/peers/${editing}`, form);
+			// genco sends the key to the webhook: a new one needs the password
+			const old = peers.find(p => p.id === editing)?.webhookUrl;
+			let password = '';
+			if (form.webhookUrl.trim() !== old) {
+				const pw = await message.password(
+					'Change Webhook',
+					'send the key to another webhook',
+				);
+				if (pw === null) return;
+				password = pw;
+			}
+			await post(`/peers/${editing}`, { ...form, password });
 		} else {
 			const password = await message.password(
 				'New AI Agent',
