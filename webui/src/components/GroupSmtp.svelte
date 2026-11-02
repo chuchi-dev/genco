@@ -54,7 +54,6 @@
 	@use 'styles/win' as *;
 
 	.hint {
-		color: $hint;
 		margin: 0 0 6px;
 	}
 </style>

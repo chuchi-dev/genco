@@ -104,6 +104,17 @@ pub fn matching<T: Clone>(items: &[T], keep: impl Fn(&T) -> bool) -> Vec<T> {
 	items.iter().filter(|x| keep(x)).cloned().collect()
 }
 
+/// The first line of `text`, cut at `max` characters with "...", for
+/// titles and subjects.
+pub fn first_line(text: &str, max: usize) -> String {
+	let line = text.lines().next().unwrap_or("");
+	if line.chars().count() > max {
+		line.chars().take(max - 3).collect::<String>() + "..."
+	} else {
+		line.into()
+	}
+}
+
 /// `n` random bytes as hex, for tokens.
 pub fn random_hex(n: usize) -> String {
 	(0..n)

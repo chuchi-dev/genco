@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { get, newest, type Conversation } from '@/lib/api';
+	import { type Conversation } from '@/lib/api';
+	import { messageSearch } from '@/lib/conversations.svelte';
 	import { formatRecent } from '@/lib/format';
 
 	// picks a conversation of the agent: a field like a drop-down list that
@@ -19,18 +20,18 @@
 
 	let open = $state(false);
 	let query = $state('');
-	// ids whose messages contain the query, from the server
-	let found = $state<number[]>([]);
 	let active = $state(0);
 	let list: HTMLElement | undefined = $state();
 
 	const q = $derived(query.trim().toLowerCase());
+	// conversations whose messages contain the query, from the server
+	const found = messageSearch(() => q);
 	const shown = $derived(
 		q
 			? conversations.filter(
 					c =>
 						c.title.toLowerCase().includes(q) ||
-						found.includes(c.id),
+						found.ids.includes(c.id),
 				)
 			: conversations,
 	);
@@ -38,20 +39,6 @@
 	const reports = $derived(shown.filter(c => c.kind !== 'chat'));
 	// in the order they are listed, for the arrow keys
 	const ordered = $derived([...chats, ...reports]);
-
-	const search = newest();
-	$effect(() => {
-		const text = q;
-		found = [];
-		if (text.length < 3) return;
-		const t = setTimeout(() => {
-			search(
-				get('/conversations/search?q=' + encodeURIComponent(text)),
-				(ids: number[]) => (found = ids),
-			);
-		}, 250);
-		return () => clearTimeout(t);
-	});
 
 	// the highlight starts at the open conversation, or on top; only when
 	// it opens or the search changes, not on every status change

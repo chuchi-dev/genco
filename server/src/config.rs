@@ -41,6 +41,11 @@ fn default_model() -> String {
 }
 
 impl Config {
+	/// A link into the panel, `None` without a domain.
+	pub fn panel_url(&self, path: &str) -> Option<String> {
+		self.domain.as_ref().map(|d| format!("https://{d}{path}"))
+	}
+
 	pub fn load(path: &Path) -> Result<Self, String> {
 		let ctn = std::fs::read_to_string(path)
 			.map_err(|e| format!("failed to read {}: {e}", path.display()))?;

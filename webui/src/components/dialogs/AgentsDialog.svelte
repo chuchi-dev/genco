@@ -390,14 +390,6 @@
 	}
 
 	.check {
-		display: flex;
-		gap: 6px;
-		align-items: center;
 		white-space: normal;
-
-		input {
-			box-shadow: none;
-			padding: 0;
-		}
 	}
 </style>

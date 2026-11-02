@@ -225,10 +225,7 @@ pub fn create_kind(
 	first: &str,
 	kind: Kind,
 ) -> rusqlite::Result<i64> {
-	let mut title: String = first.lines().next().unwrap_or("").into();
-	if title.chars().count() > 60 {
-		title = title.chars().take(57).collect::<String>() + "...";
-	}
+	let title = crate::util::first_line(first, 60);
 	conn.execute(
 		"INSERT INTO conversations (title, status, kind, created_at, updated_at)
 		VALUES (?1, 'idle', ?2, ?3, ?3)",

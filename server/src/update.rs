@@ -451,7 +451,7 @@ async fn record(
 			format!("the update to {to} failed")
 		},
 		text: format!("{message}\n\nThe log is {DIR}/update.log."),
-		url: cfg.domain.as_ref().map(|d| format!("https://{d}/")),
+		url: cfg.panel_url("/"),
 		proposal: None,
 	};
 	crate::notify::send(cfg, &db, notice).await;

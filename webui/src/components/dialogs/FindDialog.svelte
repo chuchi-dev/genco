@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { get, newest } from '@/lib/api';
-	import { conversations } from '@/lib/conversations.svelte';
+	import { get } from '@/lib/api';
+	import { conversations, messageSearch } from '@/lib/conversations.svelte';
 	import { dialogs, type DialogKind } from '@/lib/dialogs.svelte';
 	import { GROUP_TABS } from '@/lib/groupTabs';
 	import { tree } from '@/lib/tree.svelte';
@@ -43,8 +43,6 @@
 	let query = $state('');
 	let selected = $state<string | null>(null);
 	let secrets = $state<Secret[]>([]);
-	// conversations whose messages contain the query, from the server
-	let found = $state<number[]>([]);
 
 	get('/secrets')
 		.then(s => (secrets = s))
@@ -82,19 +80,7 @@
 	const has = (...texts: (string | null | undefined)[]) =>
 		texts.some(t => t?.toLowerCase().includes(q));
 
-	const search = newest();
-	$effect(() => {
-		const text = q;
-		found = [];
-		if (text.length < 3) return;
-		const t = setTimeout(() => {
-			search(
-				get('/conversations/search?q=' + encodeURIComponent(text)),
-				(ids: number[]) => (found = ids),
-			);
-		}, 250);
-		return () => clearTimeout(t);
-	});
+	const found = messageSearch(() => q);
 
 	const hits = $derived.by(() => {
 		if (!q) return [];
@@ -237,7 +223,7 @@
 				});
 
 		for (const c of conversations.list)
-			if (has(c.title) || found.includes(c.id))
+			if (has(c.title) || found.ids.includes(c.id))
 				out.push({
 					key: 'cv' + c.id,
 					icon: 'agent',

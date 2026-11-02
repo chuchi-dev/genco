@@ -143,7 +143,6 @@
 	}
 
 	.hint {
-		color: $hint;
 		margin: 4px 0 0;
 	}
 </style>

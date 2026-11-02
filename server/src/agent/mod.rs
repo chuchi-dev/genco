@@ -512,8 +512,7 @@ impl Runner {
 					first.unwrap_or("")
 				)
 			});
-		let url = (self.0.cfg.domain.as_ref())
-			.map(|domain| format!("https://{domain}/?chat={id}"));
+		let url = self.0.cfg.panel_url(&format!("/?chat={id}"));
 		let notice = crate::notify::Notice {
 			kind: "report",
 			attention,

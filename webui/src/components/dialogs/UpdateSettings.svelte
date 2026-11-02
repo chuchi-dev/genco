@@ -212,19 +212,10 @@
 	}
 
 	.check {
-		display: flex;
-		gap: 6px;
-		align-items: center;
 		margin-bottom: 10px;
-
-		input {
-			box-shadow: none;
-			padding: 0;
-		}
 	}
 
 	.hint {
-		color: $hint;
 		margin: 0 0 8px;
 	}
 

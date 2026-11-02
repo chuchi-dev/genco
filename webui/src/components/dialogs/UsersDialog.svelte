@@ -133,7 +133,6 @@
 	}
 
 	.error {
-		color: $error;
 		margin: 8px 0 0;
 	}
 </style>

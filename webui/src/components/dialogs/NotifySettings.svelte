@@ -59,17 +59,6 @@
 		margin: 0 0 8px;
 	}
 
-	.check {
-		display: flex;
-		gap: 6px;
-		align-items: center;
-
-		input {
-			box-shadow: none;
-			padding: 0;
-		}
-	}
-
 	fieldset {
 		margin-top: 10px;
 	}

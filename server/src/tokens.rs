@@ -76,6 +76,12 @@ fn list(conn: &Connection) -> rusqlite::Result<Vec<Token>> {
 	.collect()
 }
 
+/// A new token or key, shown once; only its hash is kept (an agent's key
+/// is kept too, for its webhook).
+pub fn new_token() -> String {
+	format!("genco_{}", crate::util::random_hex(24))
+}
+
 /// Returns the token, it is shown only this once.
 fn create(
 	conn: &Connection,
@@ -90,7 +96,7 @@ fn create(
 		check_scope(s)?;
 	}
 
-	let token = format!("genco_{}", crate::util::random_hex(24));
+	let token = new_token();
 	conn.execute(
 		"INSERT INTO api_tokens (name, token_hash, scopes, created_at,
 		user_id) VALUES (?1, ?2, ?3, ?4, ?5)",

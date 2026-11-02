@@ -90,10 +90,6 @@ pub fn by_key(conn: &Connection, key: &str) -> Result<Option<(i64, String)>> {
 	Ok(found)
 }
 
-fn new_key() -> String {
-	format!("genco_{}", crate::util::random_hex(24))
-}
-
 fn check(name: &str, webhook_url: &str) -> Result<()> {
 	if name.trim().is_empty() {
 		return Err(Error::Invalid("the agent needs a name".into()));
@@ -121,7 +117,7 @@ fn create(
 	key: Option<String>,
 ) -> Result<(i64, String)> {
 	check(name, webhook_url)?;
-	let key = key.unwrap_or_else(new_key);
+	let key = key.unwrap_or_else(tokens::new_token);
 	let res = conn.execute(
 		"INSERT INTO peers (name, key, key_hash, webhook_url, webhook_all,
 		created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -134,17 +130,8 @@ fn create(
 			now()
 		],
 	);
-	match res {
-		Err(rusqlite::Error::SqliteFailure(e, _))
-			if e.code == rusqlite::ErrorCode::ConstraintViolation =>
-		{
-			Err(Error::Invalid(format!("an agent {} exists already", name)))
-		}
-		r => {
-			r?;
-			Ok((conn.last_insert_rowid(), key))
-		}
-	}
+	res?;
+	Ok((conn.last_insert_rowid(), key))
 }
 
 /// The webhook of genco 0.2 (Settings → Notifications) becomes an agent
@@ -309,7 +296,7 @@ async fn new_key_route(
 	Json(req): Json<PasswordReq>,
 ) -> Result<Json<String>> {
 	crate::users::verify_password(&db, &authed.user, &req.password).await?;
-	let key = new_key();
+	let key = tokens::new_token();
 	let changed = db.conn().execute(
 		"UPDATE peers SET key = ?1, key_hash = ?2 WHERE id = ?3",
 		params![key, tokens::hash(&key), id],

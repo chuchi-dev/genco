@@ -178,16 +178,6 @@ fn wrap(text: &str) -> String {
 	format!("<proposal>\n{text}\n</proposal>")
 }
 
-/// The first line, shortened for a title or a subject.
-fn first_line(text: &str) -> String {
-	let line = text.lines().next().unwrap_or("");
-	if line.chars().count() > 60 {
-		line.chars().take(57).collect::<String>() + "..."
-	} else {
-		line.into()
-	}
-}
-
 /// Tells the proposing agent, errors are logged.
 async fn tell(cfg: &Config, db: &Db, p: &Proposal, text: String) {
 	let Ok(peer) = peers::get(&db.conn(), p.peer_id) else {
@@ -199,7 +189,7 @@ async fn tell(cfg: &Config, db: &Db, p: &Proposal, text: String) {
 	let n = Notice {
 		kind: "proposal",
 		attention: false,
-		title: first_line(&p.text),
+		title: crate::util::first_line(&p.text, 60),
 		text,
 		url: (cfg.domain.as_ref())
 			.zip(p.conversation_id)
@@ -280,18 +270,17 @@ struct Created {
 
 /// Mails the proposal to its approver or every admin, errors are logged.
 async fn mail(cfg: &Config, db: &Db, id: i64) {
-	let found = (|| -> Result<(Proposal, Vec<String>)> {
-		let conn = db.conn();
-		let p = get_one(&conn, id)?;
+	let found = (|| -> Result<Proposal> {
+		let p = get_one(&db.conn(), id)?;
+		Ok(p)
+	})()
+	.and_then(|p| {
 		let to = match &p.approver_email {
 			Some(email) => vec![email.clone()],
-			None => crate::users::list(&conn)?
-				.into_iter()
-				.map(|u| u.email)
-				.collect(),
+			None => crate::mail::admins(db)?,
 		};
 		Ok((p, to))
-	})();
+	});
 	let (p, to) = match found {
 		Ok(found) => found,
 		Err(e) => {
@@ -301,9 +290,8 @@ async fn mail(cfg: &Config, db: &Db, id: i64) {
 	};
 
 	let link = cfg
-		.domain
-		.as_ref()
-		.map(|d| format!("https://{d}/agents\n\n"))
+		.panel_url("/agents")
+		.map(|url| format!("{url}\n\n"))
 		.unwrap_or_default();
 	let body = format!(
 		"The AI agent {} proposes this task for genco's agent:\n\n{}\n\n\
@@ -311,7 +299,11 @@ async fn mail(cfg: &Config, db: &Db, id: i64) {
 		{link}Nothing happens without an approval. It expires in 7 days.\n",
 		p.from, p.text
 	);
-	let subject = format!("Proposal from {}: {}", p.from, first_line(&p.text));
+	let subject = format!(
+		"Proposal from {}: {}",
+		p.from,
+		crate::util::first_line(&p.text, 60)
+	);
 	if let Err(e) = crate::mail::send(cfg, &to, &subject, &body).await {
 		tracing::error!("mail about proposal {id}: {e}");
 	}
@@ -443,7 +435,7 @@ async fn approve(
 		let p = get_one(&conn, id)?;
 		let c = convs::create(
 			&conn,
-			&format!("{}: {}", p.from, first_line(&p.text)),
+			&format!("{}: {}", p.from, crate::util::first_line(&p.text, 60)),
 		)?;
 		conn.execute(
 			"UPDATE proposals SET conversation_id = ?1 WHERE id = ?2",
