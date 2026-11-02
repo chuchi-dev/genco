@@ -65,7 +65,8 @@ with a password. Root may not log in over ssh with a password.
    It asks for:
    - the panel's domain;
    - an email address for Let's Encrypt;
-   - the Anthropic API key (leave it empty to run without the agent);
+   - the agent's API key: Anthropic's, or (left empty) OpenRouter's; one
+     of them is needed, the agent runs Claude Opus 5.5;
    - the first admin's email, name and password.
 
    Then `genco setup` does the rest:

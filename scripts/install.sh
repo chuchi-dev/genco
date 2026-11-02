@@ -6,6 +6,8 @@
 # It asks for what it needs, or takes it from the environment:
 #   GENCO_DOMAIN  the panel's domain, it has to point to this server
 #   GENCO_EMAIL   for Let's Encrypt
+#   GENCO_ANTHROPIC_KEY or GENCO_OPENROUTER_KEY  the agent's key (one of
+#                 them; the other empty), Claude Opus 5.5
 #   GENCO_BINARY  a local genco binary instead of the latest release
 set -euo pipefail
 
@@ -14,7 +16,7 @@ RELEASE=https://github.com/chuchi-dev/genco/releases/latest/download
 # piped into bash, the questions read from the terminal
 ask() {
 	local var=$1 prompt=$2 secret=${3:-}
-	# set, even empty (GENCO_ANTHROPIC_KEY= skips the agent's key)
+	# set, even empty (GENCO_ANTHROPIC_KEY= goes on to OpenRouter)
 	[ -n "${!var+x}" ] && return
 	# without a terminal /dev/tty exists but doesn't open
 	{ true </dev/tty; } 2>/dev/null || { echo "set $var" >&2; exit 1; }
@@ -66,14 +68,21 @@ main() {
 		ask GENCO_DOMAIN "Domain of the panel (pointing to this server)"
 		ask GENCO_EMAIL "Your email (for Let's Encrypt)"
 	fi
+	# the agent (Claude Opus 5.5) needs one of the two keys
 	if ! grep -qE '^(anthropic|openrouter)-key' /etc/genco/config.toml; then
-		ask GENCO_ANTHROPIC_KEY "Anthropic API key for the agent (empty to skip)" secret
-		if [ -n "$GENCO_ANTHROPIC_KEY" ]; then
-			# it goes into TOML between quotes
-			[[ "$GENCO_ANTHROPIC_KEY" =~ ^[A-Za-z0-9_-]+$ ]] ||
-				{ echo "that doesn't look like an API key" >&2; exit 1; }
-			echo "anthropic-key = \"$GENCO_ANTHROPIC_KEY\"" >>/etc/genco/config.toml
+		echo "==> the agent's key: Anthropic's, or else OpenRouter's"
+		ask GENCO_ANTHROPIC_KEY "Anthropic API key (empty for OpenRouter)" secret
+		key=anthropic-key value=$GENCO_ANTHROPIC_KEY
+		if [ -z "$value" ]; then
+			ask GENCO_OPENROUTER_KEY "OpenRouter API key" secret
+			key=openrouter-key value=$GENCO_OPENROUTER_KEY
 		fi
+		[ -n "$value" ] ||
+			{ echo "the agent needs an Anthropic or an OpenRouter key" >&2; exit 1; }
+		# it goes into TOML between quotes
+		[[ "$value" =~ ^[A-Za-z0-9_-]+$ ]] ||
+			{ echo "that doesn't look like an API key" >&2; exit 1; }
+		echo "$key = \"$value\"" >>/etc/genco/config.toml
 	fi
 
 	genco setup ${GENCO_DOMAIN:+--domain "$GENCO_DOMAIN"} \

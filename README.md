@@ -68,7 +68,8 @@ curl -fsSL https://github.com/chuchi-dev/genco/releases/latest/download/install.
 ```
 
 It asks for the panel's domain, an email for Let's Encrypt, an Anthropic
-API key (the agent; the panel works without one) and the first admin.
+or an OpenRouter API key for the agent (Claude Opus 5.5) and the first
+admin.
 `genco setup` then hardens ssh and the firewall, installs nginx, PHP,
 Node, MariaDB, Postfix, Dovecot, Rspamd, restic and SnappyMail, and
 starts genco.
