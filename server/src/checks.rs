@@ -373,7 +373,11 @@ fn jobs(conn: &Connection) -> rusqlite::Result<Vec<Problem>> {
 }
 
 /// Every minute, the first round a minute after the start.
-pub fn spawn(db: Db, runner: Runner) {
+pub fn spawn(
+	cfg: std::sync::Arc<crate::config::Config>,
+	db: Db,
+	runner: Runner,
+) {
 	tokio::spawn(async move {
 		let mut checker = Checker::default();
 		let mut tick = tokio::time::interval(Duration::from_secs(60));
@@ -384,6 +388,7 @@ pub fn spawn(db: Db, runner: Runner) {
 			crate::activity::prune(&db.conn());
 			crate::routines::due(&db, &runner).await;
 			crate::update::due(&db).await;
+			crate::proposals::due_mails(&cfg, &db).await;
 		}
 	});
 }

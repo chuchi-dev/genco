@@ -326,8 +326,9 @@ export type Proposal = {
 	id: number;
 	from: string;
 	text: string;
-	/** the admin who decides ("name <email>"), null for any */
+	/** the admin who decides, null for any */
 	approver: string | null;
+	approverEmail: string | null;
 	status: 'pending' | 'approved' | 'answered' | 'rejected' | 'expired';
 	decidedBy: string | null;
 	conversationId: number | null;
@@ -388,6 +389,7 @@ export function snapshotKind(s: Snapshot): string {
 export type Event =
 	| { type: 'hello'; boot: number }
 	| { type: 'tree' }
+	| { type: 'proposals' }
 	| { type: 'conversation'; conversation: Conversation }
 	| { type: 'message'; message: Message }
 	| { type: 'deploy'; deploy: Deploy }

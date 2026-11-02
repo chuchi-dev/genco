@@ -382,6 +382,9 @@ const MIGRATIONS: &[&str] = &[
 		answered_at INTEGER
 	);
 "#,
+	r#"
+	ALTER TABLE proposals ADD COLUMN mail_at INTEGER;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

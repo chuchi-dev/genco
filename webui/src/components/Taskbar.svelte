@@ -4,6 +4,8 @@
 	import type { MenuEntry } from './win/Menu.svelte';
 	import { conversations } from '@/lib/conversations.svelte';
 	import { connection } from '@/lib/events.svelte';
+	import { dialogs } from '@/lib/dialogs.svelte';
+	import { proposals } from '@/lib/proposals.svelte';
 	import { formatHour } from '@/lib/format';
 
 	let {
@@ -24,6 +26,7 @@
 	} = $props();
 
 	const attention = $derived(conversations.attention);
+	const waiting = $derived(proposals.mine);
 
 	let time = $state(formatHour(Date.now()));
 
@@ -61,6 +64,18 @@
 				onclick={() => onattention(attention[0].id)}
 			>
 				⚠ {attention.length}
+			</button>
+		{/if}
+		{#if waiting.length}
+			<button
+				class="approve"
+				title={waiting
+					.map(p => `${p.from}: ${p.text.split('\n')[0]}`)
+					.join('\n')}
+				onclick={() => (dialogs.open = 'agents')}
+			>
+				<Icon name="agent" />
+				{waiting.length} to approve
 			</button>
 		{/if}
 		{#if connection.lost}
@@ -168,6 +183,17 @@
 			height: auto;
 			padding: 0;
 			color: $error;
+			font-weight: bold;
+		}
+
+		.approve {
+			display: flex;
+			gap: 4px;
+			align-items: center;
+			box-shadow: none;
+			background: none;
+			height: auto;
+			padding: 0;
 			font-weight: bold;
 		}
 

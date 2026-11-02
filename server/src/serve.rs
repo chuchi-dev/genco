@@ -143,7 +143,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 	if runner.has_llm() {
 		runner.onboard();
 	}
-	checks::spawn(db.clone(), runner.clone());
+	checks::spawn(cfg.clone(), db.clone(), runner.clone());
 	let stats = stats::StatsDb::open(&cfg.data_dir.join("stats.db"))?;
 	stats::spawn(db.clone(), stats.clone());
 

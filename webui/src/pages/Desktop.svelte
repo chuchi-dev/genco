@@ -18,6 +18,7 @@
 	import Agent from '@/components/Agent.svelte';
 	import Explorer from '@/components/Explorer.svelte';
 	import Taskbar from '@/components/Taskbar.svelte';
+	import { proposals } from '@/lib/proposals.svelte';
 	import Dialogs from '@/components/Dialogs.svelte';
 
 	/** The explorer around the page of the route. */
@@ -76,9 +77,14 @@
 		}
 	}
 
+	// the taskbar shows the proposals waiting for this admin
+	proposals.load().catch(() => {});
+
 	$effect(() =>
 		listen(ev => {
 			if (ev.type === 'tree' || ev.type === 'hello') tree.load();
+			if (ev.type === 'proposals' || ev.type === 'hello')
+				proposals.load().catch(() => {});
 		}),
 	);
 

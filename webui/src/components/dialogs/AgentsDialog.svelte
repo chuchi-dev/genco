@@ -2,6 +2,7 @@
 	import OneTimeSecret from '../OneTimeSecret.svelte';
 	import { formatTime, get, post, type Peer, type Proposal } from '@/lib/api';
 	import { message, confirmDelete } from '@/lib/dialogs.svelte';
+	import { proposals } from '@/lib/proposals.svelte';
 	import { setChat } from '@/lib/router.svelte';
 	import Button from '../win/Button.svelte';
 	import Dialog from '../win/Dialog.svelte';
@@ -21,7 +22,6 @@
 	let tab = $state('agents');
 
 	let peers = $state<Peer[]>([]);
-	let proposals = $state<Proposal[]>([]);
 	let selected = $state<number | null>(null);
 	let selectedProposal = $state<number | null>(null);
 	// the form: null is the list, 0 a new agent
@@ -33,14 +33,13 @@
 	let error = $state<string | null>(null);
 
 	const peer = $derived(peers.find(p => p.id === selected));
-	const proposal = $derived(proposals.find(p => p.id === selectedProposal));
+	const proposal = $derived(
+		proposals.list.find(p => p.id === selectedProposal),
+	);
 
 	async function load() {
 		try {
-			[peers, proposals] = await Promise.all([
-				get('/peers'),
-				get('/proposals'),
-			]);
+			[peers] = await Promise.all([get('/peers'), proposals.load()]);
 			error = null;
 		} catch (e: any) {
 			error = e.message;
@@ -48,7 +47,7 @@
 	}
 	// opens on the proposals when one waits (the link of the mail)
 	load().then(() => {
-		if (proposals.some(p => p.status === 'pending')) tab = 'proposals';
+		if (proposals.mine.length) tab = 'proposals';
 	});
 
 	function edit(p: Peer | null) {
@@ -143,11 +142,6 @@
 		await load();
 	}
 
-	// the name of "name <email>", the email shows in the details
-	function approverName(p: Proposal): string {
-		return p.approver?.replace(/ <.*>$/, '') ?? 'any admin';
-	}
-
 	const STATUS: Record<Proposal['status'], string> = {
 		pending: 'waiting for approval',
 		approved: 'the agent works on it',
@@ -169,8 +163,8 @@
 			code: `${auth} ${location.origin}/api/databases/<name>/dump -o db.sql.gz`,
 		},
 		{
-			text: 'Propose a task to the server agent, the admin of "approver" approves it (empty: any admin):',
-			code: `${auth} -H "Content-Type: application/json" \\\n  -d '{"text": "…", "approver": "admin@example.ch"}' \\\n  ${location.origin}/api/proposals`,
+			text: 'Propose a task to the server agent: the admin of "approver" decides (left out: any admin), the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
+			code: `${auth} -H "Content-Type: application/json" \\\n  -d '{"text": "…", "approver": "admin@example.ch", "mailDelay": 10}' \\\n  ${location.origin}/api/proposals`,
 		},
 		{
 			text: 'Its status and answer (the webhook gets the answer too):',
@@ -282,7 +276,7 @@
 		</div>
 		<div class="tab" hidden={tab !== 'proposals'}>
 			<ListView
-				items={proposals}
+				items={proposals.list}
 				key={p => p.id}
 				bind:selected={selectedProposal}
 				columns={[
@@ -299,7 +293,7 @@
 				{#snippet row(p)}
 					<td>{p.from}</td>
 					<td class="task">{p.text.split('\n')[0]}</td>
-					<td>{approverName(p)}</td>
+					<td>{p.approver ?? 'any admin'}</td>
 					<td>{STATUS[p.status]}</td>
 					<td>{formatTime(p.createdAt)}</td>
 				{/snippet}
@@ -309,8 +303,8 @@
 				<pre class="code selectable">{proposal.text}</pre>
 				{#if proposal.status === 'pending'}
 					<p class="hint">
-						Waits for {proposal.approver ?? 'any admin'} to approve or
-						reject it.
+						Waits for {proposal.approverEmail ?? 'any admin'} to approve
+						or reject it.
 					</p>
 				{/if}
 				{#if proposal.decidedBy}

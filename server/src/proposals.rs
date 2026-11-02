@@ -1,7 +1,8 @@
 //! Tasks an AI agent (peers.rs) proposes to genco's agent. A proposal waits
 //! until an admin approves it, then it becomes a conversation. The agent
 //! may name the admin who decides (only they get the mail and may decide),
-//! otherwise every admin gets the mail and any decides. When the agent is done, its last answer goes back to the
+//! otherwise every admin gets the mail and any decides. With a delay the
+//! mail goes only if nobody decided in the panel meanwhile. When the agent is done, its last answer goes back to the
 //! proposing agent's webhook; the agent can also poll the proposal.
 
 use std::sync::Arc;
@@ -25,6 +26,8 @@ use crate::peers;
 use crate::tokens::{self, ApiToken};
 use crate::users::Authed;
 
+/// The longest delay of the mail, in minutes.
+const MAX_MAIL_DELAY: i64 = 24 * 60;
 /// A proposal nobody decided on in this time expires.
 const VALID_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_TEXT: usize = 20_000;
@@ -36,8 +39,9 @@ pub struct Proposal {
 	/// the agent's name
 	pub from: String,
 	pub text: String,
-	/// the admin who decides, `None` for any
+	/// the name of the admin who decides, `None` for any
 	pub approver: Option<String>,
+	pub approver_email: Option<String>,
 	/// pending, approved (the agent works on it), answered, rejected,
 	/// expired
 	pub status: String,
@@ -71,10 +75,8 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Proposal> {
 		answer: row.get(6)?,
 		created_at,
 		peer_id: row.get(8)?,
-		approver: row
-			.get::<_, Option<String>>(9)?
-			.zip(row.get::<_, Option<String>>(10)?)
-			.map(|(name, email)| format!("{name} <{email}>")),
+		approver: row.get(9)?,
+		approver_email: row.get(10)?,
 		approver_id: row.get(11)?,
 	})
 }
@@ -146,8 +148,8 @@ fn decide(
 		)));
 	}
 	let changed = conn.execute(
-		"UPDATE proposals SET status = ?1, decided_by = ?2, decided_at = ?3
-		WHERE id = ?4 AND status = 'pending'",
+		"UPDATE proposals SET status = ?1, decided_by = ?2, decided_at = ?3,
+		mail_at = NULL WHERE id = ?4 AND status = 'pending'",
 		params![status, by.name, now(), id],
 	)?;
 	if changed != 1 {
@@ -238,11 +240,16 @@ pub async fn answer(cfg: &Config, db: &Db, conversation: i64, failed: bool) {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProposeReq {
 	text: String,
 	/// the email of the admin who decides, empty for any
 	#[serde(default)]
 	approver: String,
+	/// minutes the admins have to decide in the panel before the mail
+	/// goes, 0 mails right away
+	#[serde(default)]
+	mail_delay: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -251,30 +258,26 @@ struct Created {
 	status: &'static str,
 }
 
-/// An agent proposes a task, its approver or every admin gets a mail.
-async fn propose(
-	token: ApiToken,
-	State(cfg): State<Arc<Config>>,
-	State(db): State<Db>,
-	Json(req): Json<ProposeReq>,
-) -> Result<Json<Created>> {
-	token.require(tokens::PROPOSE)?;
-	let peer = token.peer.ok_or(Error::Forbidden)?;
-	let (id, to) = {
+/// Mails the proposal to its approver or every admin, errors are logged.
+async fn mail(cfg: &Config, db: &Db, id: i64) {
+	let found = (|| -> Result<(Proposal, Vec<String>)> {
 		let conn = db.conn();
-		let approver_id = match req.approver.trim() {
-			"" => None,
-			email => Some(approver(&conn, email)?),
-		};
-		let id = insert(&conn, peer, &req.text, approver_id)?;
-		let to = match get_one(&conn, id)?.approver_id {
-			Some(a) => vec![crate::users::by_id(&conn, a)?.email],
+		let p = get_one(&conn, id)?;
+		let to = match &p.approver_email {
+			Some(email) => vec![email.clone()],
 			None => crate::users::list(&conn)?
 				.into_iter()
 				.map(|u| u.email)
 				.collect(),
 		};
-		(id, to)
+		Ok((p, to))
+	})();
+	let (p, to) = match found {
+		Ok(found) => found,
+		Err(e) => {
+			tracing::error!("mail about proposal {id}: {e}");
+			return;
+		}
 	};
 
 	let link = cfg
@@ -286,16 +289,78 @@ async fn propose(
 		"The AI agent {} proposes this task for genco's agent:\n\n{}\n\n\
 		To approve or reject it, open Start → AI Agents → Proposals:\n\n\
 		{link}Nothing happens without an approval. It expires in 7 days.\n",
-		token.name,
-		req.text.trim()
+		p.from, p.text
 	);
-	let subject = format!(
-		"Proposal from {}: {}",
-		token.name,
-		first_line(req.text.trim())
-	);
-	if let Err(e) = crate::mail::send(&cfg, &to, &subject, &body).await {
+	let subject = format!("Proposal from {}: {}", p.from, first_line(&p.text));
+	if let Err(e) = crate::mail::send(cfg, &to, &subject, &body).await {
 		tracing::error!("mail about proposal {id}: {e}");
+	}
+}
+
+/// Every minute: the mails of proposals whose delay is over and that
+/// nobody decided on.
+pub async fn due_mails(cfg: &Config, db: &Db) {
+	let due = (|| -> rusqlite::Result<Vec<i64>> {
+		let conn = db.conn();
+		let mut stmt = conn.prepare(
+			"SELECT id FROM proposals
+			WHERE mail_at IS NOT NULL AND mail_at <= ?1",
+		)?;
+		let ids = stmt
+			.query_map([now()], |r| r.get(0))?
+			.collect::<rusqlite::Result<Vec<i64>>>()?;
+		conn.execute(
+			"UPDATE proposals SET mail_at = NULL
+			WHERE mail_at IS NOT NULL AND mail_at <= ?1",
+			[now()],
+		)?;
+		Ok(ids)
+	})();
+	match due {
+		Ok(ids) => {
+			for id in ids {
+				mail(cfg, db, id).await;
+			}
+		}
+		Err(e) => tracing::error!("proposal mails: {e}"),
+	}
+}
+
+/// An agent proposes a task; its approver or every admin gets a mail,
+/// after `mailDelay` minutes if nobody decided by then.
+async fn propose(
+	token: ApiToken,
+	State(cfg): State<Arc<Config>>,
+	State(db): State<Db>,
+	State(events): State<Events>,
+	Json(req): Json<ProposeReq>,
+) -> Result<Json<Created>> {
+	token.require(tokens::PROPOSE)?;
+	let peer = token.peer.ok_or(Error::Forbidden)?;
+	if !(0..=MAX_MAIL_DELAY).contains(&req.mail_delay) {
+		return Err(Error::Invalid(format!(
+			"mailDelay is 0 to {MAX_MAIL_DELAY} minutes"
+		)));
+	}
+	let id = {
+		let conn = db.conn();
+		let approver_id = match req.approver.trim() {
+			"" => None,
+			email => Some(approver(&conn, email)?),
+		};
+		let id = insert(&conn, peer, &req.text, approver_id)?;
+		if req.mail_delay > 0 {
+			conn.execute(
+				"UPDATE proposals SET mail_at = ?1 WHERE id = ?2",
+				params![now() + req.mail_delay * 60_000, id],
+			)?;
+		}
+		id
+	};
+	events.send(Event::Proposals);
+
+	if req.mail_delay == 0 {
+		mail(&cfg, &db, id).await;
 	}
 	Ok(Json(Created {
 		id,
@@ -382,6 +447,7 @@ async fn approve(
 		}
 		c
 	};
+	events.send(Event::Proposals);
 	runner.start(conversation);
 	Ok(Json(conversation))
 }
@@ -390,6 +456,7 @@ async fn reject(
 	authed: Authed,
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
+	State(events): State<Events>,
 	Path(id): Path<i64>,
 ) -> Result<Json<()>> {
 	let by = authed.user.name.clone();
@@ -398,6 +465,7 @@ async fn reject(
 		decide(&conn, id, "rejected", &authed.user)?;
 		get_one(&conn, id)?
 	};
+	events.send(Event::Proposals);
 	tell(&cfg, &db, &p, format!("{by} rejected the proposal.")).await;
 	Ok(Json(()))
 }
@@ -444,8 +512,8 @@ mod tests {
 		let id =
 			insert(&conn, peer(&conn), "Update Craft", Some(named)).unwrap();
 		assert_eq!(
-			get_one(&conn, id).unwrap().approver.as_deref(),
-			Some("b <b@example.ch>")
+			get_one(&conn, id).unwrap().approver_email.as_deref(),
+			Some("b@example.ch")
 		);
 
 		assert!(decide(&conn, id, "approved", &a).is_err());
@@ -456,6 +524,20 @@ mod tests {
 		conn.execute("DELETE FROM users WHERE id = ?1", [named])
 			.unwrap();
 		decide(&conn, id, "approved", &a).unwrap();
+	}
+
+	#[test]
+	fn a_decision_cancels_the_delayed_mail() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let id = insert(&conn, peer(&conn), "Update Craft", None).unwrap();
+		conn.execute("UPDATE proposals SET mail_at = 1", [])
+			.unwrap();
+		decide(&conn, id, "approved", &admin(&conn, "a")).unwrap();
+		let mail_at: Option<i64> = conn
+			.query_row("SELECT mail_at FROM proposals", [], |r| r.get(0))
+			.unwrap();
+		assert_eq!(mail_at, None);
 	}
 
 	#[test]
