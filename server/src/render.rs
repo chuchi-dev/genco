@@ -199,6 +199,15 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 			content: nginx_site(group, d, certs.contains(&d.name)),
 			private_to: None,
 		});
+		if d.www {
+			let www = format!("www.{}", d.name);
+			let cert = certs.contains(&www);
+			files.push(File {
+				path: nginx_config(&www),
+				content: www_redirect(&www, &d.name, cert),
+				private_to: None,
+			});
+		}
 		if has_app(d) {
 			files.push(File {
 				path: app_script(&d.name),
@@ -326,6 +335,15 @@ server {{
 {body}}}
 "
 	)
+}
+
+/// www.<domain> sends every request to the domain, over https once the
+/// www name has its certificate.
+fn www_redirect(www: &str, domain: &str, cert: bool) -> String {
+	let body = format!(
+		"\tlocation / {{\n\t\treturn 301 https://{domain}$request_uri;\n\t}}\n"
+	);
+	server_blocks(www, cert, &body)
 }
 
 fn nginx_site(group: &Group, d: &Domain, cert: bool) -> String {
@@ -793,6 +811,7 @@ mod tests {
 			public_dir: None,
 			upstream: (kind == Kind::Proxy)
 				.then(|| "http://127.0.0.1:8081".into()),
+			www: false,
 		}
 	}
 
@@ -848,6 +867,28 @@ mod tests {
 		assert!(site.contains("/etc/letsencrypt/live/shop.ch/fullchain.pem"));
 		// the challenges still work over http
 		assert!(site.contains("acme-challenge"));
+	}
+
+	#[test]
+	fn www_redirects_to_the_domain_with_its_own_certificate() {
+		let mut d = domain(1, "shop.ch", Kind::Static);
+		d.www = true;
+		let g = group(vec![d]);
+
+		let files = group_files(&g, &HashSet::new());
+		let www = find(&files, "/etc/nginx/genco/www.shop.ch.conf");
+		assert!(www.contains("server_name www.shop.ch;"));
+		assert!(www.contains("return 301 https://shop.ch$request_uri;"));
+		assert!(www.contains("acme-challenge"));
+		assert!(!www.contains("listen 443"));
+
+		let certs = HashSet::from(["www.shop.ch".to_string()]);
+		let files = group_files(&g, &certs);
+		let www = find(&files, "/etc/nginx/genco/www.shop.ch.conf");
+		assert!(www.contains("/etc/letsencrypt/live/www.shop.ch/"));
+		// the domain itself has no certificate yet
+		let site = find(&files, "/etc/nginx/genco/shop.ch.conf");
+		assert!(!site.contains("listen 443"));
 	}
 
 	#[test]

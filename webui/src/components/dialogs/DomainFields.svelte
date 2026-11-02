@@ -9,6 +9,8 @@
 		command = $bindable(),
 		publicDir = $bindable(),
 		upstream = $bindable(),
+		www = $bindable(),
+		name,
 	}: {
 		kind: Kind;
 		phpVersion: string | null;
@@ -16,6 +18,9 @@
 		command: string | null;
 		publicDir: string | null;
 		upstream: string | null;
+		www: boolean;
+		/** the domain's name, for the www option */
+		name: string;
 	} = $props();
 
 	const app = $derived(kind === 'node' || kind === 'rust');
@@ -73,6 +78,12 @@
 		bind:value={publicDir}
 	/>
 {/if}
+
+<span></span>
+<label class="check">
+	<input type="checkbox" bind:checked={www} />
+	Also www.{name || 'example.ch'}, redirects here
+</label>
 
 <style lang="scss">
 	@use 'styles/win' as *;

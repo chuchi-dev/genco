@@ -24,6 +24,10 @@
 	let command = $state<string | null>(null);
 	let publicDir = $state<string | null>(null);
 	let upstream = $state<string | null>(null);
+	// on for a top level domain (example.ch), not for admin.example.ch,
+	// until the admin sets it
+	let wwwSet = $state<boolean | null>(null);
+	const www = $derived(wwwSet ?? name.trim().split('.').length === 2);
 
 	async function save() {
 		oncreated(
@@ -36,6 +40,7 @@
 				command,
 				publicDir,
 				upstream,
+				www,
 			}),
 		);
 	}
@@ -64,6 +69,8 @@
 			bind:command
 			bind:publicDir
 			bind:upstream
+			bind:www={() => www, v => (wwwSet = v)}
+			name={name.trim()}
 		/>
 	</Form>
 </Dialog>

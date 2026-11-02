@@ -45,8 +45,11 @@ pub fn certs(groups: &[Group]) -> HashSet<String> {
 	groups
 		.iter()
 		.flat_map(|g| &g.domains)
-		.filter(|d| has_cert(&d.name))
-		.map(|d| d.name.clone())
+		.flat_map(|d| {
+			let www = d.www.then(|| format!("www.{}", d.name));
+			std::iter::once(d.name.clone()).chain(www)
+		})
+		.filter(|name| has_cert(name))
 		.collect()
 }
 

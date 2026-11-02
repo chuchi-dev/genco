@@ -160,6 +160,8 @@ pub struct Domain {
 	pub nginx_extra: String,
 	/// where a proxy domain forwards to, `http://127.0.0.1:8080`
 	pub upstream: Option<String>,
+	/// www.<name> redirects here
+	pub www: bool,
 	/// of a Node or Rust app, never to the browser (secrets), see appenv
 	#[serde(skip)]
 	pub env: Vec<crate::appenv::EnvVar>,
@@ -218,7 +220,8 @@ impl Engine {
 pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 	let mut stmt = conn.prepare(
 		"SELECT id, group_id, name, kind, php_version, root, command,
-		nginx_extra, public_dir, env, upstream FROM domains ORDER BY name",
+		nginx_extra, public_dir, env, upstream, www FROM domains
+		ORDER BY name",
 	)?;
 	let domains: Vec<Domain> = stmt
 		.query_map([], |row| {
@@ -234,6 +237,7 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 				public_dir: row.get(8)?,
 				env: crate::appenv::parse(&row.get::<_, String>(9)?),
 				upstream: row.get(10)?,
+				www: row.get(11)?,
 			})
 		})?
 		.collect::<rusqlite::Result<_>>()?;
@@ -708,6 +712,9 @@ pub struct DomainSettings {
 	pub nginx_extra: String,
 	#[serde(default)]
 	pub upstream: Option<String>,
+	/// www.<name> redirects to the domain
+	#[serde(default)]
+	pub www: bool,
 }
 
 impl DomainSettings {
@@ -739,16 +746,43 @@ fn upstream(s: &DomainSettings) -> Option<String> {
 		.map(String::from)
 }
 
+/// A domain and the www redirect of another can't have the same name.
+fn check_www(conn: &Connection, name: &str, www: bool) -> Result<()> {
+	let taken = |n: &str, www_only: bool| -> Result<bool> {
+		let sql = if www_only {
+			"SELECT count(*) FROM domains WHERE name = ?1 AND www = 1"
+		} else {
+			"SELECT count(*) FROM domains WHERE name = ?1"
+		};
+		Ok(conn.query_row(sql, [n], |r| r.get::<_, i64>(0))? > 0)
+	};
+	if www && taken(&format!("www.{name}"), false)? {
+		return Err(Error::Invalid(format!(
+			"www.{name} is a domain of its own, delete it first or leave \
+			www off"
+		)));
+	}
+	if let Some(base) = name.strip_prefix("www.")
+		&& taken(base, true)?
+	{
+		return Err(Error::Invalid(format!(
+			"{base} redirects {name} already (its www option)"
+		)));
+	}
+	Ok(())
+}
+
 pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 	let name = req.name.trim().to_lowercase();
 	check_domain_name(&name)?;
 	let s = &req.settings;
 	let public_dir = s.check()?;
+	check_www(conn, &name, s.www)?;
 
 	conn.execute(
 		"INSERT INTO domains (group_id, name, kind, php_version, root,
-		command, nginx_extra, created_at, public_dir, upstream)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+		command, nginx_extra, created_at, public_dir, upstream, www)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
 		params![
 			req.group_id,
 			name,
@@ -759,7 +793,8 @@ pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 			s.nginx_extra,
 			now(),
 			public_dir,
-			upstream(s)
+			upstream(s),
+			s.www
 		],
 	)?;
 	Ok(conn.last_insert_rowid())
@@ -782,11 +817,16 @@ pub fn set_domain(
 	req: &DomainSettings,
 ) -> Result<()> {
 	let public_dir = req.check()?;
+	let name: String =
+		conn.query_row("SELECT name FROM domains WHERE id = ?1", [id], |r| {
+			r.get(0)
+		})?;
+	check_www(conn, &name, req.www)?;
 
 	let n = conn.execute(
 		"UPDATE domains SET kind = ?1, php_version = ?2, root = ?3,
-		command = ?4, nginx_extra = ?5, public_dir = ?6, upstream = ?7
-		WHERE id = ?8",
+		command = ?4, nginx_extra = ?5, public_dir = ?6, upstream = ?7,
+		www = ?8 WHERE id = ?9",
 		params![
 			req.kind.as_str(),
 			req.php_version,
@@ -795,6 +835,7 @@ pub fn set_domain(
 			req.nginx_extra,
 			public_dir,
 			upstream(req),
+			req.www,
 			id
 		],
 	)?;
@@ -930,6 +971,29 @@ mod tests {
 		assert!(check_domain_name("-a.ch").is_err());
 		assert!(check_domain_name("a..ch").is_err());
 		assert!(check_domain_name("a b.ch").is_err());
+	}
+
+	#[test]
+	fn www_and_a_domain_of_that_name_exclude_each_other() {
+		let db = Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+			VALUES ('g', 1, 0);",
+		)
+		.unwrap();
+		conn.execute(
+			"INSERT INTO domains (group_id, name, kind, created_at, www)
+			VALUES (1, 'shop.ch', 'static', 0, 1),
+			(1, 'www.blog.ch', 'static', 0, 0)",
+			[],
+		)
+		.unwrap();
+		assert!(check_www(&conn, "www.shop.ch", false).is_err());
+		assert!(check_www(&conn, "blog.ch", true).is_err());
+		assert!(check_www(&conn, "blog.ch", false).is_ok());
+		assert!(check_www(&conn, "other.ch", true).is_ok());
 	}
 
 	#[test]

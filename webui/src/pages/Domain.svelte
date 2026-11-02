@@ -31,6 +31,7 @@
 	let command = $state(start.command);
 	let publicDir = $state(start.publicDir);
 	let upstream = $state(start.upstream);
+	let www = $state(start.www);
 	let nginxExtra = $state(start.nginxExtra);
 	let files = $state<ConfigFile[] | null>(null);
 
@@ -43,6 +44,7 @@
 			files = all.filter(
 				f =>
 					f.path.endsWith(`/${name}.conf`) ||
+					f.path.endsWith(`/www.${name}.conf`) ||
 					f.path.endsWith(`/${name}.sh`) ||
 					f.path.endsWith(`-${name}.service`),
 			);
@@ -57,6 +59,7 @@
 			command,
 			publicDir,
 			upstream,
+			www,
 			nginxExtra,
 		});
 	}
@@ -112,6 +115,8 @@
 		bind:command
 		bind:publicDir
 		bind:upstream
+		bind:www
+		name={domain.name}
 	/>
 	<label for="d-extra">Extra nginx:</label>
 	<textarea

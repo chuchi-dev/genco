@@ -108,6 +108,8 @@ export type Domain = {
 	nginxExtra: string;
 	/** of a proxy: where it forwards to */
 	upstream: string | null;
+	/** www.<name> redirects to it */
+	www: boolean;
 };
 
 /** 'repo': from genco.toml, changes only with the repository */

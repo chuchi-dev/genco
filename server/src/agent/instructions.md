@@ -100,6 +100,9 @@ field in the panel.
   web server with the domain as Host and X-Forwarded-Proto: a site that
   still runs elsewhere (a container, the old server) until it moves into
   genco, then `genco domain set <d> --kind php ...` switches it.
+- `--www true` makes www.<domain> redirect to the domain (its own
+  certificate once its DNS points here); use it for top level domains
+  instead of a second domain for www.
 - Workers run a group's command all the time as
   `genco-<group>-worker-<name>.service` (Craft's queue, a server on a
   port of its own): `genco worker add <name> --group <g> --dir

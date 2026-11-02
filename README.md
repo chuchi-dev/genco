@@ -18,7 +18,8 @@ genco is young and runs our own servers. Expect rough edges, and read
 - **Domains**: static, PHP, Node or Rust, with Let's Encrypt certificates
   and nginx written for you. A Node app can have a public folder that
   nginx serves directly. A proxy domain forwards to another web server,
-  e.g. while a site moves into genco.
+  e.g. while a site moves into genco. www.<domain> can redirect to the
+  domain, with its own certificate.
 - **Workers and schedules**: commands of a group that run all the time
   (Craft's queue, a server on a public port of its own) or at times like
   cron, in the group's sandbox; from the panel or `genco.toml`, Craft's

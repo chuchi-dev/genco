@@ -114,6 +114,9 @@ pub struct DomainOpts {
 	/// proxy: where it forwards to, e.g. http://127.0.0.1:8081
 	#[clap(long)]
 	upstream: Option<String>,
+	/// www.<domain> redirects to the domain: true or false
+	#[clap(long)]
+	www: Option<bool>,
 }
 
 #[derive(Debug, Parser)]
@@ -349,6 +352,7 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 					public_dir: opts.public,
 					nginx_extra: opts.nginx_extra.unwrap_or_default(),
 					upstream: opts.upstream,
+					www: opts.www.unwrap_or(false),
 				},
 			};
 			let id = hosting::insert_domain(conn, &req)?;
@@ -395,6 +399,7 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 					Kind::Proxy => opts.upstream.or(d.upstream),
 					_ => None,
 				},
+				www: opts.www.unwrap_or(d.www),
 			};
 			hosting::set_domain(conn, d.id, &req)?;
 			Ok("changed, run genco apply".into())

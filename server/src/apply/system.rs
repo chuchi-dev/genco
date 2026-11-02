@@ -66,10 +66,19 @@ pub(super) async fn certificates(
 	cfg: &Config,
 	groups: &[Group],
 ) -> bool {
+	// a www redirect gets its own certificate: without DNS for it the
+	// domain's own still works
+	let www: Vec<String> = groups
+		.iter()
+		.flat_map(|g| &g.domains)
+		.filter(|d| d.www)
+		.map(|d| format!("www.{}", d.name))
+		.collect();
 	let mut domains: Vec<&str> = groups
 		.iter()
 		.flat_map(|g| &g.domains)
 		.map(|d| d.name.as_str())
+		.chain(www.iter().map(String::as_str))
 		.collect();
 	domains.extend(cfg.domain.as_deref());
 	let mail_host = mailbox::host(cfg).filter(|_| mailbox::enabled(groups));
