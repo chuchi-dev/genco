@@ -5,7 +5,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use soe_llms::{Input, Model, Output, Request, ResponseEvent, Role};
+use soe_llms::{
+	ContentPart, Input, Model, Output, Request, ResponseEvent, Role,
+};
 use tokio::task::AbortHandle;
 
 use crate::config::Config;
@@ -597,6 +599,38 @@ fn open_tool_calls(messages: &[Message]) -> Vec<String> {
 /// admins can send messages while tools run. Those messages are held back
 /// until all outputs of the pending calls are in. Calls without any output
 /// are dropped.
+/// An admin's message; attached files are listed with their paths, the
+/// model sees images too.
+fn user_input(
+	text: &str,
+	user_name: Option<&str>,
+	files: &[crate::attachments::Attachment],
+) -> Input {
+	let mut content = format!("[{}] {text}", user_name.unwrap_or("terminal"));
+	if files.is_empty() {
+		return Input::Text {
+			role: Role::User,
+			content,
+		};
+	}
+	content.push_str(
+		"\n\nAttached files (on this server, read them with your tools):",
+	);
+	for f in files {
+		content.push_str(&format!("\n- {} ({} bytes)", f.path, f.size));
+	}
+	let mut parts = vec![ContentPart::Text { text: content }];
+	for f in files {
+		if let Some((media_type, data)) = crate::attachments::image_bytes(f) {
+			parts.push(ContentPart::Image { media_type, data });
+		}
+	}
+	Input::Message {
+		role: Role::User,
+		parts,
+	}
+}
+
 fn to_input(messages: &[Message]) -> Vec<Input> {
 	let open: HashSet<String> = open_tool_calls(messages).into_iter().collect();
 
@@ -606,13 +640,11 @@ fn to_input(messages: &[Message]) -> Vec<Input> {
 
 	for message in messages {
 		let item = match &message.data {
-			MessageData::User { text, user_name } => Some(Input::Text {
-				role: Role::User,
-				content: match user_name {
-					Some(name) => format!("[{name}] {text}"),
-					None => format!("[terminal] {text}"),
-				},
-			}),
+			MessageData::User {
+				text,
+				user_name,
+				files,
+			} => Some(user_input(text, user_name.as_deref(), files)),
 			MessageData::System { text } => Some(Input::Text {
 				role: Role::User,
 				content: format!("[system] {text}"),
@@ -692,6 +724,7 @@ mod tests {
 		MessageData::User {
 			text: text.into(),
 			user_name: Some("a".into()),
+			files: vec![],
 		}
 	}
 

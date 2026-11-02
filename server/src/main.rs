@@ -3,6 +3,7 @@ mod activity;
 mod agent;
 mod appenv;
 mod apply;
+mod attachments;
 mod backup;
 mod chat;
 mod checks;

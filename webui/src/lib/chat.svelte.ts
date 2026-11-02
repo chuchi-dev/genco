@@ -114,15 +114,21 @@ export class Chat {
 	 * Sends a message, a new conversation starts with the first one. An
 	 * error shows and is thrown, the composer gives the text back.
 	 */
-	async send(text: string) {
+	async send(text: string, files: string[] = []) {
 		this.error = null;
 		try {
 			if (this.current === null) {
-				const c: Conversation = await post('/conversations', { text });
+				const c: Conversation = await post('/conversations', {
+					text,
+					files,
+				});
 				conversations.update(c);
 				await this.select(c.id);
 			} else {
-				await post(`/conversations/${this.current}/messages`, { text });
+				await post(`/conversations/${this.current}/messages`, {
+					text,
+					files,
+				});
 			}
 		} catch (e: any) {
 			this.error = e.message;

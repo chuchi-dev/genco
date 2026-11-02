@@ -7,8 +7,11 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use std::sync::Arc;
+
 use crate::AppState;
 use crate::agent::Runner;
+use crate::config::Config;
 use crate::db::{Db, now};
 use crate::error::{Error, Result};
 use crate::events::{Event, Events};
@@ -127,6 +130,9 @@ pub enum MessageData {
 		/// who wrote it, `None` from the terminal
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		user_name: Option<String>,
+		/// attached files, see attachments.rs
+		#[serde(default, skip_serializing_if = "Vec::is_empty")]
+		files: Vec<crate::attachments::Attachment>,
 	},
 	/// Messages genco gives the agent, for example after a restart.
 	System {
@@ -355,39 +361,63 @@ async fn get_conversation(
 
 #[derive(Debug, Deserialize)]
 struct SendReq {
+	#[serde(default)]
 	text: String,
+	/// ids of uploaded attachments
+	#[serde(default)]
+	files: Vec<String>,
+}
+
+impl SendReq {
+	/// A message has text or files.
+	fn check(&self) -> Result<()> {
+		if self.text.trim().is_empty() && self.files.is_empty() {
+			return Err(Error::Invalid("empty message".into()));
+		}
+		Ok(())
+	}
 }
 
 /// Starts a new conversation with the first message.
 async fn create_conversation(
 	authed: Authed,
+	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	State(runner): State<Runner>,
 	Json(req): Json<SendReq>,
 ) -> Result<Json<Conversation>> {
-	if req.text.trim().is_empty() {
-		return Err(Error::Invalid("empty message".into()));
-	}
-	let id = create(&db.conn(), &req.text)?;
-	send_message(&db, &events, id, req.text, authed.user.name)?;
+	req.check()?;
+	let files = crate::attachments::resolve(&cfg, &req.files)?;
+	// a message with only files is titled after them
+	let title = if req.text.trim().is_empty() {
+		files
+			.iter()
+			.map(|f| f.name.as_str())
+			.collect::<Vec<_>>()
+			.join(", ")
+	} else {
+		req.text.clone()
+	};
+	let id = create(&db.conn(), &title)?;
+	send_message(&db, &events, id, req.text, files, authed.user.name)?;
 	runner.start(id);
 	Ok(Json(get(&db.conn(), id)?))
 }
 
 async fn post_message(
 	authed: Authed,
+	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	State(runner): State<Runner>,
 	Path(id): Path<i64>,
 	Json(req): Json<SendReq>,
 ) -> Result<Json<()>> {
-	if req.text.trim().is_empty() {
-		return Err(Error::Invalid("empty message".into()));
-	}
+	req.check()?;
+	let files = crate::attachments::resolve(&cfg, &req.files)?;
 	get(&db.conn(), id)?;
-	send_message(&db, &events, id, req.text, authed.user.name)?;
+	send_message(&db, &events, id, req.text, files, authed.user.name)?;
 	runner.start(id);
 	Ok(Json(()))
 }
@@ -397,6 +427,7 @@ fn send_message(
 	events: &Events,
 	id: i64,
 	text: String,
+	files: Vec<crate::attachments::Attachment>,
 	user_name: String,
 ) -> Result<()> {
 	let message = insert_message(
@@ -405,6 +436,7 @@ fn send_message(
 		MessageData::User {
 			text,
 			user_name: Some(user_name),
+			files,
 		},
 	)?;
 	events.send(Event::Message { message });
@@ -471,6 +503,7 @@ pub fn routes() -> Router<AppState> {
 		.route("/{id}/messages", post(post_message))
 		.route("/{id}/stop", post(stop))
 		.route("/{id}/resolve", post(resolve))
+		.merge(crate::attachments::routes())
 }
 
 #[cfg(test)]

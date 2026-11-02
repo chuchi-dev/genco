@@ -263,8 +263,16 @@ export type Routine = {
 	weekday: number | null;
 };
 
+/** a file an admin attached to a message, the agent reads it at `path` */
+export type Attachment = {
+	id: string;
+	name: string;
+	size: number;
+	path: string;
+};
+
 export type MessageData =
-	| { kind: 'user'; text: string; userName?: string }
+	| { kind: 'user'; text: string; userName?: string; files?: Attachment[] }
 	| { kind: 'system'; text: string }
 	| { kind: 'assistant'; text: string }
 	| { kind: 'toolCall'; callId: string; name: string; input: any }

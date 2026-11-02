@@ -69,6 +69,7 @@ pub async fn main(cfg: Config, resume: Option<i64>) -> Result<(), String> {
 			MessageData::User {
 				text: line,
 				user_name: None,
+				files: vec![],
 			},
 		)
 		.map_err(|e| e.to_string())?;

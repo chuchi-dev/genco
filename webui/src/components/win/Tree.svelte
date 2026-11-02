@@ -17,11 +17,14 @@
 		items,
 		selected,
 		onselect,
+		oncontext,
 		closed = $bindable(new Set<string>()),
 	}: {
 		items: TreeItem[];
 		selected: string | null;
 		onselect: (key: string) => void;
+		/// a right click on an item, the browser's own menu stays closed
+		oncontext?: (key: string, e: MouseEvent) => void;
 		/// keys of the items whose children are hidden
 		closed?: Set<string>;
 	} = $props();
@@ -55,13 +58,26 @@
 					class:selected={selected === item.key}
 					onclick={() => onselect(item.key)}
 					ondblclick={() => toggle(item.key)}
+					oncontextmenu={e => {
+						if (!oncontext) return;
+						e.preventDefault();
+						// the window's handler would close the new menu
+						e.stopPropagation();
+						oncontext(item.key, e);
+					}}
 				>
 					<Icon name={item.icon} />
 					<span>{item.label}</span>
 				</button>
 			</div>
 			{#if item.children?.length && open}
-				<Tree items={item.children} {selected} {onselect} bind:closed />
+				<Tree
+					items={item.children}
+					{selected}
+					{onselect}
+					{oncontext}
+					bind:closed
+				/>
 			{/if}
 		</li>
 	{/each}

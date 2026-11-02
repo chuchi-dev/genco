@@ -186,11 +186,12 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.fallback(webui::serve)
 		// the panel may not be framed, loads nothing from other origins and
 		// tells nobody where it came from; Monaco needs its same-origin
-		// worker and inline styles, the 2FA qr code is a data: image
+		// worker and inline styles, the 2FA qr code is a data: image, the
+		// chat's attachments are blob: ones
 		.layer(header(
 			"content-security-policy",
 			"default-src 'self'; script-src 'self'; worker-src 'self'; \
-			style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+			style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
 			font-src 'self' data:; connect-src 'self'; \
 			frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
 			object-src 'none'",

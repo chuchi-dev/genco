@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { formatTime, type Message } from '@/lib/api';
 	import Markdown from './Markdown.svelte';
+	import AttachmentView from './AttachmentView.svelte';
 
 	// one message of the chat; a tool call with its output, folded
 	let {
@@ -35,6 +36,13 @@
 					text={m.text}
 				/>{:else}{m.text}{/if}
 		</div>
+		{#if m.kind === 'user' && m.files?.length}
+			<div class="files">
+				{#each m.files as f (f.id)}
+					<AttachmentView file={f} />
+				{/each}
+			</div>
+		{/if}
 	</div>
 {:else if m.kind === 'toolCall'}
 	<div
@@ -93,6 +101,14 @@
 
 		&.user .who {
 			color: $title;
+		}
+
+		.files {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: flex-end;
+			gap: 4px 10px;
+			margin-top: 4px;
 		}
 	}
 

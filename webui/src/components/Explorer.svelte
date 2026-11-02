@@ -2,7 +2,8 @@
 	import type { Snippet } from 'svelte';
 	import { current, go } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
-	import Menu, { type MenuDef } from './win/Menu.svelte';
+	import Menu, { type MenuDef, type MenuEntry } from './win/Menu.svelte';
+	import ContextMenu from './win/ContextMenu.svelte';
 	import Tree, { type TreeItem } from './win/Tree.svelte';
 	import Window from './win/Window.svelte';
 
@@ -112,6 +113,89 @@
 	]);
 
 	const domains = $derived(tree.groups.flatMap(g => g.domains).length);
+
+	// the right click menu of a tree item; it selects the item first, the
+	// New dialogs take their group or client from the selected page
+	let context = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(
+		null,
+	);
+
+	function openContext(key: string, e: MouseEvent) {
+		go(key);
+		context = { x: e.clientX, y: e.clientY, entries: entriesFor(key) };
+	}
+
+	function entriesFor(key: string): MenuEntry[] {
+		const [, kind, idStr] = key.split('/');
+		const id = Number(idStr);
+		const open = { label: 'Open', onclick: () => go(key) };
+		const tab = (label: string, t: string) => ({
+			label,
+			onclick: () => go(`${key}/${t}`),
+		});
+		const toGroup = (groupId: number | undefined) => ({
+			label: 'Open Group',
+			onclick: () => go(`/groups/${groupId}`),
+			disabled: groupId === undefined,
+		});
+		const sep = { separator: true as const };
+		switch (kind) {
+			case undefined:
+			case '':
+				return [
+					{ label: 'New Client…', onclick: () => onnew('client') },
+					sep,
+					{ label: 'Apply Changes…', onclick: () => onapply() },
+					{ label: 'Refresh', onclick: () => tree.load() },
+				];
+			case 'clients':
+				return [
+					open,
+					sep,
+					{ label: 'New Group…', onclick: () => onnew('group') },
+				];
+			case 'groups':
+				return [
+					open,
+					sep,
+					{ label: 'New Domain…', onclick: () => onnew('domain') },
+					{
+						label: 'New Database…',
+						onclick: () => onnew('database'),
+					},
+					{ label: 'New Mail Domain…', onclick: () => onnew('mail') },
+					sep,
+					tab('Files', 'files'),
+					tab('Services', 'services'),
+					tab('Deploy', 'deploy'),
+					tab('Backups', 'backups'),
+					tab('Usage', 'usage'),
+				];
+			case 'domains': {
+				const d = tree.domain(id);
+				return [
+					open,
+					{
+						label: 'Open Website',
+						onclick: () =>
+							window.open(
+								`https://${d?.name}`,
+								'_blank',
+								'noreferrer',
+							),
+						disabled: !d,
+					},
+					sep,
+					toGroup(d?.groupId),
+				];
+			}
+			case 'databases':
+				return [open, sep, toGroup(tree.database(id)?.groupId)];
+			case 'mail':
+				return [open, sep, toGroup(tree.mailDomain(id)?.groupId)];
+		}
+		return [open];
+	}
 </script>
 
 <Window title="Explorer - {title ?? ''}" icon="computer" {onminimize}>
@@ -121,12 +205,26 @@
 
 	<div class="split">
 		<div class="tree">
-			<Tree {items} {selected} onselect={key => go(key)} />
+			<Tree
+				{items}
+				{selected}
+				onselect={key => go(key)}
+				oncontext={openContext}
+			/>
 		</div>
 		<div class="detail">
 			{@render children()}
 		</div>
 	</div>
+
+	{#if context}
+		<ContextMenu
+			x={context.x}
+			y={context.y}
+			entries={context.entries}
+			onclose={() => (context = null)}
+		/>
+	{/if}
 
 	{#snippet status()}
 		<div class="field">{tree.clients.length} client(s)</div>
