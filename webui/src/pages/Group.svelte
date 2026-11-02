@@ -1,0 +1,278 @@
+<script lang="ts" module>
+	import { tree } from '@/lib/tree.svelte';
+
+	export function loadProps({ id }: { id: string }) {
+		if (!tree.group(Number(id))) throw new Error('This group is gone.');
+	}
+</script>
+
+<script lang="ts">
+	import {
+		KIND_NAMES,
+		get,
+		newest,
+		saveGroup,
+		type ConfigFile,
+	} from '@/lib/api';
+	import { dialogs, requestDelete } from '@/lib/dialogs.svelte';
+	import { go } from '@/lib/router.svelte';
+	import Button from '@/components/win/Button.svelte';
+	import Form from '@/components/win/Form.svelte';
+	import Tabs from '@/components/win/Tabs.svelte';
+	import ConfigFiles from '@/components/ConfigFiles.svelte';
+	import Deploys from '@/components/Deploys.svelte';
+	import Snapshots from '@/components/Snapshots.svelte';
+	import Usage from '@/components/Usage.svelte';
+	import Files from '@/components/Files.svelte';
+	import GroupServices from '@/components/GroupServices.svelte';
+	import GroupDatabases from '@/components/GroupDatabases.svelte';
+	import GroupSmtp from '@/components/GroupSmtp.svelte';
+
+	let {
+		id,
+		tab: tabProp,
+		path,
+	}: { id: string; tab?: string; path?: string } = $props();
+
+	const TABS = [
+		{ id: 'general', label: 'General' },
+		{ id: 'domains', label: 'Domains' },
+		{ id: 'files', label: 'Files' },
+		{ id: 'services', label: 'Services' },
+		{ id: 'config', label: 'Configuration' },
+		{ id: 'databases', label: 'Databases' },
+		{ id: 'deploy', label: 'Deploy' },
+		{ id: 'backups', label: 'Backups' },
+		{ id: 'usage', label: 'Usage' },
+	];
+	// /groups/1/files/shared/craft opens the files tab in that folder
+	const tab = $derived(
+		path !== undefined
+			? 'files'
+			: TABS.some(t => t.id === tabProp)
+				? tabProp!
+				: 'general',
+	);
+	const filesPath = $derived(
+		(path ?? '')
+			.split('/')
+			.filter(Boolean)
+			.map(s => {
+				try {
+					return decodeURIComponent(s);
+				} catch (_e) {
+					return s;
+				}
+			})
+			.join('/'),
+	);
+
+	// svelte-ignore state_referenced_locally
+	const start = tree.group(Number(id))!;
+	const group = $derived(tree.group(Number(id)) ?? start);
+
+	let clientId = $state(start.clientId);
+	let notes = $state(start.notes);
+	// as text in the fields, numbers when saved
+	let php = $state({
+		uploadMb: String(start.php.uploadMb),
+		memoryMb: String(start.php.memoryMb),
+		maxExecutionS: String(start.php.maxExecutionS),
+		maxInputVars: String(start.php.maxInputVars),
+	});
+	const hasPhp = $derived(group.domains.some(d => d.kind === 'php'));
+
+	let files = $state<ConfigFile[] | null>(null);
+	let loadError = $state<string | null>(null);
+
+	// the config, again when the tree changes (e.g. after an apply)
+	const load = newest();
+	$effect(() => {
+		void tree.clients;
+		if (tab !== 'config') return;
+		load(
+			get(`/groups/${group.id}/config`),
+			v => ((files = v), (loadError = null)),
+			e => (loadError = e.message),
+		);
+	});
+
+	async function save() {
+		const n = (v: string) => {
+			const x = Number(v);
+			if (!Number.isInteger(x) || x <= 0)
+				throw new Error('The PHP settings are whole numbers');
+			return x;
+		};
+		await saveGroup(group, {
+			clientId,
+			notes,
+			php: {
+				uploadMb: n(php.uploadMb),
+				memoryMb: n(php.memoryMb),
+				maxExecutionS: n(php.maxExecutionS),
+				maxInputVars: n(php.maxInputVars),
+			},
+		});
+	}
+</script>
+
+<Tabs
+	tabs={TABS}
+	selected={tab}
+	onselect={t => go(`/groups/${group.id}/${t}`, true)}
+>
+	{#if tab === 'general'}
+		<dl class="props">
+			<dt>Linux user:</dt>
+			<dd><code>{group.user}</code></dd>
+			<dt>Files:</dt>
+			<dd><code>{group.dir}</code></dd>
+		</dl>
+		<Form onsubmit={save} ok="Save" done="Saved">
+			<label for="gv-client">Client:</label>
+			<select id="gv-client" bind:value={clientId}>
+				{#each tree.clients as c (c.id)}
+					<option value={c.id}>{c.name}</option>
+				{/each}
+			</select>
+			<label for="gv-notes">Notes:</label>
+			<textarea id="gv-notes" rows="4" bind:value={notes}></textarea>
+			{#if hasPhp}
+				<label for="gv-upload">PHP uploads:</label>
+				<span class="unit">
+					<input
+						id="gv-upload"
+						inputmode="numeric"
+						bind:value={php.uploadMb}
+					/>
+					MB, at most per file
+				</span>
+				<label for="gv-memory">PHP memory:</label>
+				<span class="unit">
+					<input
+						id="gv-memory"
+						inputmode="numeric"
+						bind:value={php.memoryMb}
+					/>
+					MB per request
+				</span>
+				<label for="gv-time">PHP time:</label>
+				<span class="unit">
+					<input
+						id="gv-time"
+						inputmode="numeric"
+						bind:value={php.maxExecutionS}
+					/>
+					seconds per request
+				</span>
+				<label for="gv-vars">PHP input vars:</label>
+				<span class="unit">
+					<input
+						id="gv-vars"
+						inputmode="numeric"
+						bind:value={php.maxInputVars}
+					/>
+					form fields per request
+				</span>
+			{/if}
+		</Form>
+		{#if group.mailDomains.length}
+			<hr class="groove" />
+			{#key group.id}
+				<GroupSmtp groupId={group.id} />
+			{/key}
+		{/if}
+		{#if hasPhp}
+			<p class="hint">
+				The PHP settings apply to every PHP domain of the group after
+				Server → Apply Changes; nginx takes uploads a bit larger.
+			</p>
+		{/if}
+		<hr class="groove" />
+		<div class="row-buttons">
+			<Button
+				onclick={() =>
+					requestDelete(
+						`/groups/${group.id}`,
+						`the group ${group.name}`,
+					)}
+				disabled={group.domains.length > 0 ||
+					group.databases.length > 0}
+			>
+				Delete Group…
+			</Button>
+		</div>
+	{:else if tab === 'domains'}
+		<div class="list-view">
+			<table>
+				<thead>
+					<tr>
+						<th>Domain</th>
+						<th>Type</th>
+						<th>Directory</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each group.domains as d (d.id)}
+						<tr>
+							<td><a href="/domains/{d.id}">{d.name}</a></td>
+							<td>
+								{KIND_NAMES[d.kind]}{d.phpVersion
+									? ' ' + d.phpVersion
+									: ''}
+							</td>
+							<td><code>{d.root}</code></td>
+						</tr>
+					{:else}
+						<tr>
+							<td colspan="3" class="empty">No domains yet.</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+		<div class="row-buttons">
+			<Button onclick={() => (dialogs.open = 'domain')}>
+				New Domain…
+			</Button>
+		</div>
+	{:else if tab === 'services'}
+		<GroupServices {group} />
+	{:else if tab === 'config'}
+		{#if files}
+			<ConfigFiles {files} />
+		{:else}
+			<p class="hint">Loading…</p>
+		{/if}
+	{:else if tab === 'databases'}
+		<GroupDatabases {group} />
+	{:else if tab === 'deploy'}
+		<Deploys {group} />
+	{:else if tab === 'files'}
+		<Files {group} path={filesPath} />
+	{:else if tab === 'backups'}
+		<Snapshots {group} />
+	{:else if tab === 'usage'}
+		<Usage scope="group:{group.id}" />
+	{/if}
+	{#if loadError}<p class="error">{loadError}</p>{/if}
+</Tabs>
+
+<style lang="scss">
+	@use 'styles/win' as *;
+
+	.unit {
+		display: flex;
+		gap: 6px;
+		align-items: center;
+
+		input {
+			width: 80px;
+		}
+	}
+
+	.hint {
+		margin: 8px 0;
+	}
+</style>

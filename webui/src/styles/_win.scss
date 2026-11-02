@@ -1,0 +1,77 @@
+// Windows 95 colors and bevels, every component uses these
+$desktop: #008080;
+$face: #c0c0c0;
+$light: #dfdfdf;
+$white: #ffffff;
+$shadow: #808080;
+$dark: #0a0a0a;
+$title: #000080;
+$title-inactive: #808080;
+$select: #000080;
+$link: #0000ee;
+
+$font:
+	'Tahoma', 'MS Sans Serif', 'Microsoft Sans Serif', 'Segoe UI',
+	'Liberation Sans', Arial, sans-serif;
+$mono: 'Lucida Console', 'Courier New', 'Liberation Mono', monospace;
+
+@mixin raised {
+	background: $face;
+	box-shadow:
+		inset -1px -1px $dark,
+		inset 1px 1px $white,
+		inset -2px -2px $shadow,
+		inset 2px 2px $light;
+}
+
+@mixin pressed {
+	box-shadow:
+		inset -1px -1px $white,
+		inset 1px 1px $dark,
+		inset -2px -2px $light,
+		inset 2px 2px $shadow;
+}
+
+@mixin sunken {
+	background: $white;
+	box-shadow:
+		inset -1px -1px $white,
+		inset 1px 1px $shadow,
+		inset -2px -2px $light,
+		inset 2px 2px $dark;
+}
+
+// thin groove, for status bar fields and separators
+@mixin groove {
+	box-shadow:
+		inset -1px -1px $white,
+		inset 1px 1px $shadow;
+}
+
+@mixin hover {
+	@media (hover: hover) {
+		&:hover {
+			@content;
+		}
+	}
+}
+
+@mixin mobile {
+	@media (max-width: 800px) {
+		@content;
+	}
+}
+
+// logs and command output
+$terminal-bg: #000000;
+$terminal-fg: #c0c0c0;
+// messages
+$error: #a00000;
+$ok: #006000;
+$hint: #404040;
+
+// chart series in fixed order, checked for color blindness and contrast
+// on white (dataviz validator)
+$series-1: #2a78d6;
+$series-2: #eb6834;
+$series-3: #1baf7a;

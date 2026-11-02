@@ -1,0 +1,126 @@
+//! Small helpers more modules need.
+
+use std::path::Path;
+
+use tokio::process::Command;
+
+/// The dump of one database with what MariaDB needs to restore it.
+pub const MARIADB_DUMP: &str =
+	"mariadb-dump --single-transaction --routines --triggers --events";
+
+/// Runs a bash script, its trimmed stdout or its stderr as error.
+pub async fn sh(script: &str) -> Result<String, String> {
+	let out = Command::new("bash")
+		.args(["-c", script])
+		.output()
+		.await
+		.map_err(|e| format!("bash: {e}"))?;
+	if !out.status.success() {
+		let err = String::from_utf8_lossy(&out.stderr);
+		return Err(format!("{script} failed: {}", err.trim()));
+	}
+	Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Runs `args` (no shell): its trimmed stdout, or `"<args> failed:
+/// <stderr>"`.
+pub async fn run(args: &[&str]) -> Result<String, String> {
+	let out = Command::new(args[0])
+		.args(&args[1..])
+		.output()
+		.await
+		.map_err(|e| format!("{}: {e}", args[0]))?;
+	if !out.status.success() {
+		return Err(format!(
+			"{} failed: {}",
+			args.join(" "),
+			String::from_utf8_lossy(&out.stderr).trim()
+		));
+	}
+	Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// how long an upload may send nothing
+pub const UPLOAD_STALL: std::time::Duration =
+	std::time::Duration::from_secs(60);
+
+/// Writes an upload to `path`; a client that sends nothing for a minute
+/// or breaks off is an error, and what arrived goes.
+pub async fn body_to_file(
+	body: axum::body::Body,
+	path: &Path,
+) -> std::io::Result<()> {
+	use futures::StreamExt as _;
+	use tokio::io::AsyncWriteExt as _;
+
+	let written = async {
+		let mut file = tokio::fs::File::create(path).await?;
+		let mut stream = body.into_data_stream();
+		loop {
+			let next = tokio::time::timeout(UPLOAD_STALL, stream.next())
+				.await
+				.map_err(|_| {
+					std::io::Error::other("nothing came for a minute")
+				})?;
+			let Some(chunk) = next else { break };
+			file.write_all(&chunk.map_err(std::io::Error::other)?)
+				.await?;
+		}
+		file.flush().await
+	}
+	.await;
+	if written.is_err() {
+		let _ = std::fs::remove_file(path);
+	}
+	written
+}
+
+/// The local time like 20261101-075939, for releases, dumps and archives.
+pub async fn stamp() -> String {
+	sh("date +%Y%m%d-%H%M%S")
+		.await
+		.unwrap_or_else(|_| crate::db::now().to_string())
+}
+
+/// A time in milliseconds as local date and time, for the terminal.
+pub async fn format_time(ms: i64) -> String {
+	sh(&format!("date -d @{} '+%F %T'", ms / 1000))
+		.await
+		.unwrap_or_else(|_| ms.to_string())
+}
+
+/// The items `keep` picks, copied: the children of one parent in a tree.
+pub fn matching<T: Clone>(items: &[T], keep: impl Fn(&T) -> bool) -> Vec<T> {
+	items.iter().filter(|x| keep(x)).cloned().collect()
+}
+
+/// `n` random bytes as hex, for tokens.
+pub fn random_hex(n: usize) -> String {
+	(0..n)
+		.map(|_| format!("{:02x}", rand::random::<u8>()))
+		.collect()
+}
+
+pub fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+	use std::os::unix::fs::PermissionsExt as _;
+	std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// A directory only root may enter, with its parents.
+pub fn private_dir(path: &Path) -> std::io::Result<()> {
+	std::fs::create_dir_all(path)?;
+	set_mode(path, 0o700)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn random_hex_has_twice_the_length() {
+		let h = random_hex(16);
+		assert_eq!(h.len(), 32);
+		assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+		assert_ne!(h, random_hex(16));
+	}
+}

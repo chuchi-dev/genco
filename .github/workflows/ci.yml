@@ -1,0 +1,37 @@
+# Every pull request: the server's tests and lints, the webui's checks,
+# and a build of the whole binary. Not on pushes to main, there are many.
+name: ci
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: webui
+        working-directory: webui
+        run: |
+          npm ci
+          npx prettier --check src
+          npx svelte-check
+          npm run build
+      - name: server
+        working-directory: server
+        run: |
+          cargo fmt --check
+          cargo clippy -- -D warnings
+          cargo test

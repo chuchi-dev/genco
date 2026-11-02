@@ -1,0 +1,36 @@
+# Run by hand: prints the public half of the GENCO_RELEASE_KEY secret and
+# whether it is the key servers trust (server/src/update/allowed_signers).
+name: release-key
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  public-key:
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: server/src/update/allowed_signers
+          sparse-checkout-cone-mode: false
+      - env:
+          GENCO_RELEASE_KEY: ${{ secrets.GENCO_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$GENCO_RELEASE_KEY" > "$key"
+          pub=$(ssh-keygen -y -f "$key" | cut -d' ' -f1,2)
+          [ -n "$pub" ] || { echo "the secret holds no key" >&2; exit 1; }
+          echo "public key: $pub"
+          if grep -qF " $pub" server/src/update/allowed_signers; then
+            echo "matches allowed_signers"
+          else
+            echo "does NOT match allowed_signers"
+            exit 1
+          fi

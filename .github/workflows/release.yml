@@ -1,0 +1,77 @@
+# A tag like v0.2.0 builds the static binary (webui embedded) and attaches
+# it with install.sh to a GitHub release, which install.sh downloads.
+#
+# Building and signing are separate jobs: the build runs npm and cargo
+# with all their dependencies and never sees the signing key; the sign
+# job runs no third-party code. Actions are pinned to commits.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - run: scripts/build.sh
+      - run: cp server/target/x86_64-unknown-linux-musl/release/genco genco-x86_64-linux
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binary
+          path: genco-x86_64-linux
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    # the key is a secret of this environment (protection rules apply)
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      # only the two files it needs, no build tools, no dependencies
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/install.sh
+            server/src/update/allowed_signers
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binary
+      # servers only install releases signed with this key, its public half
+      # is server/src/update/allowed_signers
+      - name: sign
+        env:
+          GENCO_RELEASE_KEY: ${{ secrets.GENCO_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$GENCO_RELEASE_KEY" ] || { echo "the GENCO_RELEASE_KEY secret is missing" >&2; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$GENCO_RELEASE_KEY" > "$key"
+          ssh-keygen -Y sign -q -f "$key" -n genco-release genco-x86_64-linux
+          ssh-keygen -Y verify -f server/src/update/allowed_signers -I release@genco \
+            -n genco-release -s genco-x86_64-linux.sig < genco-x86_64-linux
+      - run: gh release create "$GITHUB_REF_NAME" genco-x86_64-linux genco-x86_64-linux.sig scripts/install.sh --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
