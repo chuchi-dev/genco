@@ -311,7 +311,7 @@
 			</ListView>
 			{#if proposal}
 				<p><b>{proposal.from}</b> proposes:</p>
-				<pre class="code selectable">{proposal.text}</pre>
+				<pre class="code selectable grow">{proposal.text}</pre>
 				{#if proposal.status === 'pending'}
 					<p class="hint">
 						Waits for {proposal.approverEmail ?? 'any admin'} to approve
@@ -328,7 +328,7 @@
 				{/if}
 				{#if proposal.answer}
 					<p>The answer that went back:</p>
-					<pre class="code selectable">{proposal.answer}</pre>
+					<pre class="code selectable grow">{proposal.answer}</pre>
 				{/if}
 			{:else}
 				<p class="hint">
@@ -367,6 +367,7 @@
 	@use 'styles/win' as *;
 
 	.tab:not([hidden]) {
+		flex: 1;
 		display: flex;
 		flex-direction: column;
 		padding: 4px;
@@ -381,6 +382,13 @@
 		max-height: 140px;
 		overflow: auto;
 		white-space: pre-wrap;
+
+		// a proposal and its answer take the height of a bigger window
+		&.grow {
+			flex: 1 1 140px;
+			max-height: none;
+			min-height: 80px;
+		}
 	}
 
 	.task {
