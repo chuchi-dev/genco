@@ -139,7 +139,8 @@ field in the panel.
   detects composer, Craft, npm and Cargo projects one level deep; a
   Craft project gets the worker `craft-queue` (`queue/listen`) and from
   Craft 5.7 the schedule `craft-statuses` (`update-statuses` every 5
-  minutes). Set `CRAFT_RUN_QUEUE_AUTOMATICALLY=false` in its `.env`
+  minutes) if `staticStatuses` is on (config/general.php or
+  `CRAFT_STATIC_STATUSES=true` in the shared .env), else it does nothing. Set `CRAFT_RUN_QUEUE_AUTOMATICALLY=false` in its `.env`
   then, the queue no longer has to run in the site's requests.
   Before the switch, every binary of the release has to find its
   libraries here (`ldd`), else the deploy stops. A CI can upload a

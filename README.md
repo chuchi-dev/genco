@@ -23,7 +23,7 @@ genco is young and runs our own servers. Expect rough edges, and read
 - **Workers and schedules**: commands of a group that run all the time
   (Craft's queue, a server on a public port of its own) or at times like
   cron, in the group's sandbox; from the panel or `genco.toml`, Craft's
-  queue and `update-statuses` without any config.
+  queue and (with `staticStatuses`) `update-statuses` without any config.
 - **Deploys** from git, by hand or from CI with a scoped token, or a
   release a CI built and uploaded: releases, shared folders (`.env`,
   uploads), build steps, `craft up`, rollback, and a check that the

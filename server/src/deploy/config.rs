@@ -187,12 +187,10 @@ pub(super) fn step(dir: &str, run: &str) -> Step {
 
 /// Without a genco.toml: composer, Craft, npm and Cargo projects in the
 /// release or one directory below (craft/ and svelte/ of a crelte
-/// project). `shared_exists` tells which optional shared files are there;
-/// Cargo builds on a runner.
-pub(super) fn detect(
-	release: &Path,
-	shared_exists: impl Fn(&str) -> bool,
-) -> DeployConfig {
+/// project). `shared` is the group's shared folder, which tells which
+/// optional shared files are there; Cargo builds on a runner.
+pub(super) fn detect(release: &Path, shared: &Path) -> DeployConfig {
+	let shared_exists = |p: &str| shared.join(p).exists();
 	let mut dirs = vec![".".to_string()];
 	if let Ok(entries) = std::fs::read_dir(release) {
 		let mut subs: Vec<String> = entries
@@ -235,8 +233,14 @@ pub(super) fn detect(
 					run: "php craft queue/listen --verbose".into(),
 					port: None,
 				});
-				// scheduled and expired entries change their status
-				if craft_version(&path.join("composer.lock")) >= Some((5, 7)) {
+				// scheduled and expired entries change their status, only
+				// with staticStatuses
+				let statuses = craft_version(&path.join("composer.lock"))
+					>= Some((5, 7)) && static_statuses(
+					&read_small(&path.join("config/general.php")),
+					&read_small(&shared.join(rel(".env"))),
+				);
+				if statuses {
 					cfg.schedule.push(ScheduleCfg {
 						name: "craft-statuses".into(),
 						dir: dir.clone(),
@@ -282,6 +286,31 @@ pub(super) fn detect(
 }
 
 /// Craft's major and minor version from composer.lock.
+/// Whether Craft's `staticStatuses` is on: general.php sets it (anything
+/// but false) or the .env has CRAFT_STATIC_STATUSES=true. Without it
+/// `craft update-statuses` does nothing.
+pub(super) fn static_statuses(general: &str, env: &str) -> bool {
+	let in_config = general.match_indices("staticStatuses").any(|(i, m)| {
+		let after: String = general[i + m.len()..].chars().take(30).collect();
+		!after.to_lowercase().contains("false")
+	});
+	let in_env = env.lines().any(|l| {
+		let Some((key, value)) = l.split_once('=') else {
+			return false;
+		};
+		key.trim() == "CRAFT_STATIC_STATUSES"
+			&& matches!(
+				value
+					.trim()
+					.trim_matches(['"', '\''])
+					.to_lowercase()
+					.as_str(),
+				"true" | "1"
+			)
+	});
+	in_config || in_env
+}
+
 pub(super) fn craft_version(lock: &Path) -> Option<(u32, u32)> {
 	let small = std::fs::symlink_metadata(lock)
 		.is_ok_and(|m| m.file_type().is_file() && m.len() <= 8 * 1024 * 1024);
@@ -363,7 +392,7 @@ pub(super) async fn config(
 		.await;
 	match toml {
 		Ok(ctn) => toml::from_str(&ctn).map_err(|e| format!("genco.toml: {e}")),
-		Err(_) => Ok(detect(release, |p| base.join("shared").join(p).exists())),
+		Err(_) => Ok(detect(release, &base.join("shared"))),
 	}
 }
 
@@ -415,7 +444,17 @@ mod tests {
 		.unwrap();
 		std::fs::write(dir.join("svelte/package-lock.json"), "{}").unwrap();
 
-		let cfg = detect(&dir, |p| p == "svelte/.env");
+		let shared = tmp("crelte-shared");
+		std::fs::create_dir_all(shared.join("svelte")).unwrap();
+		std::fs::write(shared.join("svelte/.env"), "").unwrap();
+		std::fs::create_dir_all(dir.join("craft/config")).unwrap();
+		std::fs::write(
+			dir.join("craft/config/general.php"),
+			"return GeneralConfig::create()->staticStatuses();",
+		)
+		.unwrap();
+
+		let cfg = detect(&dir, &shared);
 		assert_eq!(
 			cfg.shared,
 			[
@@ -438,14 +477,32 @@ mod tests {
 		assert_eq!(workers[0].command, "php craft queue/listen --verbose");
 		assert_eq!(schedules[0].command, "php craft update-statuses");
 
+		// without staticStatuses update-statuses does nothing
+		std::fs::write(dir.join("craft/config/general.php"), "").unwrap();
+		assert!(detect(&dir, &shared).schedule.is_empty());
+
 		// update-statuses came with Craft 5.7
 		std::fs::write(
 			dir.join("craft/composer.lock"),
 			r#"{"packages":[{"name":"craftcms/cms","version":"5.6.0"}]}"#,
 		)
 		.unwrap();
-		assert!(detect(&dir, |_| false).schedule.is_empty());
+		assert!(detect(&dir, &shared).schedule.is_empty());
 		std::fs::remove_dir_all(dir).unwrap();
+		std::fs::remove_dir_all(shared).unwrap();
+	}
+
+	#[test]
+	fn static_statuses_from_config_or_env() {
+		assert!(static_statuses("'staticStatuses' => true,", ""));
+		assert!(static_statuses("->staticStatuses()", ""));
+		assert!(!static_statuses("'staticStatuses' => false,", ""));
+		assert!(!static_statuses("->staticStatuses(false)", ""));
+		assert!(!static_statuses("", ""));
+		assert!(static_statuses("", "CRAFT_STATIC_STATUSES=true\n"));
+		assert!(static_statuses("", "CRAFT_STATIC_STATUSES=\"true\""));
+		assert!(!static_statuses("", "CRAFT_STATIC_STATUSES=false"));
+		assert!(!static_statuses("", "#CRAFT_STATIC_STATUSES"));
 	}
 
 	#[test]
