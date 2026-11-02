@@ -316,3 +316,6 @@ Still open:
 - Drop-down menus (Start, Run, conversations) could share one component.
 - A group's PostgreSQL role sees the names of the other databases
   (pg_database), not their content.
+- Chat attachments in `/var/lib/genco/uploads` are never deleted: decide
+  on a cleanup (e.g. after 90 days, or with their conversation; operator
+  not sure yet, 2026-11-02).
