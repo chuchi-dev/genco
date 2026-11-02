@@ -68,6 +68,8 @@ pub async fn main(
 		"ca-certificates",
 		// consistent copies of the sites' SQLite files for the backup
 		"sqlite3",
+		// dig, for the DNS checks
+		"bind9-dnsutils",
 	])
 	.await?;
 	step("installing PHP 8.2 to 8.5");
@@ -202,6 +204,8 @@ async fn harden_ssh() -> Result<(), String> {
 }
 
 async fn firewall() -> Result<(), String> {
+	// cloud images come without it
+	apt(&["nftables"]).await?;
 	let port = sh("sshd -T | awk '/^port / {print $2; exit}'").await?;
 	let port = if port.is_empty() { "22".into() } else { port };
 

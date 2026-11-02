@@ -14,8 +14,10 @@ RELEASE=https://github.com/chuchi-dev/genco/releases/latest/download
 # piped into bash, the questions read from the terminal
 ask() {
 	local var=$1 prompt=$2 secret=${3:-}
-	[ -n "${!var:-}" ] && return
-	[ -r /dev/tty ] || { echo "set $var" >&2; exit 1; }
+	# set, even empty (GENCO_ANTHROPIC_KEY= skips the agent's key)
+	[ -n "${!var+x}" ] && return
+	# without a terminal /dev/tty exists but doesn't open
+	{ true </dev/tty; } 2>/dev/null || { echo "set $var" >&2; exit 1; }
 	if [ -n "$secret" ]; then
 		read -rsp "$prompt: " "$var" </dev/tty
 		echo
