@@ -143,6 +143,7 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("POST", "/settings/mail", "Change mail settings"),
 		("POST", "/settings/mail/test", "Send test mail"),
 		("POST", "/settings/notify", "Change notifications"),
+		("POST", "/settings/model", "Change the agent's model"),
 		("POST", "/domains/*/env", "Change environment variables"),
 		("GET", "/groups/*/smtp", "Show SMTP login"),
 		("POST", "/runners", "Add runner"),

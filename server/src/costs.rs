@@ -14,12 +14,14 @@ use crate::error::Result;
 use crate::users::Authed;
 
 /// USD per million tokens: input, output, cache read, cache write (5
-/// minutes). From Anthropic's price list; models not listed are counted
-/// without a price.
+/// minutes). From Anthropic's and OpenRouter's price lists; models not
+/// listed are counted without a price.
 const PRICES: &[(&str, [f64; 4])] = &[
 	("claude-opus-5.5", [4.0, 20.0, 0.20, 5.0]),
 	("claude-sonnet-5.5", [2.0, 10.0, 0.20, 2.5]),
 	("claude-haiku-5.5", [0.10, 0.50, 0.01, 0.125]),
+	("gemini-4-argon", [2.0, 10.0, 0.10, 0.1875]),
+	("gpt-6.1-sol", [2.0, 10.0, 0.10, 2.5]),
 ];
 
 /// The price in USD, `None` for a model without a known price.

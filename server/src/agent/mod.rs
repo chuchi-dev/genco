@@ -269,10 +269,11 @@ impl Runner {
 		id: i64,
 		messages: &[Message],
 	) -> Result<Vec<Output>, String> {
+		let model = crate::llm::model(&self.0.cfg, &self.0.db);
 		let req = Request {
 			input: to_input(messages),
 			instructions: self.instructions(),
-			model: Model::OpenRouter(Some(self.0.cfg.model.clone())),
+			model: Model::OpenRouter(Some(model.clone())),
 			user_id: "genco".into(),
 			tools: tools::definitions(),
 			reasoning_effort: None,
@@ -294,12 +295,8 @@ impl Runner {
 			});
 		}
 		let resp = stream.into_response().ok_or("llm response incomplete")?;
-		let used = crate::costs::record(
-			&self.0.db.conn(),
-			id,
-			&self.0.cfg.model,
-			&resp.usage,
-		);
+		let used =
+			crate::costs::record(&self.0.db.conn(), id, &model, &resp.usage);
 		if let Err(e) = used {
 			tracing::error!("recording the llm usage: {e}");
 		}

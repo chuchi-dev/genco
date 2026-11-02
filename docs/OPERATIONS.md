@@ -395,7 +395,10 @@ model = "anthropic/claude-opus-5.5"  # an OpenRouter model id, the default
 
 With `anthropic-key`, Anthropic's models go directly to Anthropic; if
 Anthropic refuses a request and there is an `openrouter-key`, it goes
-through OpenRouter. Another model (`anthropic/claude-sonnet-5.5`, or any
-other OpenRouter id) needs `model` and, for models not by Anthropic,
-`openrouter-key`. After a change run `systemctl restart genco`. The
-costs are under the server's page in the Explorer (Agent costs).
+through OpenRouter. Settings → Agent chooses the model: Claude Opus 5.5,
+Claude Sonnet 5.5, or with `openrouter-key` also Gemini 4 Argon and
+GPT-6.1 Sol. The choice applies to the next request, no restart. `model`
+in the config is the default until one is chosen there and may be any
+other OpenRouter id. After a change of the keys run `systemctl restart
+genco`. The costs are under the server's page in the Explorer (Agent
+costs).

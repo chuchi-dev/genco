@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Dialog from '../win/Dialog.svelte';
 	import Tabs from '../win/Tabs.svelte';
+	import AgentSettings from './AgentSettings.svelte';
 	import MailSettings from './MailSettings.svelte';
 	import NotifySettings from './NotifySettings.svelte';
 	import RunnerSettings from './RunnerSettings.svelte';
@@ -11,6 +12,7 @@
 	const TABS = [
 		{ id: 'mail', label: 'Mail' },
 		{ id: 'notify', label: 'Notifications' },
+		{ id: 'agent', label: 'Agent' },
 		{ id: 'update', label: 'Updates' },
 		{ id: 'runners', label: 'Runners' },
 	];
@@ -23,6 +25,7 @@
 		switch -->
 		<div class="tab" hidden={tab !== 'mail'}><MailSettings /></div>
 		<div class="tab" hidden={tab !== 'notify'}><NotifySettings /></div>
+		<div class="tab" hidden={tab !== 'agent'}><AgentSettings /></div>
 		<div class="tab" hidden={tab !== 'update'}><UpdateSettings /></div>
 		<div class="tab" hidden={tab !== 'runners'}><RunnerSettings /></div>
 	</Tabs>
