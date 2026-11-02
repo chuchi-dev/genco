@@ -10,9 +10,9 @@ $title-inactive: #808080;
 $select: #000080;
 $link: #0000ee;
 
-$font:
-	'Tahoma', 'MS Sans Serif', 'Microsoft Sans Serif', 'Segoe UI',
-	'Liberation Sans', Arial, sans-serif;
+// smooth fonts only: Tahoma and MS Sans Serif render thin and pixelated
+// on Linux, so a machine with them would look different from the others
+$font: 'Segoe UI', 'Noto Sans', 'Liberation Sans', Arial, sans-serif;
 $mono: 'Lucida Console', 'Courier New', 'Liberation Mono', monospace;
 
 @mixin raised {
