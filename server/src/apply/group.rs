@@ -104,25 +104,52 @@ pub(super) fn user_ids(user: &str) -> Option<(u32, u32)> {
 	})
 }
 
+/// genco's users get ids from here on: the system range below 1000 is
+/// where container images have theirs (MySQL's 999), and a server that
+/// still runs Docker would otherwise give a group the container's files.
+const FIRST_ID: u32 = 20000;
+
+/// The lowest id from FIRST_ID that no user and no group has.
+fn free_id(passwd: &str, group: &str) -> u32 {
+	let used: std::collections::HashSet<u32> = passwd
+		.lines()
+		.chain(group.lines())
+		.filter_map(|l| l.split(':').nth(2)?.parse().ok())
+		.collect();
+	(FIRST_ID..).find(|id| !used.contains(id)).unwrap()
+}
+
+/// A user without login and its group of the same name, both with the
+/// same free id. Existing users keep theirs.
+pub(super) async fn add_user(r: &mut Report, user: &str, home: &str) -> bool {
+	let id = free_id(
+		&std::fs::read_to_string("/etc/passwd").unwrap_or_default(),
+		&std::fs::read_to_string("/etc/group").unwrap_or_default(),
+	)
+	.to_string();
+	r.run(&["groupadd", "--gid", &id, user]).await
+		&& r.run(&[
+			"useradd",
+			"--uid",
+			&id,
+			"--gid",
+			&id,
+			"--home-dir",
+			home,
+			"--no-create-home",
+			"--shell",
+			"/usr/sbin/nologin",
+			user,
+		])
+		.await
+}
+
 /// The group's user; nginx is in its group to read the files.
 pub(super) async fn ensure_user(r: &mut Report, g: &Group) {
 	let user = render::group_user(&g.name);
 	if user_ids(&user).is_none() {
 		let home = render::group_dir(&g.name).display().to_string();
-		if !r
-			.run(&[
-				"useradd",
-				"--system",
-				"--user-group",
-				"--home-dir",
-				&home,
-				"--no-create-home",
-				"--shell",
-				"/usr/sbin/nologin",
-				&user,
-			])
-			.await
-		{
+		if !add_user(r, &user, &home).await {
 			return;
 		}
 		r.info(format!("added the user {user}"));
@@ -230,5 +257,21 @@ pub(super) async fn deploy_key(r: &mut Report, g: &Group) {
 		.await
 	{
 		r.info(format!("created the deploy key of {}", g.name));
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn ids_come_from_genco_s_range() {
+		let passwd = "root:x:0:0::/root:/bin/sh\n\
+			mysql:x:999:999::/:/sbin/nologin\n\
+			g-shop:x:20000:20000::/srv/genco/shop:/usr/sbin/nologin\n";
+		let group = "root:x:0:\nmysql:x:999:\ng-shop:x:20000:www-data\n\
+			docker:x:20001:\n";
+		assert_eq!(free_id(passwd, group), 20002);
+		assert_eq!(free_id("", ""), FIRST_ID);
 	}
 }

@@ -153,17 +153,7 @@ pub(super) async fn prepare_mail(r: &mut Report, groups: &[Group]) {
 		return;
 	}
 	if user_ids(webmail::USER).is_none() {
-		r.run(&[
-			"useradd",
-			"--system",
-			"--home-dir",
-			webmail::DATA,
-			"--no-create-home",
-			"--shell",
-			"/usr/sbin/nologin",
-			webmail::USER,
-		])
-		.await;
+		super::group::add_user(r, webmail::USER, webmail::DATA).await;
 		// nginx talks to its PHP socket
 		r.run(&["usermod", "-aG", webmail::USER, "www-data"]).await;
 	}
@@ -265,17 +255,7 @@ pub(super) async fn submission(r: &mut Report, on: bool) -> bool {
 /// The system user that owns the mail, and its directory only it reads.
 pub(super) async fn ensure_vmail(r: &mut Report) {
 	if user_ids("vmail").is_none() {
-		r.run(&[
-			"useradd",
-			"--system",
-			"--home-dir",
-			mailbox::VMAIL,
-			"--no-create-home",
-			"--shell",
-			"/usr/sbin/nologin",
-			"vmail",
-		])
-		.await;
+		super::group::add_user(r, "vmail", mailbox::VMAIL).await;
 	}
 	let Some((uid, gid)) = user_ids("vmail") else {
 		return;

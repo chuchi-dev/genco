@@ -299,7 +299,8 @@ pub fn panel_file(domain: &str, listen: &str, cert: bool) -> File {
 }
 
 /// A port 80 server that answers ACME challenges, with a certificate it
-/// redirects to a 443 server with `body`.
+/// redirects to a 443 server with `body`. 308, not 301: a POST stays a
+/// POST with its body (a server-side GraphQL call to an http:// URL).
 pub fn server_blocks(domain: &str, cert: bool, body: &str) -> String {
 	let http = format!(
 		"server {{
@@ -320,7 +321,7 @@ pub fn server_blocks(domain: &str, cert: bool, body: &str) -> String {
 	format!(
 		"{HEADER}\n{http}
 	location / {{
-		return 301 https://$host$request_uri;
+		return 308 https://$host$request_uri;
 	}}
 }}
 
@@ -337,11 +338,11 @@ server {{
 	)
 }
 
-/// www.<domain> sends every request to the domain, over https once the
-/// www name has its certificate.
+/// www.<domain> sends every request to the domain (308 like the https
+/// redirect), over https once the www name has its certificate.
 fn www_redirect(www: &str, domain: &str, cert: bool) -> String {
 	let body = format!(
-		"\tlocation / {{\n\t\treturn 301 https://{domain}$request_uri;\n\t}}\n"
+		"\tlocation / {{\n\t\treturn 308 https://{domain}$request_uri;\n\t}}\n"
 	);
 	server_blocks(www, cert, &body)
 }
@@ -862,7 +863,7 @@ mod tests {
 		let certs = HashSet::from(["shop.ch".to_string()]);
 		let site = &group_files(&g, &certs)[1].content;
 
-		assert!(site.contains("return 301 https://"));
+		assert!(site.contains("return 308 https://"));
 		assert!(site.contains("listen 443 ssl;"));
 		assert!(site.contains("/etc/letsencrypt/live/shop.ch/fullchain.pem"));
 		// the challenges still work over http
@@ -878,7 +879,7 @@ mod tests {
 		let files = group_files(&g, &HashSet::new());
 		let www = find(&files, "/etc/nginx/genco/www.shop.ch.conf");
 		assert!(www.contains("server_name www.shop.ch;"));
-		assert!(www.contains("return 301 https://shop.ch$request_uri;"));
+		assert!(www.contains("return 308 https://shop.ch$request_uri;"));
 		assert!(www.contains("acme-challenge"));
 		assert!(!www.contains("listen 443"));
 

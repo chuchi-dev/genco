@@ -94,7 +94,10 @@ field in the panel.
   `HOST=127.0.0.1`; only nginx, root and the group can reach the port.
   A public folder (`genco domain set --public current/svelte/dist/public`)
   is served by nginx directly, the rest goes to the app; crelte sites
-  have theirs in `svelte/dist/public`.
+  have theirs in `svelte/dist/public`. crelte reads `../craft/.env` at
+  runtime and fetches its own `/queries/*` through `FRONTEND_URL`, and
+  calls Craft's GraphQL URL from the server: both must be the https://
+  addresses (http goes through the redirect, behind basic auth too).
 - Proxy domains (`genco domain add <d> --group <g> --kind proxy
   --upstream http://127.0.0.1:8081`) forward every request to another
   web server with the domain as Host and X-Forwarded-Proto: a site that
