@@ -1,7 +1,7 @@
 //! `genco setup`: looks at the server first (inventory), then hardens it
 //! and installs what genco needs. Safe to run again.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::util::sh;
@@ -192,15 +192,46 @@ async fn harden_ssh() -> Result<(), String> {
 		return Ok(());
 	}
 
+	// genco's file is read first and wins: a server that allows no root
+	// login at all keeps that
+	let root = if root_login_off() {
+		"no"
+	} else {
+		"prohibit-password"
+	};
 	let changed = write(
 		"/etc/ssh/sshd_config.d/10-genco.conf",
-		"# written by genco: keys only\nPasswordAuthentication no\n\
-		KbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\n",
+		&format!(
+			"# written by genco: keys only\nPasswordAuthentication no\n\
+			KbdInteractiveAuthentication no\nPermitRootLogin {root}\n"
+		),
 	)?;
 	if changed {
 		sh("sshd -t && systemctl reload ssh").await?;
 	}
 	Ok(())
+}
+
+/// Whether sshd's own config (not genco's file) says `PermitRootLogin no`.
+fn root_login_off() -> bool {
+	let mut files = vec![PathBuf::from("/etc/ssh/sshd_config")];
+	if let Ok(dir) = std::fs::read_dir("/etc/ssh/sshd_config.d") {
+		files.extend(
+			dir.flatten()
+				.map(|e| e.path())
+				.filter(|p| !p.ends_with("10-genco.conf")),
+		);
+	}
+	files.iter().any(|f| {
+		std::fs::read_to_string(f)
+			.unwrap_or_default()
+			.lines()
+			.any(|l| {
+				let words: Vec<String> =
+					l.split_whitespace().map(str::to_lowercase).collect();
+				words == ["permitrootlogin", "no"]
+			})
+	})
 }
 
 async fn firewall() -> Result<(), String> {
@@ -244,9 +275,18 @@ table inet filter {{
 		udp dport {{ 68, 546 }} accept
 		tcp dport {{ {port}, 80, 443, 25, 465, 587, 993 }} accept
 		tcp dport @genco_public accept
+		# Docker (a server moving into genco still runs containers): its
+		# containers reach the host's services, e.g. PostgreSQL
+		iifname \"docker0\" accept
+		iifname \"br-*\" accept
 	}}
 	chain forward {{
 		type filter hook forward priority filter; policy drop;
+		# Docker's own rules decide what goes to and from its containers
+		iifname \"docker0\" accept
+		oifname \"docker0\" accept
+		iifname \"br-*\" accept
+		oifname \"br-*\" accept
 	}}
 }}
 
