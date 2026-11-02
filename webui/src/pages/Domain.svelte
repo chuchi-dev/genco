@@ -129,9 +129,12 @@
 </Form>
 
 <div class="row-buttons">
-	<Button onclick={() => go(`/groups/${group.id}/files/${domain.root}`)}>
-		Open Folder
-	</Button>
+	<!-- a proxy has no files here -->
+	{#if domain.kind !== 'proxy'}
+		<Button onclick={() => go(`/groups/${group.id}/files/${domain.root}`)}>
+			Open Folder
+		</Button>
+	{/if}
 	<Button
 		onclick={() =>
 			requestDelete(`/domains/${domain.id}`, `the domain ${domain.name}`)}

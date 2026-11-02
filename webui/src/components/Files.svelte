@@ -63,6 +63,8 @@
 			if (!entries.some(e => e.name === selected))
 				selected = entries[0]?.name ?? null;
 		} catch (e: any) {
+			// the list says it, not "Loading…" forever
+			entries = null;
 			error = e.message;
 		}
 	}
@@ -426,7 +428,9 @@
 					<td colspan="3" class="empty">
 						{entries
 							? 'Empty. Drop files or folders here to upload them.'
-							: 'Loading…'}
+							: error
+								? `Can't open this folder: ${error}`
+								: 'Loading…'}
 					</td>
 				</tr>
 			{/each}
