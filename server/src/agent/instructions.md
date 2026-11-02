@@ -85,6 +85,28 @@ field in the panel.
   A public folder (`genco domain set --public current/svelte/dist/public`)
   is served by nginx directly, the rest goes to the app; crelte sites
   have theirs in `svelte/dist/public`.
+- Proxy domains (`genco domain add <d> --group <g> --kind proxy
+  --upstream http://127.0.0.1:8081`) forward every request to another
+  web server with the domain as Host and X-Forwarded-Proto: a site that
+  still runs elsewhere (a container, the old server) until it moves into
+  genco, then `genco domain set <d> --kind php ...` switches it.
+- Workers run a group's command all the time as
+  `genco-<group>-worker-<name>.service` (Craft's queue, a server on a
+  port of its own): `genco worker add <name> --group <g> --dir
+  current/craft --command "php craft queue/listen --verbose" [--port
+  5426]`. With `--port` the port is open to the internet (not 20000 to
+  29999, nor genco's own) and the worker gets `PORT`; without, it may
+  not listen at all. They restart when they stop and after every
+  deploy. `genco worker list|set|delete`.
+- Schedules run a command at times like cron, as
+  `genco-<group>-cron-<name>.timer` with its `.service`: `genco schedule
+  add <name> --group <g> --dir current/craft --command "php craft gc"
+  --every hourly` (systemd's OnCalendar: hourly, daily, `*:0/5`, `Mon
+  *-*-* 03:00`; `--timeout` minutes, default 60). A failed run is a
+  failed unit, a problem the minute check reports. `genco schedule
+  run <name> --group <g>` starts one now; the output is in its journal.
+  Workers and schedules run as the group's user in its sandbox, with
+  the group's PHP as `php`; after a change `genco apply`.
 - MariaDB only on its socket; a group's user logs in as `g-<group>`
   without a password (unix_socket auth). Use `mariadb` as root.
 - Files of a group belong to its user: create them as root, then
@@ -96,8 +118,13 @@ field in the panel.
   (deploy key `.ssh/deploy_key`), links what `genco.toml` lists as
   `shared` from `shared/` (`.env`, uploads, storage), runs the build
   steps as the group's user, switches `current`, runs the after-switch
-  steps (`craft up`) and restarts the apps. Without a genco.toml it
-  detects composer, Craft, npm and Cargo projects one level deep.
+  steps (`craft up`), takes over genco.toml's workers and schedules and
+  restarts the apps and workers. Without a genco.toml it
+  detects composer, Craft, npm and Cargo projects one level deep; a
+  Craft project gets the worker `craft-queue` (`queue/listen`) and from
+  Craft 5.7 the schedule `craft-statuses` (`update-statuses` every 5
+  minutes). Set `CRAFT_RUN_QUEUE_AUTOMATICALLY=false` in its `.env`
+  then, the queue no longer has to run in the site's requests.
   Before the switch, every binary of the release has to find its
   libraries here (`ldd`), else the deploy stops. A CI can upload a
   release it built (`PUT /api/deploy/artifact?group=<g>&ref=<tag>` with
@@ -123,7 +150,21 @@ field in the panel.
   [[after-switch]]   # after `current` points to it, before restarts
   dir = "craft"
   run = "php craft up --interactive=0"
+  [[worker]]         # runs all the time, in current/<dir>
+  name = "queue"
+  dir = "craft"
+  run = "php craft queue/listen --verbose"
+  # port = 5426      # a public port of its own, as PORT
+  [[schedule]]       # runs at times
+  name = "statuses"
+  dir = "craft"
+  run = "php craft update-statuses"
+  every = "*:0/5"    # systemd's OnCalendar
+  timeout = 10       # minutes, default 60
   ```
+  Workers and schedules of genco.toml replace the earlier ones of the
+  repository with every deploy; the panel's stay (one of the same name
+  wins) and genco.toml's can't be changed in the panel.
 - Runners: build boxes running `genco runner` connect out to this
   server and take the `on = "runner"` steps (Settings → Runners, `genco
   runners list|add <name>|remove <name>`; on the box `genco runner

@@ -5,6 +5,7 @@ use super::*;
 
 pub(super) fn ctx(state: &AppState) -> Ctx {
 	Ctx {
+		cfg: state.cfg.clone(),
 		db: state.db.clone(),
 		events: state.events.clone(),
 		print: false,

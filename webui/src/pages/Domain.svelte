@@ -30,6 +30,7 @@
 	let root = $state(start.root);
 	let command = $state(start.command);
 	let publicDir = $state(start.publicDir);
+	let upstream = $state(start.upstream);
 	let nginxExtra = $state(start.nginxExtra);
 	let files = $state<ConfigFile[] | null>(null);
 
@@ -55,6 +56,7 @@
 			root,
 			command,
 			publicDir,
+			upstream,
 			nginxExtra,
 		});
 	}
@@ -71,11 +73,15 @@
 	<dd><a href="/groups/{group.id}">{group.name}</a></dd>
 	<dt>Serves:</dt>
 	<dd>
-		{KIND_NAMES[domain.kind]}{domain.phpVersion
-			? ' ' + domain.phpVersion
-			: ''}
-		{app ? 'in' : 'from'}
-		<code>{group.dir}/{domain.root}</code>
+		{#if domain.kind === 'proxy'}
+			Forwards to <code>{domain.upstream}</code>
+		{:else}
+			{KIND_NAMES[domain.kind]}{domain.phpVersion
+				? ' ' + domain.phpVersion
+				: ''}
+			{app ? 'in' : 'from'}
+			<code>{group.dir}/{domain.root}</code>
+		{/if}
 	</dd>
 	{#if domain.publicDir}
 		<dt>Public files:</dt>
@@ -105,6 +111,7 @@
 		bind:root
 		bind:command
 		bind:publicDir
+		bind:upstream
 	/>
 	<label for="d-extra">Extra nginx:</label>
 	<textarea

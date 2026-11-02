@@ -84,13 +84,14 @@ export type Activity = {
 	ok: boolean | null;
 };
 
-export type Kind = 'static' | 'php' | 'node' | 'rust';
-export const KINDS: Kind[] = ['static', 'php', 'node', 'rust'];
+export type Kind = 'static' | 'php' | 'node' | 'rust' | 'proxy';
+export const KINDS: Kind[] = ['static', 'php', 'node', 'rust', 'proxy'];
 export const KIND_NAMES: Record<Kind, string> = {
 	static: 'Static files',
 	php: 'PHP',
 	node: 'Node',
 	rust: 'Rust binary',
+	proxy: 'Proxy',
 };
 export const PHP_VERSIONS = ['8.2', '8.3', '8.4', '8.5'];
 
@@ -105,6 +106,37 @@ export type Domain = {
 	/** of an app: files nginx serves itself, relative to the group */
 	publicDir: string | null;
 	nginxExtra: string;
+	/** of a proxy: where it forwards to */
+	upstream: string | null;
+};
+
+/** 'repo': from genco.toml, changes only with the repository */
+export type Source = 'panel' | 'repo';
+
+/** a command of a group that runs all the time */
+export type Worker = {
+	id: number;
+	groupId: number;
+	name: string;
+	dir: string;
+	command: string;
+	/** open to the internet, the worker gets it as PORT */
+	port: number | null;
+	source: Source;
+};
+
+/** a command of a group that runs at times */
+export type Schedule = {
+	id: number;
+	groupId: number;
+	name: string;
+	dir: string;
+	command: string;
+	/** systemd's OnCalendar */
+	every: string;
+	/** minutes */
+	timeout: number;
+	source: Source;
 };
 
 export type Database = {
@@ -126,6 +158,8 @@ export type Group = {
 	domains: Domain[];
 	databases: Database[];
 	mailDomains: MailDomain[];
+	workers: Worker[];
+	schedules: Schedule[];
 	php: PhpSettings;
 };
 

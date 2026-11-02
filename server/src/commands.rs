@@ -75,6 +75,7 @@ pub(crate) async fn deploy_cmd(
 		return Ok(());
 	}
 	let ctx = deploy::Ctx {
+		cfg: std::sync::Arc::new(cfg),
 		db: db.clone(),
 		events: Events::new(),
 		print: true,

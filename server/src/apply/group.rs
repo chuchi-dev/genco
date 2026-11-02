@@ -53,6 +53,28 @@ pub(super) async fn start_units(
 		}
 		start_unit(r, &unit, restart).await;
 	}
+
+	for w in &g.workers {
+		let unit = render::worker_unit(&g.name, &w.name);
+		let restart = changed.contains(&render::unit_path(&unit))
+			|| changed.contains(&render::worker_script(&g.name, &w.name));
+		if !render::worker_ready(&g.name, w) {
+			r.run(&["systemctl", "enable", "-q", &unit]).await;
+			r.info(format!(
+				"{unit} waits for the first deploy ({} isn't there)",
+				w.dir
+			));
+			continue;
+		}
+		start_unit(r, &unit, restart).await;
+	}
+
+	// the timer starts the service; a changed time needs a restart
+	for s in &g.schedules {
+		let timer = render::schedule_timer(&g.name, &s.name);
+		let restart = changed.contains(&render::unit_path(&timer));
+		start_unit(r, &timer, restart).await;
+	}
 }
 
 pub(super) async fn start_unit(r: &mut Report, unit: &str, restart: bool) {
@@ -152,8 +174,10 @@ pub(super) async fn ensure_dirs(r: &mut Report, g: &Group) {
 
 	let mut dirs = vec![(base.join("logs"), None), (base.join("tmp"), None)];
 	for d in &g.domains {
-		// deploys create current, it links to a release
-		if d.root.split('/').next() == Some("current") {
+		// deploys create current, it links to a release; a proxy has
+		// no files
+		if d.root.split('/').next() == Some("current") || d.kind == Kind::Proxy
+		{
 			continue;
 		}
 		let page =

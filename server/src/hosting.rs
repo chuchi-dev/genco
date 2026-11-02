@@ -32,6 +32,9 @@ pub enum Kind {
 	Php,
 	Node,
 	Rust,
+	/// forwards to another web server (`upstream`), e.g. one that runs
+	/// until the site moves into genco
+	Proxy,
 }
 
 impl Kind {
@@ -41,6 +44,7 @@ impl Kind {
 			Self::Php => "php",
 			Self::Node => "node",
 			Self::Rust => "rust",
+			Self::Proxy => "proxy",
 		}
 	}
 
@@ -49,6 +53,7 @@ impl Kind {
 			"php" => Self::Php,
 			"node" => Self::Node,
 			"rust" => Self::Rust,
+			"proxy" => Self::Proxy,
 			_ => Self::Static,
 		}
 	}
@@ -80,6 +85,8 @@ pub struct Group {
 	pub domains: Vec<Domain>,
 	pub databases: Vec<Database>,
 	pub mail_domains: Vec<crate::mailbox::MailDomain>,
+	pub workers: Vec<crate::procs::Worker>,
+	pub schedules: Vec<crate::procs::Schedule>,
 	pub php: PhpSettings,
 	/// password and Dovecot hash of its SMTP login `g-<group>`, made by
 	/// apply once it has mail domains; never to the browser with the tree
@@ -151,6 +158,8 @@ pub struct Domain {
 	pub public_dir: Option<String>,
 	/// lines added to the domain's nginx server block
 	pub nginx_extra: String,
+	/// where a proxy domain forwards to, `http://127.0.0.1:8080`
+	pub upstream: Option<String>,
 	/// of a Node or Rust app, never to the browser (secrets), see appenv
 	#[serde(skip)]
 	pub env: Vec<crate::appenv::EnvVar>,
@@ -209,7 +218,7 @@ impl Engine {
 pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 	let mut stmt = conn.prepare(
 		"SELECT id, group_id, name, kind, php_version, root, command,
-		nginx_extra, public_dir, env FROM domains ORDER BY name",
+		nginx_extra, public_dir, env, upstream FROM domains ORDER BY name",
 	)?;
 	let domains: Vec<Domain> = stmt
 		.query_map([], |row| {
@@ -224,6 +233,7 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 				nginx_extra: row.get(7)?,
 				public_dir: row.get(8)?,
 				env: crate::appenv::parse(&row.get::<_, String>(9)?),
+				upstream: row.get(10)?,
 			})
 		})?
 		.collect::<rusqlite::Result<_>>()?;
@@ -243,6 +253,7 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 		.collect::<rusqlite::Result<_>>()?;
 
 	let mail_domains = crate::mailbox::load(conn)?;
+	let (workers, schedules) = crate::procs::load(conn)?;
 
 	let mut stmt = conn.prepare(
 		"SELECT id, name, client_id, notes, repo, branch, php, smtp_password,
@@ -273,6 +284,8 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 				mail_domains: util::matching(&mail_domains, |d| {
 					d.group_id == id
 				}),
+				workers: util::matching(&workers, |w| w.group_id == id),
+				schedules: util::matching(&schedules, |s| s.group_id == id),
 			})
 		})?
 		.collect::<rusqlite::Result<_>>()?;
@@ -463,7 +476,7 @@ fn public_dir(kind: Kind, dir: &Option<String>) -> Result<Option<String>> {
 
 /// The root stays inside the group's directory and is a plain path, it
 /// goes into nginx and unit files.
-fn check_root(root: &str) -> Result<()> {
+pub fn check_root(root: &str) -> Result<()> {
 	let plain = root
 		.chars()
 		.all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c));
@@ -485,6 +498,38 @@ fn check_command(kind: Kind, command: &Option<String>) -> Result<()> {
 			"only Node and Rust apps have a command".into(),
 		)),
 		_ => Ok(()),
+	}
+}
+
+/// Where a proxy domain forwards to: http(s), a host and a port, maybe a
+/// path; it goes into nginx's config.
+fn check_upstream(kind: Kind, upstream: &Option<String>) -> Result<()> {
+	let upstream = upstream.as_deref().map(str::trim).filter(|u| !u.is_empty());
+	match (kind, upstream) {
+		(Kind::Proxy, Some(u)) => {
+			let rest = u
+				.strip_prefix("http://")
+				.or_else(|| u.strip_prefix("https://"))
+				.unwrap_or("");
+			let plain = !rest.is_empty()
+				&& !rest.starts_with(['/', ':'])
+				&& rest.chars().all(|c| {
+					c.is_ascii_alphanumeric() || "-._:/[]".contains(c)
+				});
+			if !plain {
+				return Err(Error::Invalid(format!(
+					"{u} is no address like http://127.0.0.1:8080"
+				)));
+			}
+			Ok(())
+		}
+		(Kind::Proxy, None) => Err(Error::Invalid(
+			"a proxy domain needs the address it forwards to".into(),
+		)),
+		(_, Some(_)) => {
+			Err(Error::Invalid("only proxy domains forward".into()))
+		}
+		(_, None) => Ok(()),
 	}
 }
 
@@ -661,6 +706,8 @@ pub struct DomainSettings {
 	pub public_dir: Option<String>,
 	#[serde(default)]
 	pub nginx_extra: String,
+	#[serde(default)]
+	pub upstream: Option<String>,
 }
 
 impl DomainSettings {
@@ -668,6 +715,7 @@ impl DomainSettings {
 	fn check(&self) -> Result<Option<String>> {
 		check_php(self.kind, &self.php_version)?;
 		check_command(self.kind, &self.command)?;
+		check_upstream(self.kind, &self.upstream)?;
 		check_root(&self.root)?;
 		public_dir(self.kind, &self.public_dir)
 	}
@@ -682,6 +730,15 @@ pub struct DomainReq {
 	pub settings: DomainSettings,
 }
 
+/// Trimmed, only for proxies.
+fn upstream(s: &DomainSettings) -> Option<String> {
+	s.upstream
+		.as_deref()
+		.map(str::trim)
+		.filter(|u| !u.is_empty() && s.kind == Kind::Proxy)
+		.map(String::from)
+}
+
 pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 	let name = req.name.trim().to_lowercase();
 	check_domain_name(&name)?;
@@ -690,8 +747,8 @@ pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 
 	conn.execute(
 		"INSERT INTO domains (group_id, name, kind, php_version, root,
-		command, nginx_extra, created_at, public_dir)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+		command, nginx_extra, created_at, public_dir, upstream)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
 		params![
 			req.group_id,
 			name,
@@ -701,7 +758,8 @@ pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 			s.command,
 			s.nginx_extra,
 			now(),
-			public_dir
+			public_dir,
+			upstream(s)
 		],
 	)?;
 	Ok(conn.last_insert_rowid())
@@ -727,7 +785,8 @@ pub fn set_domain(
 
 	let n = conn.execute(
 		"UPDATE domains SET kind = ?1, php_version = ?2, root = ?3,
-		command = ?4, nginx_extra = ?5, public_dir = ?6 WHERE id = ?7",
+		command = ?4, nginx_extra = ?5, public_dir = ?6, upstream = ?7
+		WHERE id = ?8",
 		params![
 			req.kind.as_str(),
 			req.php_version,
@@ -735,6 +794,7 @@ pub fn set_domain(
 			req.command,
 			req.nginx_extra,
 			public_dir,
+			upstream(req),
 			id
 		],
 	)?;
@@ -880,6 +940,25 @@ mod tests {
 		assert!(check_root("../other").is_err());
 		assert!(check_root("web\nExecStartPre=+/bin/sh").is_err());
 		assert!(check_root("a b").is_err());
+	}
+
+	#[test]
+	fn upstreams_only_for_proxies() {
+		let u = |s: &str| Some(s.to_string());
+		assert!(
+			check_upstream(Kind::Proxy, &u("http://127.0.0.1:8081")).is_ok()
+		);
+		assert!(
+			check_upstream(Kind::Proxy, &u("https://old.example.ch/")).is_ok()
+		);
+		assert!(check_upstream(Kind::Proxy, &None).is_err());
+		assert!(check_upstream(Kind::Proxy, &u("ftp://x")).is_err());
+		assert!(
+			check_upstream(Kind::Proxy, &u("http://a; return 200")).is_err()
+		);
+		assert!(check_upstream(Kind::Proxy, &u("http://a}\nserver{")).is_err());
+		assert!(check_upstream(Kind::Php, &u("http://a")).is_err());
+		assert!(check_upstream(Kind::Php, &None).is_ok());
 	}
 
 	#[test]

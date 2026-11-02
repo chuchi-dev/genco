@@ -332,9 +332,12 @@ async fn remove_stale(r: &mut Report, keep: &HashSet<&Path>) -> Vec<String> {
 		("/etc/genco/php", "", ".conf"),
 		("/etc/genco/apps", "", ".sh"),
 		("/etc/genco/apps", "", ".env"),
+		("/etc/genco/workers", "", ".sh"),
+		("/etc/genco/schedules", "", ".sh"),
 		("/etc/genco/smtp", "g-", ""),
 		("/etc/systemd/system", "genco-", ".service"),
 		("/etc/systemd/system", "genco-", ".slice"),
+		("/etc/systemd/system", "genco-", ".timer"),
 	] {
 		let Ok(entries) = std::fs::read_dir(dir) else {
 			continue;

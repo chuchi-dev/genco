@@ -48,6 +48,13 @@ pub(super) async fn deploy(ctx: &Ctx, id: i64, log: &mut Log) -> Res<()> {
 	}
 	// the release is live already, the apps run it even if a step after
 	// the switch failed
+	let group = match sync_procs(ctx, log, &group, &cfg).await {
+		Ok(g) => g,
+		Err(e) => {
+			after = after.and(Err(e));
+			group
+		}
+	};
 	restart(log, &group).await;
 	prune(&shell, log, &base).await;
 	after.map_err(|e| format!("{e}, the new release is live, check the site"))
@@ -195,6 +202,12 @@ impl Build<'_> {
 		}
 		if cfg.after_switch.iter().any(Step::on_runner) {
 			return Err("genco.toml: steps after the switch run here".into());
+		}
+		cfg.procs()?;
+		for s in &cfg.schedule {
+			procs::check_every(&s.every)
+				.await
+				.map_err(|e| format!("genco.toml: {e}"))?;
 		}
 
 		for p in &cfg.shared {
@@ -374,6 +387,31 @@ pub(super) async fn switch(
 	Ok(())
 }
 
+/// The workers and schedules of genco.toml (or detected) replace the
+/// earlier ones; with a change apply writes their units. Returns the group
+/// as it is now.
+async fn sync_procs(
+	ctx: &Ctx,
+	log: &mut Log,
+	group: &Group,
+	cfg: &DeployConfig,
+) -> Res<Group> {
+	let (workers, schedules) = cfg.procs()?;
+	let changed =
+		procs::sync_repo(&ctx.db.conn(), group.id, &workers, &schedules)
+			.map_err(|e| format!("genco.toml: {e}"))?;
+	if !changed {
+		return Ok(group.clone());
+	}
+	log.line("the workers or schedules changed, applying").await;
+	let report = crate::apply::apply(&ctx.cfg, &ctx.db).await;
+	for line in report.log.iter().filter(|l| l.starts_with("error")) {
+		log.line(line).await;
+	}
+	ctx.events.send(crate::events::Event::Tree);
+	hosting::find_group(&ctx.db.conn(), group.id).map_err(|e| e.to_string())
+}
+
 /// PHP drops its cached code, the apps start with the new release.
 pub(super) async fn restart(log: &mut Log, group: &Group) {
 	for v in render::php_versions(group) {
@@ -382,6 +420,10 @@ pub(super) async fn restart(log: &mut Log, group: &Group) {
 	}
 	for d in group.domains.iter().filter(|d| render::has_app(d)) {
 		let unit = render::app_unit(&group.name, &d.name);
+		systemctl(log, "restart", &unit).await;
+	}
+	for w in &group.workers {
+		let unit = render::worker_unit(&group.name, &w.name);
 		systemctl(log, "restart", &unit).await;
 	}
 }

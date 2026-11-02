@@ -17,7 +17,12 @@ genco is young and runs our own servers. Expect rough edges, and read
   Groups can't read each other's files.
 - **Domains**: static, PHP, Node or Rust, with Let's Encrypt certificates
   and nginx written for you. A Node app can have a public folder that
-  nginx serves directly.
+  nginx serves directly. A proxy domain forwards to another web server,
+  e.g. while a site moves into genco.
+- **Workers and schedules**: commands of a group that run all the time
+  (Craft's queue, a server on a public port of its own) or at times like
+  cron, in the group's sandbox; from the panel or `genco.toml`, Craft's
+  queue and `update-statuses` without any config.
 - **Deploys** from git, by hand or from CI with a scoped token, or a
   release a CI built and uploaded: releases, shared folders (`.env`,
   uploads), build steps, `craft up`, rollback, and a check that the

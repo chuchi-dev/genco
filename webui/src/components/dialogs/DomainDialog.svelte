@@ -23,6 +23,7 @@
 	let root = $state('public');
 	let command = $state<string | null>(null);
 	let publicDir = $state<string | null>(null);
+	let upstream = $state<string | null>(null);
 
 	async function save() {
 		oncreated(
@@ -34,6 +35,7 @@
 				root,
 				command,
 				publicDir,
+				upstream,
 			}),
 		);
 	}
@@ -61,6 +63,7 @@
 			bind:root
 			bind:command
 			bind:publicDir
+			bind:upstream
 		/>
 	</Form>
 </Dialog>

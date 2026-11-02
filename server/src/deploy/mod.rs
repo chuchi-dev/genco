@@ -28,8 +28,9 @@ use crate::AppState;
 use crate::db::{Db, now};
 use crate::error::{Error, Result};
 use crate::events::{Event, Events};
-use crate::hosting::{self, Group, Kind};
+use crate::hosting::{self, Group};
 use crate::job::{self, Log};
+use crate::procs::{self, Schedule, Worker};
 use crate::render;
 use crate::tokens::{self, ApiToken};
 use crate::users::Authed;
@@ -38,7 +39,6 @@ use crate::util;
 use build::*;
 use config::*;
 pub use routes::routes;
-pub use shell::php_bin_dir;
 use shell::*;
 
 /// steps of a deploy fail with what to show in its log
@@ -227,6 +227,7 @@ pub fn upload_path(id: i64) -> PathBuf {
 
 /// Writes the deploy's log and tells the browsers about status changes.
 pub struct Ctx {
+	pub cfg: std::sync::Arc<crate::config::Config>,
 	pub db: Db,
 	pub events: Events,
 	/// `genco deploy` prints the log too

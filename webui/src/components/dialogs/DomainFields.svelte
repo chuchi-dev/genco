@@ -8,12 +8,14 @@
 		root = $bindable(),
 		command = $bindable(),
 		publicDir = $bindable(),
+		upstream = $bindable(),
 	}: {
 		kind: Kind;
 		phpVersion: string | null;
 		root: string;
 		command: string | null;
 		publicDir: string | null;
+		upstream: string | null;
 	} = $props();
 
 	const app = $derived(kind === 'node' || kind === 'rust');
@@ -25,6 +27,7 @@
 		if (isApp && !command)
 			command = k === 'node' ? 'node build/index.js' : './server';
 		if (!isApp) command = publicDir = null;
+		upstream = k === 'proxy' ? (upstream ?? 'http://127.0.0.1:8080') : null;
 	}
 </script>
 
@@ -46,8 +49,19 @@
 		{/each}
 	</select>
 {/if}
-<label for="d-root">{app ? 'Directory:' : 'Root:'}</label>
-<input id="d-root" placeholder="public" bind:value={root} />
+{#if kind === 'proxy'}
+	<label for="d-upstream">Forwards to:</label>
+	<input
+		id="d-upstream"
+		class="mono"
+		placeholder="http://127.0.0.1:8080"
+		title="nginx passes every request on, with the domain as Host"
+		bind:value={upstream}
+	/>
+{:else}
+	<label for="d-root">{app ? 'Directory:' : 'Root:'}</label>
+	<input id="d-root" placeholder="public" bind:value={root} />
+{/if}
 {#if app}
 	<label for="d-cmd">Command:</label>
 	<input id="d-cmd" class="mono" bind:value={command} />

@@ -18,6 +18,99 @@ pub struct DeployConfig {
 	/// after the switch, before the apps restart
 	#[serde(default)]
 	pub after_switch: Vec<Step>,
+	/// commands that run all the time, restarted with every deploy
+	#[serde(default)]
+	pub worker: Vec<WorkerCfg>,
+	/// commands that run at times
+	#[serde(default)]
+	pub schedule: Vec<ScheduleCfg>,
+}
+
+/// `[[worker]]` in genco.toml.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerCfg {
+	pub name: String,
+	/// relative to the release
+	#[serde(default = "default_dir")]
+	pub dir: String,
+	pub run: String,
+	/// a port of its own, open to the internet
+	#[serde(default)]
+	pub port: Option<u16>,
+}
+
+/// `[[schedule]]` in genco.toml.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleCfg {
+	pub name: String,
+	#[serde(default = "default_dir")]
+	pub dir: String,
+	pub run: String,
+	/// systemd's OnCalendar: hourly, *:0/5, Mon *-*-* 03:00
+	pub every: String,
+	/// minutes, 60 by default
+	#[serde(default)]
+	pub timeout: Option<u32>,
+}
+
+/// A release's folder as seen from the group's directory: they run in
+/// whatever `current` is.
+fn in_current(dir: &str) -> String {
+	if dir == "." {
+		"current".into()
+	} else {
+		format!("current/{dir}")
+	}
+}
+
+impl DeployConfig {
+	/// The workers and schedules for `procs::sync_repo`, checked.
+	pub(super) fn procs(&self) -> Res<(Vec<Worker>, Vec<Schedule>)> {
+		let workers: Vec<Worker> = self
+			.worker
+			.iter()
+			.map(|w| Worker {
+				id: 0,
+				group_id: 0,
+				name: w.name.clone(),
+				dir: in_current(&w.dir),
+				command: w.run.clone(),
+				port: w.port,
+				source: String::new(),
+			})
+			.collect();
+		let schedules: Vec<Schedule> = self
+			.schedule
+			.iter()
+			.map(|s| Schedule {
+				id: 0,
+				group_id: 0,
+				name: s.name.clone(),
+				dir: in_current(&s.dir),
+				command: s.run.clone(),
+				every: s.every.clone(),
+				timeout: s.timeout.unwrap_or(60),
+				source: String::new(),
+			})
+			.collect();
+		for w in &workers {
+			check_path_or_dot(&w.dir)?;
+			w.check().map_err(|e| format!("genco.toml: {e}"))?;
+		}
+		for s in &schedules {
+			s.check().map_err(|e| format!("genco.toml: {e}"))?;
+		}
+		Ok((workers, schedules))
+	}
+}
+
+fn check_path_or_dot(dir: &str) -> Res<()> {
+	match dir.strip_prefix("current/") {
+		Some(rest) => check_path(rest),
+		None => Ok(()),
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -135,6 +228,23 @@ pub(super) fn detect(
 				}
 				cfg.after_switch
 					.push(step(&dir, "php craft up --interactive=0"));
+				// the queue runs beside the site, not in its requests
+				cfg.worker.push(WorkerCfg {
+					name: "craft-queue".into(),
+					dir: dir.clone(),
+					run: "php craft queue/listen --verbose".into(),
+					port: None,
+				});
+				// scheduled and expired entries change their status
+				if craft_version(&path.join("composer.lock")) >= Some((5, 7)) {
+					cfg.schedule.push(ScheduleCfg {
+						name: "craft-statuses".into(),
+						dir: dir.clone(),
+						run: "php craft update-statuses".into(),
+						every: "*:0/5".into(),
+						timeout: Some(10),
+					});
+				}
 			}
 		}
 
@@ -169,6 +279,28 @@ pub(super) fn detect(
 		}
 	}
 	cfg
+}
+
+/// Craft's major and minor version from composer.lock.
+pub(super) fn craft_version(lock: &Path) -> Option<(u32, u32)> {
+	let small = std::fs::symlink_metadata(lock)
+		.is_ok_and(|m| m.file_type().is_file() && m.len() <= 8 * 1024 * 1024);
+	if !small {
+		return None;
+	}
+	let lock: serde_json::Value =
+		serde_json::from_str(&std::fs::read_to_string(lock).ok()?).ok()?;
+	let version = lock
+		.get("packages")?
+		.as_array()?
+		.iter()
+		.find(|p| {
+			p.get("name").and_then(|n| n.as_str()) == Some("craftcms/cms")
+		})?
+		.get("version")?
+		.as_str()?;
+	let mut parts = version.trim_start_matches('v').split('.');
+	Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
 /// The binary of a Cargo package (not a workspace), if its name is plain.
@@ -268,6 +400,12 @@ mod tests {
 		let dir = tmp("crelte");
 		std::fs::create_dir_all(dir.join("craft")).unwrap();
 		std::fs::write(dir.join("craft/composer.json"), "{}").unwrap();
+		std::fs::write(
+			dir.join("craft/composer.lock"),
+			r#"{"packages":[{"name":"x/y","version":"1.0"},
+			{"name":"craftcms/cms","version":"5.8.3"}]}"#,
+		)
+		.unwrap();
 		std::fs::write(dir.join("craft/craft"), "").unwrap();
 		std::fs::create_dir_all(dir.join("svelte")).unwrap();
 		std::fs::write(
@@ -295,6 +433,18 @@ mod tests {
 			cfg.after_switch,
 			[step("craft", "php craft up --interactive=0")]
 		);
+		let (workers, schedules) = cfg.procs().unwrap();
+		assert_eq!(workers[0].dir, "current/craft");
+		assert_eq!(workers[0].command, "php craft queue/listen --verbose");
+		assert_eq!(schedules[0].command, "php craft update-statuses");
+
+		// update-statuses came with Craft 5.7
+		std::fs::write(
+			dir.join("craft/composer.lock"),
+			r#"{"packages":[{"name":"craftcms/cms","version":"5.6.0"}]}"#,
+		)
+		.unwrap();
+		assert!(detect(&dir, |_| false).schedule.is_empty());
 		std::fs::remove_dir_all(dir).unwrap();
 	}
 
@@ -308,11 +458,30 @@ mod tests {
 			[[after-switch]]
 			dir = "app"
 			run = "./migrate"
+			[[worker]]
+			name = "packages"
+			run = "./packages-server"
+			port = 5426
+			[[schedule]]
+			name = "cleanup"
+			dir = "app"
+			run = "./cleanup"
+			every = "daily"
 			"#,
 		)
 		.unwrap();
 		assert_eq!(cfg.build, [step(".", "cargo build")]);
 		assert_eq!(cfg.after_switch, [step("app", "./migrate")]);
+		let (workers, schedules) = cfg.procs().unwrap();
+		assert_eq!(workers[0].dir, "current");
+		assert_eq!(workers[0].port, Some(5426));
+		assert_eq!(schedules[0].dir, "current/app");
+		assert_eq!(schedules[0].timeout, 60);
+		let bad: DeployConfig = toml::from_str(
+			"[[worker]]\nname = \"q\"\ndir = \"../x\"\nrun = \"x\"",
+		)
+		.unwrap();
+		assert!(bad.procs().is_err());
 		assert!(toml::from_str::<DeployConfig>("unknown = 1").is_err());
 	}
 

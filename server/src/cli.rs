@@ -7,6 +7,7 @@ use rusqlite::Connection;
 use crate::actions;
 use crate::error::{Error, Result};
 use crate::hosting::{self, Kind};
+use crate::procs;
 
 #[derive(Debug, Parser)]
 pub enum ClientCmd {
@@ -110,6 +111,101 @@ pub struct DomainOpts {
 	/// lines added to the nginx server block
 	#[clap(long)]
 	nginx_extra: Option<String>,
+	/// proxy: where it forwards to, e.g. http://127.0.0.1:8081
+	#[clap(long)]
+	upstream: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub enum WorkerCmd {
+	/// List the workers of every group
+	List,
+	/// Add a command that runs all the time as the group's user, restarted
+	/// when it stops and after every deploy
+	Add {
+		name: String,
+		#[clap(long)]
+		group: String,
+		/// relative to the group's directory, e.g. current/craft
+		#[clap(long, default_value = ".")]
+		dir: String,
+		#[clap(long)]
+		command: String,
+		/// a port of its own, open to the internet; it gets it as PORT
+		#[clap(long)]
+		port: Option<u16>,
+	},
+	/// Change a worker, unset options stay
+	Set {
+		name: String,
+		#[clap(long)]
+		group: String,
+		#[clap(long)]
+		dir: Option<String>,
+		#[clap(long)]
+		command: Option<String>,
+		#[clap(long)]
+		port: Option<u16>,
+		/// close its public port
+		#[clap(long)]
+		no_port: bool,
+	},
+	/// Remove a worker (not one of genco.toml)
+	Delete {
+		name: String,
+		#[clap(long)]
+		group: String,
+	},
+}
+
+#[derive(Debug, Parser)]
+pub enum ScheduleCmd {
+	/// List the schedules of every group
+	List,
+	/// Add a command that runs at times, as the group's user
+	Add {
+		name: String,
+		#[clap(long)]
+		group: String,
+		/// relative to the group's directory, e.g. current/craft
+		#[clap(long, default_value = ".")]
+		dir: String,
+		#[clap(long)]
+		command: String,
+		/// systemd's OnCalendar: hourly, daily, *:0/5, Mon *-*-* 03:00
+		#[clap(long)]
+		every: String,
+		/// minutes it may run
+		#[clap(long, default_value_t = 60)]
+		timeout: u32,
+	},
+	/// Change a schedule, unset options stay
+	Set {
+		name: String,
+		#[clap(long)]
+		group: String,
+		#[clap(long)]
+		dir: Option<String>,
+		#[clap(long)]
+		command: Option<String>,
+		#[clap(long)]
+		every: Option<String>,
+		#[clap(long)]
+		timeout: Option<u32>,
+	},
+	/// Remove a schedule (not one of genco.toml)
+	Delete {
+		name: String,
+		#[clap(long)]
+		group: String,
+	},
+	/// Run a schedule now, its output is in `journalctl -u
+	/// genco-<group>-cron-<name>`
+	Run {
+		name: String,
+		#[clap(long)]
+		group: String,
+	},
 }
 
 #[derive(Debug, Parser)]
@@ -252,6 +348,7 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 					command: opts.command,
 					public_dir: opts.public,
 					nginx_extra: opts.nginx_extra.unwrap_or_default(),
+					upstream: opts.upstream,
 				},
 			};
 			let id = hosting::insert_domain(conn, &req)?;
@@ -294,6 +391,10 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 				command,
 				public_dir: opts.public.or(d.public_dir),
 				nginx_extra: opts.nginx_extra.unwrap_or(d.nginx_extra),
+				upstream: match kind {
+					Kind::Proxy => opts.upstream.or(d.upstream),
+					_ => None,
+				},
 			};
 			hosting::set_domain(conn, d.id, &req)?;
 			Ok("changed, run genco apply".into())
@@ -322,4 +423,174 @@ pub fn database(conn: &Connection, cmd: DatabaseCmd) -> Result<String> {
 	};
 	let id = hosting::insert_database(conn, &req)?;
 	Ok(format!("added database {id}, run genco apply"))
+}
+
+fn group_of(conn: &Connection, name: &str) -> Result<hosting::Group> {
+	hosting::group_by_name(conn, name)?
+		.ok_or_else(|| Error::Invalid(format!("no group {name}")))
+}
+
+fn source_note(source: &str) -> &'static str {
+	if source == procs::REPO {
+		"  (repository)"
+	} else {
+		""
+	}
+}
+
+pub fn worker(conn: &Connection, cmd: WorkerCmd) -> Result<String> {
+	match cmd {
+		WorkerCmd::List => {
+			let lines: Vec<String> = hosting::groups(conn)?
+				.iter()
+				.flat_map(|g| {
+					g.workers.iter().map(move |w| {
+						let port = w
+							.port
+							.map(|p| format!(" :{p}"))
+							.unwrap_or_default();
+						format!(
+							"{}/{}{port}  in {}: {}{}",
+							g.name,
+							w.name,
+							w.dir,
+							w.command,
+							source_note(&w.source)
+						)
+					})
+				})
+				.collect();
+			Ok(lines.join("\n"))
+		}
+		WorkerCmd::Add {
+			name,
+			group,
+			dir,
+			command,
+			port,
+		} => {
+			let w = procs::Worker {
+				id: 0,
+				group_id: group_id(conn, &group)?,
+				name,
+				dir,
+				command,
+				port,
+				source: String::new(),
+			};
+			procs::save_worker(conn, &w)?;
+			Ok("added, run genco apply".into())
+		}
+		WorkerCmd::Set {
+			name,
+			group,
+			dir,
+			command,
+			port,
+			no_port,
+		} => {
+			let g = group_of(conn, &group)?;
+			let w =
+				g.workers.into_iter().find(|w| w.name == name).ok_or_else(
+					|| Error::Invalid(format!("no worker {name}")),
+				)?;
+			let w = procs::Worker {
+				dir: dir.unwrap_or(w.dir),
+				command: command.unwrap_or(w.command),
+				port: if no_port { None } else { port.or(w.port) },
+				..w
+			};
+			procs::save_worker(conn, &w)?;
+			Ok("changed, run genco apply".into())
+		}
+		WorkerCmd::Delete { name, group } => {
+			let g = group_of(conn, &group)?;
+			let w =
+				g.workers.iter().find(|w| w.name == name).ok_or_else(|| {
+					Error::Invalid(format!("no worker {name}"))
+				})?;
+			procs::delete(conn, "workers", w.id)?;
+			Ok("removed, run genco apply".into())
+		}
+	}
+}
+
+/// `every` is checked with systemd before, see main.
+pub fn schedule(conn: &Connection, cmd: ScheduleCmd) -> Result<String> {
+	match cmd {
+		ScheduleCmd::List => {
+			let lines: Vec<String> = hosting::groups(conn)?
+				.iter()
+				.flat_map(|g| {
+					g.schedules.iter().map(move |s| {
+						format!(
+							"{}/{}  {}  in {}: {}{}",
+							g.name,
+							s.name,
+							s.every,
+							s.dir,
+							s.command,
+							source_note(&s.source)
+						)
+					})
+				})
+				.collect();
+			Ok(lines.join("\n"))
+		}
+		ScheduleCmd::Add {
+			name,
+			group,
+			dir,
+			command,
+			every,
+			timeout,
+		} => {
+			let s = procs::Schedule {
+				id: 0,
+				group_id: group_id(conn, &group)?,
+				name,
+				dir,
+				command,
+				every,
+				timeout,
+				source: String::new(),
+			};
+			procs::save_schedule(conn, &s)?;
+			Ok("added, run genco apply".into())
+		}
+		ScheduleCmd::Set {
+			name,
+			group,
+			dir,
+			command,
+			every,
+			timeout,
+		} => {
+			let g = group_of(conn, &group)?;
+			let s = g
+				.schedules
+				.into_iter()
+				.find(|s| s.name == name)
+				.ok_or_else(|| Error::Invalid(format!("no schedule {name}")))?;
+			let s = procs::Schedule {
+				dir: dir.unwrap_or(s.dir),
+				command: command.unwrap_or(s.command),
+				every: every.unwrap_or(s.every),
+				timeout: timeout.unwrap_or(s.timeout),
+				..s
+			};
+			procs::save_schedule(conn, &s)?;
+			Ok("changed, run genco apply".into())
+		}
+		ScheduleCmd::Delete { name, group } => {
+			let g = group_of(conn, &group)?;
+			let s =
+				g.schedules.iter().find(|s| s.name == name).ok_or_else(
+					|| Error::Invalid(format!("no schedule {name}")),
+				)?;
+			procs::delete(conn, "schedules", s.id)?;
+			Ok("removed, run genco apply".into())
+		}
+		ScheduleCmd::Run { .. } => unreachable!("main starts it"),
+	}
 }

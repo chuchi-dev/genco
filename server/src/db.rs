@@ -322,6 +322,39 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE domain_groups ADD COLUMN smtp_password TEXT;
 	ALTER TABLE domain_groups ADD COLUMN smtp_hash TEXT;
 "#,
+	// a group's long running processes (a queue, a server on its own
+	// port) and its commands on a timer, from the panel or genco.toml
+	// (procs.rs); domains that only forward to another server
+	r#"
+	CREATE TABLE workers (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		group_id INTEGER NOT NULL
+			REFERENCES domain_groups(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		dir TEXT NOT NULL,
+		command TEXT NOT NULL,
+		port INTEGER,
+		source TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		UNIQUE (group_id, name)
+	);
+
+	CREATE TABLE schedules (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		group_id INTEGER NOT NULL
+			REFERENCES domain_groups(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		dir TEXT NOT NULL,
+		command TEXT NOT NULL,
+		every TEXT NOT NULL,
+		timeout INTEGER NOT NULL,
+		source TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		UNIQUE (group_id, name)
+	);
+
+	ALTER TABLE domains ADD COLUMN upstream TEXT;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

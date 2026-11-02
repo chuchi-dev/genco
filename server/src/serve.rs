@@ -175,6 +175,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.merge(notify::routes())
 		.merge(update::routes())
 		.merge(appenv::routes())
+		.merge(procs::routes())
 		.merge(runners::routes())
 		.layer(axum::middleware::from_fn_with_state(
 			state.clone(),

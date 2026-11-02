@@ -230,6 +230,11 @@ table inet filter
 delete table inet filter
 
 table inet filter {{
+	# the workers' public ports, `apply` fills it
+	set genco_public {{
+		type inet_service;
+	}}
+
 	chain input {{
 		type filter hook input priority filter; policy drop;
 		iif lo accept
@@ -238,6 +243,7 @@ table inet filter {{
 		meta l4proto {{ icmp, ipv6-icmp }} accept
 		udp dport {{ 68, 546 }} accept
 		tcp dport {{ {port}, 80, 443, 25, 465, 587, 993 }} accept
+		tcp dport @genco_public accept
 	}}
 	chain forward {{
 		type filter hook forward priority filter; policy drop;
@@ -314,7 +320,7 @@ async fn php() -> Result<(), String> {
 		sh(&format!("systemctl disable -q --now php{v}-fpm")).await?;
 		// deploys put it first in PATH, composer and craft use the
 		// group's version
-		let bin = crate::deploy::php_bin_dir(v);
+		let bin = crate::render::php_bin_dir(v);
 		sh(&format!(
 			"mkdir -p {bin} && ln -sfn /usr/bin/php{v} {bin}/php"
 		))

@@ -28,6 +28,7 @@ mod mailbox;
 mod mailfilter;
 mod notify;
 mod pg;
+mod procs;
 mod render;
 mod routines;
 mod runner;
@@ -126,6 +127,13 @@ pub(crate) enum Cmd {
 	/// Manage databases
 	#[clap(subcommand)]
 	Database(cli::DatabaseCmd),
+	/// Commands of a group that run all the time (a queue, a server on
+	/// its own port)
+	#[clap(subcommand)]
+	Worker(cli::WorkerCmd),
+	/// Commands of a group that run at times, like cron
+	#[clap(subcommand)]
+	Schedule(cli::ScheduleCmd),
 	/// Manage the admins of the panel
 	#[clap(subcommand)]
 	User(UserCmd),
@@ -353,6 +361,26 @@ async fn run(args: Args) -> Result<(), String> {
 			import_cmd(cfg, name, file).await
 		}
 		Cmd::Database(cmd) => edit(cfg, |conn| cli::database(conn, cmd)),
+		Cmd::Worker(cmd) => edit(cfg, |conn| cli::worker(conn, cmd)),
+		Cmd::Schedule(cli::ScheduleCmd::Run { name, group }) => {
+			let unit = render::schedule_unit(&group, &name);
+			procs::start_now(&unit).await.map_err(|e| e.to_string())?;
+			println!("started {unit}, see journalctl -u {unit}");
+			Ok(())
+		}
+		Cmd::Schedule(cmd) => {
+			let every = match &cmd {
+				cli::ScheduleCmd::Add { every, .. } => Some(every.clone()),
+				cli::ScheduleCmd::Set { every, .. } => every.clone(),
+				_ => None,
+			};
+			if let Some(every) = every {
+				procs::check_every(&every)
+					.await
+					.map_err(|e| e.to_string())?;
+			}
+			edit(cfg, |conn| cli::schedule(conn, cmd))
+		}
 		Cmd::Secret(cmd) => {
 			edit(cfg, |conn| secrets::cli(conn, cmd, read_password))
 		}

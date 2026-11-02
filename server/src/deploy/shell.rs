@@ -17,11 +17,7 @@ pub(super) struct GroupShell {
 
 impl GroupShell {
 	pub(super) fn new(group: &Group) -> Self {
-		let php = group
-			.domains
-			.iter()
-			.filter(|d| d.kind == Kind::Php)
-			.find_map(|d| d.php_version.clone());
+		let php = render::php_cli(group).map(String::from);
 		Self {
 			user: render::group_user(&group.name),
 			slice: render::slice(&group.name),
@@ -40,7 +36,7 @@ impl GroupShell {
 		let dir = self.dir.display();
 		let mut path = String::new();
 		if let Some(v) = &self.php {
-			path.push_str(&format!("{}:", php_bin_dir(v)));
+			path.push_str(&format!("{}:", render::php_bin_dir(v)));
 		}
 		path.push_str("/usr/local/bin:/usr/bin:/bin");
 
@@ -130,11 +126,6 @@ impl GroupShell {
 		}
 		Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 	}
-}
-
-/// `php` there is the given version, `genco setup` creates them.
-pub fn php_bin_dir(version: &str) -> String {
-	format!("/usr/local/lib/genco/php{version}")
 }
 
 #[cfg(test)]

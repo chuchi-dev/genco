@@ -25,6 +25,7 @@
 	import Usage from '@/components/Usage.svelte';
 	import Files from '@/components/Files.svelte';
 	import GroupServices from '@/components/GroupServices.svelte';
+	import GroupProcs from '@/components/GroupProcs.svelte';
 	import GroupDatabases from '@/components/GroupDatabases.svelte';
 	import GroupSmtp from '@/components/GroupSmtp.svelte';
 
@@ -222,7 +223,11 @@
 									? ' ' + d.phpVersion
 									: ''}
 							</td>
-							<td><code>{d.root}</code></td>
+							<td>
+								<code>
+									{d.kind === 'proxy' ? d.upstream : d.root}
+								</code>
+							</td>
 						</tr>
 					{:else}
 						<tr>
@@ -238,6 +243,7 @@
 			</Button>
 		</div>
 	{:else if tab === 'services'}
+		<GroupProcs {group} />
 		<GroupServices {group} />
 	{:else if tab === 'config'}
 		{#if files}
