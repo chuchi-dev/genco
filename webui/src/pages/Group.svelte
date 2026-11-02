@@ -7,6 +7,7 @@
 </script>
 
 <script lang="ts">
+	import { GROUP_TABS } from '@/lib/groupTabs';
 	import {
 		KIND_NAMES,
 		get,
@@ -35,17 +36,7 @@
 		path,
 	}: { id: string; tab?: string; path?: string } = $props();
 
-	const TABS = [
-		{ id: 'general', label: 'General' },
-		{ id: 'domains', label: 'Domains' },
-		{ id: 'files', label: 'Files' },
-		{ id: 'services', label: 'Services' },
-		{ id: 'config', label: 'Configuration' },
-		{ id: 'databases', label: 'Databases' },
-		{ id: 'deploy', label: 'Deploy' },
-		{ id: 'backups', label: 'Backups' },
-		{ id: 'usage', label: 'Usage' },
-	];
+	const TABS = GROUP_TABS;
 	// /groups/1/files/shared/craft opens the files tab in that folder
 	const tab = $derived(
 		path !== undefined

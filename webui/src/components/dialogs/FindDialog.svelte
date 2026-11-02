@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { get, newest } from '@/lib/api';
 	import { conversations } from '@/lib/conversations.svelte';
-	import { dialogs } from '@/lib/dialogs.svelte';
+	import { dialogs, type DialogKind } from '@/lib/dialogs.svelte';
+	import { GROUP_TABS } from '@/lib/groupTabs';
 	import { tree } from '@/lib/tree.svelte';
 	import Dialog from '../win/Dialog.svelte';
 	import Icon, { type IconName } from '../win/Icon.svelte';
@@ -50,6 +51,34 @@
 		.catch(() => {});
 
 	const q = $derived(query.trim().toLowerCase());
+	// "puresport domains", "puresport > dom", "puresport: deploy"
+	const words = $derived(q.split(/[\s>:/]+/).filter(Boolean));
+
+	// the Start menu's dialogs and the new ones, by name and other words
+	const COMMANDS: { name: string; also: string; dialog: DialogKind }[] = [
+		{ name: 'Users', also: 'admins invite', dialog: 'users' },
+		{
+			name: 'Settings',
+			also: 'mail notifications model updates runners',
+			dialog: 'settings',
+		},
+		{ name: 'Passwords', also: 'secrets logins', dialog: 'passwords' },
+		{ name: 'API Tokens', also: 'keys', dialog: 'tokens' },
+		{
+			name: 'AI Agents',
+			also: 'proposals webhooks keys',
+			dialog: 'agents',
+		},
+		{ name: 'Activity Log', also: 'history', dialog: 'activity' },
+		{ name: 'Two-Factor Login', also: 'totp 2fa', dialog: 'totp' },
+		{ name: 'Change Password', also: '', dialog: 'password' },
+		{ name: 'Apply Changes', also: '', dialog: 'apply' },
+		{ name: 'New Client', also: 'add', dialog: 'client' },
+		{ name: 'New Group', also: 'add', dialog: 'group' },
+		{ name: 'New Domain', also: 'add', dialog: 'domain' },
+		{ name: 'New Database', also: 'add', dialog: 'database' },
+		{ name: 'New Mail Domain', also: 'add', dialog: 'mail' },
+	];
 	const has = (...texts: (string | null | undefined)[]) =>
 		texts.some(t => t?.toLowerCase().includes(q));
 
@@ -74,6 +103,39 @@
 			onclose();
 			onpage(path);
 		};
+
+		for (const c of COMMANDS) {
+			const text = `${c.name} ${c.also}`.toLowerCase();
+			if (words.every(w => text.includes(w)))
+				out.push({
+					key: 'cmd-' + c.dialog,
+					icon: 'gear',
+					name: c.name + '…',
+					kind: 'Menu',
+					where: '',
+					open: () => (dialogs.open = c.dialog),
+				});
+		}
+
+		// the last word starts a tab's name, the others pick the group
+		const last = words.at(-1) ?? '';
+		const tabs = GROUP_TABS.filter(t =>
+			t.label.toLowerCase().startsWith(last),
+		);
+		const groupQuery = words.slice(0, -1).join(' ');
+		if (groupQuery && tabs.length)
+			for (const g of tree.groups.filter(g =>
+				g.name.toLowerCase().includes(groupQuery),
+			))
+				for (const t of tabs)
+					out.push({
+						key: `tab-${g.id}-${t.id}`,
+						icon: 'group',
+						name: `${g.name} › ${t.label}`,
+						kind: 'Group tab',
+						where: tree.client(g.clientId)?.name ?? '',
+						open: page(`/groups/${g.id}/${t.id}`),
+					});
 
 		for (const c of tree.clients) {
 			if (has(c.name, c.contact, c.notes))
