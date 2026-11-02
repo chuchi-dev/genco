@@ -371,8 +371,11 @@ async fn propose(
 	};
 	events.send(Event::Proposals);
 
+	// the agent gets its answer right away, a slow mail server mustn't
+	// hold its request
 	if req.mail_delay == 0 {
-		mail(&cfg, &db, id).await;
+		let db = db.clone();
+		tokio::spawn(async move { mail(&cfg, &db, id).await });
 	}
 	Ok(Json(Created {
 		id,
