@@ -12,6 +12,7 @@ export type DialogKind =
 	| 'totp'
 	| 'tokens'
 	| 'agents'
+	| 'find'
 	| 'activity'
 	| 'passwords';
 

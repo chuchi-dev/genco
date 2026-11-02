@@ -13,7 +13,7 @@
 	import { listen } from '@/lib/events.svelte';
 	import { dialogs } from '@/lib/dialogs.svelte';
 	import { track } from '@/lib/drag';
-	import { current, setChat } from '@/lib/router.svelte';
+	import { current, go, setChat } from '@/lib/router.svelte';
 	import { session } from '@/lib/session.svelte';
 	import Agent from '@/components/Agent.svelte';
 	import Explorer from '@/components/Explorer.svelte';
@@ -64,6 +64,28 @@
 	$effect(() => {
 		if (mobile && showAgent && showExplorer) showExplorer = false;
 	});
+
+	/** a conversation in the agent's window, also when it was hidden */
+	function showChat(id: number) {
+		if (mobile) toggle(true);
+		else showAgent = true;
+		setChat(id);
+	}
+
+	/** a page in the Explorer, also when it was hidden */
+	function showPage(path: string) {
+		if (mobile) toggle(false);
+		else showExplorer = true;
+		go(path);
+	}
+
+	// Ctrl+K (⌘K) opens Find from anywhere
+	function onkeydown(e: KeyboardEvent) {
+		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+			e.preventDefault();
+			dialogs.open = 'find';
+		}
+	}
 
 	/** the taskbar's button: on a phone it brings the window to the front */
 	function toggle(agent: boolean) {
@@ -136,11 +158,7 @@
 	</main>
 
 	<Taskbar
-		onattention={id => {
-			if (mobile) toggle(true);
-			else showAgent = true;
-			setChat(id);
-		}}
+		onattention={showChat}
 		windows={[
 			{
 				title: 'Server Agent',
@@ -156,6 +174,8 @@
 			},
 		]}
 		start={[
+			{ label: 'Find…', onclick: () => (dialogs.open = 'find') },
+			{ separator: true },
 			{ label: 'Settings…', onclick: () => (dialogs.open = 'settings') },
 			{ label: 'Users…', onclick: () => (dialogs.open = 'users') },
 			{
@@ -185,7 +205,8 @@
 	/>
 </div>
 
-<Dialogs />
+<svelte:window {onkeydown} />
+<Dialogs onpage={showPage} onchat={showChat} />
 
 <style lang="scss">
 	@use 'styles/win' as *;

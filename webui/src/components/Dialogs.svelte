@@ -14,12 +14,22 @@
 	import TotpDialog from '@/components/dialogs/TotpDialog.svelte';
 	import TokensDialog from '@/components/dialogs/TokensDialog.svelte';
 	import AgentsDialog from '@/components/dialogs/AgentsDialog.svelte';
+	import FindDialog from '@/components/dialogs/FindDialog.svelte';
 	import ActivityDialog from '@/components/dialogs/ActivityDialog.svelte';
 	import PasswordsDialog from '@/components/dialogs/PasswordsDialog.svelte';
 	import MessageBox from '@/components/dialogs/MessageBox.svelte';
 
 	// the desktop's dialogs, one at a time (`dialogs.open`), and the
 	// message boxes on top
+	let {
+		onpage,
+		onchat,
+	}: {
+		/** shows a page in the Explorer */
+		onpage: (path: string) => void;
+		/** shows a conversation in the agent's window */
+		onchat: (id: number) => void;
+	} = $props();
 
 	// the selected item's group and client, preselected in the dialogs
 	const [, kind, idStr] = $derived(current.path.split('/'));
@@ -89,6 +99,8 @@
 	<TotpDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'tokens'}
 	<TokensDialog onclose={() => (dialogs.open = null)} />
+{:else if dialogs.open === 'find'}
+	<FindDialog onclose={() => (dialogs.open = null)} {onpage} {onchat} />
 {:else if dialogs.open === 'agents'}
 	<AgentsDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'passwords'}
