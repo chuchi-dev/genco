@@ -126,11 +126,13 @@ pub fn files(cfg: &Config, groups: &[Group], cert: bool) -> Vec<File> {
 		files.extend(crate::webmail::files(host, cert));
 	}
 	files.extend(crate::mailfilter::files(cfg, groups));
-	// Postfix may listen on docker0, which Docker makes at boot
+	// Postfix may listen on docker0, which Docker makes at boot; Wants
+	// starts Docker first where it is installed, without it is a no-op
 	files.push(File {
 		path: POSTFIX_AFTER_DOCKER.into(),
 		content: "# written by genco, changes here are overwritten
 [Unit]
+Wants=docker.service
 After=docker.service
 "
 		.into(),
@@ -147,19 +149,12 @@ const POSTFIX_AFTER_DOCKER: &str =
 pub struct Bridge {
 	pub name: String,
 	pub addr: std::net::Ipv4Addr,
-	pub prefix: u8,
+	/// its network, e.g. 172.17.0.0/16
+	pub net: crate::firewall::Net,
 }
 
-impl Bridge {
-	/// Its network, e.g. 172.17.0.0/16.
-	fn network(&self) -> String {
-		let mask = u32::MAX.checked_shl(32 - self.prefix as u32).unwrap_or(0);
-		let net = std::net::Ipv4Addr::from(u32::from(self.addr) & mask);
-		format!("{net}/{}", self.prefix)
-	}
-}
-
-/// The Docker bridges of `ip -4 -o addr show`.
+/// The Docker bridges of `ip -4 -o addr show`. Only private networks,
+/// they go into mynetworks and may relay.
 fn parse_bridges(out: &str) -> Vec<Bridge> {
 	let mut bridges = vec![];
 	for line in out.lines() {
@@ -175,13 +170,24 @@ fn parse_bridges(out: &str) -> Vec<Bridge> {
 		let Some((addr, prefix)) = cidr.split_once('/') else {
 			continue;
 		};
-		if let (Ok(addr), Ok(prefix)) = (addr.parse(), prefix.parse())
-			&& prefix <= 32
-		{
+		let (Ok(addr), Ok(prefix), Ok(net)) = (
+			addr.parse::<std::net::Ipv4Addr>(),
+			prefix.parse::<u8>(),
+			crate::firewall::Net::parse(cidr),
+		) else {
+			continue;
+		};
+		// within 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16
+		let min = match addr.octets()[0] {
+			10 => 8,
+			172 => 12,
+			_ => 16,
+		};
+		if addr.is_private() && prefix >= min {
 			bridges.push(Bridge {
 				name: name.into(),
 				addr,
-				prefix,
+				net,
 			});
 		}
 	}
@@ -329,7 +335,7 @@ pub fn postfix_settings(
 		"127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128".to_string();
 	for b in bridges {
 		networks.push(' ');
-		networks.push_str(&b.network());
+		networks.push_str(&b.net.to_string());
 	}
 	let mut s = vec![
 		("inet_interfaces", interfaces),
@@ -431,9 +437,26 @@ mod tests {
 		let b = parse_bridges(IP);
 		let names: Vec<&str> = b.iter().map(|b| b.name.as_str()).collect();
 		assert_eq!(names, ["docker0", "br-879bce4e5a38"]);
-		assert_eq!(b[0].network(), "172.17.0.0/16");
-		assert_eq!(b[1].network(), "192.168.96.0/20");
+		assert_eq!(b[0].net.to_string(), "172.17.0.0/16");
+		assert_eq!(b[1].net.to_string(), "192.168.96.0/20");
 		assert!(parse_bridges("").is_empty());
+	}
+
+	#[test]
+	fn only_private_bridge_networks_may_relay() {
+		let nets = |cidr: &str| {
+			let line = format!("5: br-1    inet {cidr} scope global br-1");
+			let b = parse_bridges(&line);
+			b.iter().map(|b| b.net.to_string()).collect::<Vec<_>>()
+		};
+		assert_eq!(nets("172.18.0.1/16"), ["172.18.0.0/16"]);
+		assert_eq!(nets("10.0.0.1/8"), ["10.0.0.0/8"]);
+		assert!(nets("172.18.0.1/0").is_empty());
+		assert!(nets("172.18.0.1/8").is_empty());
+		assert!(nets("10.0.0.1/7").is_empty());
+		assert!(nets("203.0.113.1/24").is_empty());
+		assert!(nets("127.0.0.1/8").is_empty());
+		assert!(nets("172.18.0.1/33").is_empty());
 	}
 
 	#[test]

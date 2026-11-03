@@ -5,6 +5,7 @@ use clap::Parser;
 use rusqlite::Connection;
 
 use crate::actions;
+use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::hosting::{self, Kind};
 use crate::procs;
@@ -341,7 +342,11 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 	Ok(format!("added group {id}, run genco apply"))
 }
 
-pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
+pub fn domain(
+	cfg: &Config,
+	conn: &Connection,
+	cmd: DomainCmd,
+) -> Result<String> {
 	match cmd {
 		DomainCmd::Add { name, group, opts } => {
 			let kind = kind(opts.kind.as_deref().unwrap_or("static"))?;
@@ -360,7 +365,7 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 					zero_downtime: opts.zero_downtime.unwrap_or(false),
 				},
 			};
-			let id = hosting::insert_domain(conn, &req)?;
+			let id = hosting::insert_domain(cfg, conn, &req)?;
 			Ok(format!("added domain {id}, run genco apply"))
 		}
 		DomainCmd::Delete { .. } => {
@@ -409,7 +414,7 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 					d.zero_downtime && matches!(kind, Kind::Node | Kind::Rust),
 				),
 			};
-			hosting::set_domain(conn, d.id, &req)?;
+			hosting::set_domain(cfg, conn, d.id, &req)?;
 			Ok("changed, run genco apply".into())
 		}
 	}

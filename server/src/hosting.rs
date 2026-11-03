@@ -789,12 +789,44 @@ fn check_www(conn: &Connection, name: &str, www: bool) -> Result<()> {
 	Ok(())
 }
 
-pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
+/// The panel's names have nginx sites of their own, a domain (or its www
+/// redirect) can't take one: the two sites would share a config file.
+fn check_panel_names(
+	cfg: &Config,
+	conn: &Connection,
+	name: &str,
+	www: bool,
+) -> Result<()> {
+	let www_name = format!("www.{name}");
+	let names = [Some(name), www.then_some(www_name.as_str())];
+	for n in names.into_iter().flatten() {
+		if cfg.domain.as_deref() == Some(n) {
+			return Err(Error::Invalid(format!("{n} is the panel's name")));
+		}
+		if crate::mailbox::host(cfg).as_deref() == Some(n) {
+			return Err(Error::Invalid(format!("{n} is the mail host")));
+		}
+		if crate::panel::old_names(conn).iter().any(|o| o == n) {
+			return Err(Error::Invalid(format!(
+				"{n} is an old name of the panel, genco panel forget-old \
+				{n} first"
+			)));
+		}
+	}
+	Ok(())
+}
+
+pub fn insert_domain(
+	cfg: &Config,
+	conn: &Connection,
+	req: &DomainReq,
+) -> Result<i64> {
 	let name = req.name.trim().to_lowercase();
 	check_domain_name(&name)?;
 	let s = &req.settings;
 	let public_dir = s.check()?;
 	check_www(conn, &name, s.www)?;
+	check_panel_names(cfg, conn, &name, s.www)?;
 
 	conn.execute(
 		"INSERT INTO domains (group_id, name, kind, php_version, root,
@@ -830,16 +862,18 @@ pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 
 async fn create_domain(
 	_authed: Authed,
+	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	Json(req): Json<DomainReq>,
 ) -> Result<Json<i64>> {
-	let id = insert_domain(&db.conn(), &req)?;
+	let id = insert_domain(&cfg, &db.conn(), &req)?;
 	events.send(Event::Tree);
 	Ok(Json(id))
 }
 
 pub fn set_domain(
+	cfg: &Config,
 	conn: &Connection,
 	id: i64,
 	req: &DomainSettings,
@@ -850,6 +884,7 @@ pub fn set_domain(
 			r.get(0)
 		})?;
 	check_www(conn, &name, req.www)?;
+	check_panel_names(cfg, conn, &name, req.www)?;
 
 	let n = conn.execute(
 		"UPDATE domains SET kind = ?1, php_version = ?2, root = ?3,
@@ -878,12 +913,13 @@ pub fn set_domain(
 
 async fn update_domain(
 	_authed: Authed,
+	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	Path(id): Path<i64>,
 	Json(req): Json<DomainSettings>,
 ) -> Result<Json<()>> {
-	set_domain(&db.conn(), id, &req)?;
+	set_domain(&cfg, &db.conn(), id, &req)?;
 	events.send(Event::Tree);
 	Ok(Json(()))
 }
@@ -1027,6 +1063,30 @@ mod tests {
 		assert!(check_www(&conn, "other.ch", true).is_ok());
 	}
 
+	fn cfg() -> Config {
+		toml::from_str("domain = \"panel.example.ch\"").unwrap()
+	}
+
+	#[test]
+	fn the_panels_names_are_no_domains() {
+		let db = Db::memory();
+		let conn = db.conn();
+		crate::db::set_setting(
+			&conn,
+			"panel:old-names",
+			r#"["old.example.ch", "www.shop.ch"]"#,
+		)
+		.unwrap();
+		let check = |name, www| check_panel_names(&cfg(), &conn, name, www);
+		assert!(check("panel.example.ch", false).is_err());
+		assert!(check("mail.panel.example.ch", false).is_err());
+		let err = check("old.example.ch", false).unwrap_err().to_string();
+		assert!(err.contains("forget-old old.example.ch"), "{err}");
+		assert!(check("example.ch", false).is_ok());
+		assert!(check("shop.ch", false).is_ok());
+		assert!(check("shop.ch", true).is_err());
+	}
+
 	#[test]
 	fn domain_ids_stop_before_their_ports_collide() {
 		let db = Db::memory();
@@ -1054,8 +1114,8 @@ mod tests {
 				zero_downtime: false,
 			},
 		};
-		assert_eq!(insert_domain(&conn, &req("b.ch")).unwrap(), 9999);
-		assert!(insert_domain(&conn, &req("c.ch")).is_err());
+		assert_eq!(insert_domain(&cfg(), &conn, &req("b.ch")).unwrap(), 9999);
+		assert!(insert_domain(&cfg(), &conn, &req("c.ch")).is_err());
 		let n: i64 = conn
 			.query_row("SELECT count(*) FROM domains", [], |r| r.get(0))
 			.unwrap();
@@ -1086,19 +1146,19 @@ mod tests {
 			www: false,
 			zero_downtime: true,
 		};
-		assert!(set_domain(&conn, 1, &s).is_err());
+		assert!(set_domain(&cfg(), &conn, 1, &s).is_err());
 
 		s.kind = Kind::Node;
 		s.php_version = None;
 		s.command = Some("node index.js".into());
-		set_domain(&conn, 1, &s).unwrap();
+		set_domain(&cfg(), &conn, 1, &s).unwrap();
 		let slot = |conn: &Connection| -> bool {
 			conn.query_row("SELECT slot_b FROM domains", [], |r| r.get(0))
 				.unwrap()
 		};
 		assert!(slot(&conn));
 		s.zero_downtime = false;
-		set_domain(&conn, 1, &s).unwrap();
+		set_domain(&cfg(), &conn, 1, &s).unwrap();
 		assert!(!slot(&conn));
 	}
 

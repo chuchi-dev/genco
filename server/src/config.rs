@@ -76,6 +76,7 @@ impl Config {
 /// The config file's text with `key` set to `value`: its line replaced
 /// where it is, or added at the end; the other keys and the comments
 /// stay. A key set twice is an error in toml, the later lines go.
+/// Only for a flat config, top-level keys without tables, as genco's is.
 pub fn set_key(ctn: &str, key: &str, value: &str) -> String {
 	let line = format!("{key} = {}", toml::Value::String(value.into()));
 	let is_key = |l: &str| {

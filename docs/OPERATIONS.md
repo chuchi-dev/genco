@@ -127,7 +127,8 @@ Dovecot, Rspamd, Redis and postsrsd stopped and disabled (installed, they
 start with the first mail domain) and Postfix listens only on localhost
 and, while Docker runs, on docker0's address, so containers still send
 through `host.docker.internal:25`. The Docker bridges' networks may relay
-in either case (`mynetworks`). Postfix refuses to start when an address of
+in either case (`mynetworks`). Postfix starts after Docker (and starts
+it) where Docker is installed. Postfix refuses to start when an address of
 `inet_interfaces` is gone: after removing Docker, run `genco apply` before
 the next reboot.
 

@@ -173,10 +173,10 @@ pub(crate) async fn backup_cmd(cfg: Config) -> Result<(), String> {
 
 pub(crate) fn edit(
 	cfg: Config,
-	f: impl FnOnce(&rusqlite::Connection) -> error::Result<String>,
+	f: impl FnOnce(&Config, &rusqlite::Connection) -> error::Result<String>,
 ) -> Result<(), String> {
 	let db = Db::open(&cfg.db_path())?;
-	let msg = f(&db.conn()).map_err(|e| e.to_string())?;
+	let msg = f(&cfg, &db.conn()).map_err(|e| e.to_string())?;
 	println!("{msg}");
 	Ok(())
 }

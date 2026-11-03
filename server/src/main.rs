@@ -389,7 +389,7 @@ async fn run(args: Args) -> Result<(), String> {
 			};
 			update::main(&cfg, args).await
 		}
-		Cmd::Client(cmd) => edit(cfg, |conn| cli::client(conn, cmd)),
+		Cmd::Client(cmd) => edit(cfg, |_, conn| cli::client(conn, cmd)),
 		// as the group's user, like the panel: the key could be a link
 		Cmd::Group(cli::GroupCmd::DeployKey { name }) => {
 			let db = Db::open(&cfg.db_path())?;
@@ -402,13 +402,13 @@ async fn run(args: Args) -> Result<(), String> {
 			println!("{key}");
 			Ok(())
 		}
-		Cmd::Group(cmd) => edit(cfg, |conn| cli::group(conn, cmd)),
-		Cmd::Domain(cmd) => edit(cfg, |conn| cli::domain(conn, cmd)),
+		Cmd::Group(cmd) => edit(cfg, |_, conn| cli::group(conn, cmd)),
+		Cmd::Domain(cmd) => edit(cfg, |cfg, conn| cli::domain(cfg, conn, cmd)),
 		Cmd::Database(cli::DatabaseCmd::Import { name, file }) => {
 			import_cmd(cfg, name, file).await
 		}
-		Cmd::Database(cmd) => edit(cfg, |conn| cli::database(conn, cmd)),
-		Cmd::Worker(cmd) => edit(cfg, |conn| cli::worker(conn, cmd)),
+		Cmd::Database(cmd) => edit(cfg, |_, conn| cli::database(conn, cmd)),
+		Cmd::Worker(cmd) => edit(cfg, |_, conn| cli::worker(conn, cmd)),
 		Cmd::Schedule(cli::ScheduleCmd::Run { name, group }) => {
 			let unit = render::schedule_unit(&group, &name);
 			procs::start_now(&unit).await.map_err(|e| e.to_string())?;
@@ -426,10 +426,10 @@ async fn run(args: Args) -> Result<(), String> {
 					.await
 					.map_err(|e| e.to_string())?;
 			}
-			edit(cfg, |conn| cli::schedule(conn, cmd))
+			edit(cfg, |_, conn| cli::schedule(conn, cmd))
 		}
 		Cmd::Secret(cmd) => {
-			edit(cfg, |conn| secrets::cli(conn, cmd, read_password))
+			edit(cfg, |_, conn| secrets::cli(conn, cmd, read_password))
 		}
 		Cmd::Firewall(cmd) => {
 			let db = Db::open(&cfg.db_path())?;
