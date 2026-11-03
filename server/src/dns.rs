@@ -108,6 +108,16 @@ pub async fn dig_txt(name: &str) -> Vec<String> {
 	txt(dig("TXT", name).await)
 }
 
+/// The domain's addresses as its name servers say now, not as a resolver
+/// still has them: a domain just moved here gets its certificate.
+pub async fn resolve(domain: &str) -> Vec<String> {
+	let mut ips = dig("A", domain).await;
+	ips.extend(dig("AAAA", domain).await);
+	// a CNAME comes first, keep the addresses
+	ips.retain(|ip| ip.parse::<std::net::IpAddr>().is_ok());
+	ips
+}
+
 /// This server's addresses (`hostname -I`), IPv4 first as listed.
 pub async fn own_ips() -> Vec<String> {
 	let Ok(out) = Command::new("hostname").arg("-I").output().await else {

@@ -128,9 +128,14 @@ pub(super) fn list_text(groups: &[Group]) -> String {
 }
 
 /// `genco mail dns <domain>`
-pub(super) async fn dns_text(cfg: &Config, domain: &str) -> Result<String> {
+pub async fn dns_text(cfg: &Config, domain: &str) -> Result<String> {
+	Ok(records_text(&dns_check(cfg, domain).await?))
+}
+
+/// DNS records for the terminal: what to enter, what is there now.
+pub fn records_text(records: &[DnsRecord]) -> String {
 	let mut out = String::new();
-	for r in dns_check(cfg, domain).await? {
+	for r in records {
 		out.push_str(&format!(
 			"{:8} {} {} {}\n  found: {}\n  {}\n",
 			r.status,
@@ -145,7 +150,7 @@ pub(super) async fn dns_text(cfg: &Config, domain: &str) -> Result<String> {
 			r.note
 		));
 	}
-	Ok(out.trim_end().to_string())
+	out.trim_end().to_string()
 }
 
 /// The mail commands that change something; the caller applies them.

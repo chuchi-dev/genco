@@ -149,6 +149,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 		return r;
 	};
 	let blocked = blocked(&mut r, db);
+	let old_names = crate::panel::old_names(&db.conn());
 
 	for g in &groups {
 		ensure_user(&mut r, g).await;
@@ -157,7 +158,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 			deploy_key(&mut r, g).await;
 		}
 	}
-	sync(&mut r, cfg, &groups, &blocked).await;
+	sync(&mut r, cfg, &groups, &blocked, &old_names).await;
 	databases(&mut r, &groups).await;
 
 	// with a new certificate the sites get https, the apps the mail host
@@ -166,7 +167,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 		for g in &mut groups {
 			g.mail_host = host.clone();
 		}
-		sync(&mut r, cfg, &groups, &blocked).await;
+		sync(&mut r, cfg, &groups, &blocked, &old_names).await;
 	}
 
 	r.info(if r.ok { "done" } else { "done with errors" });
@@ -180,19 +181,14 @@ async fn sync(
 	cfg: &Config,
 	groups: &[Group],
 	blocked: &[String],
+	old_names: &[String],
 ) {
 	let certs = host::certs(groups);
 	let mut files: Vec<File> = groups
 		.iter()
 		.flat_map(|g| render::group_files(g, &certs))
 		.collect();
-	if let Some(domain) = &cfg.domain {
-		files.push(render::panel_file(
-			domain,
-			&cfg.listen,
-			host::has_cert(domain),
-		));
-	}
+	files.extend(panel_files(cfg, old_names));
 	files.push(firewall_file(cfg, groups, blocked));
 	prepare_mail(r, groups).await;
 	let mail_files = mail_files(r, cfg, groups);
@@ -231,6 +227,27 @@ async fn sync(
 	} else {
 		r.error("nginx keeps the old config until the error is fixed");
 	}
+}
+
+/// The panel's site and the redirects of its old names to it.
+fn panel_files(cfg: &Config, old_names: &[String]) -> Vec<File> {
+	let Some(domain) = &cfg.domain else {
+		return vec![];
+	};
+	let mut files = vec![render::panel_file(
+		domain,
+		&cfg.listen,
+		host::has_cert(domain),
+	)];
+	for old in old_names.iter().filter(|o| *o != domain) {
+		files.push(render::panel_redirect_file(
+			old,
+			domain,
+			&cfg.listen,
+			host::has_cert(old),
+		));
+	}
+	files
 }
 
 /// Writes the files that differ, returns their paths.

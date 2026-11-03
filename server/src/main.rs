@@ -29,6 +29,7 @@ mod mail;
 mod mailbox;
 mod mailfilter;
 mod notify;
+mod panel;
 mod peers;
 mod pg;
 mod procs;
@@ -158,6 +159,9 @@ pub(crate) enum Cmd {
 		#[clap(long, default_value_t = 50)]
 		limit: i64,
 	},
+	/// The panel's own name: rename it, forget an old one
+	#[clap(subcommand)]
+	Panel(panel::PanelCmd),
 	/// Build runners for steps with `on = "runner"` (this server's side)
 	#[clap(subcommand)]
 	Runners(RunnersCmd),
@@ -309,6 +313,7 @@ async fn run(args: Args) -> Result<(), String> {
 			artifact,
 		} => deploy_cmd(cfg, group, git_ref, artifact).await,
 		Cmd::Runners(cmd) => runners_cmd(&cfg, cmd).await,
+		Cmd::Panel(cmd) => panel::main(&args.config, cfg, cmd).await,
 		Cmd::Runner(_) => unreachable!(),
 		Cmd::Backup => backup_cmd(cfg).await,
 		Cmd::Restic { args } => {

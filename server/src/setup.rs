@@ -596,7 +596,7 @@ WantedBy=timers.target
 	Ok(())
 }
 
-/// Adds the panel's domain and the email to the config if they are new.
+/// Sets the panel's domain and the email in the config if they are new.
 fn config(
 	path: &Path,
 	domain: Option<String>,
@@ -605,32 +605,19 @@ fn config(
 	let mut ctn = std::fs::read_to_string(path).unwrap_or_default();
 	let cfg: Config = toml::from_str(&ctn).map_err(|e| e.to_string())?;
 
-	let mut add = |key: &str, new: Option<String>, old: Option<String>| {
+	for (key, new, old) in
+		[("domain", domain, cfg.domain), ("email", email, cfg.email)]
+	{
 		if let Some(v) = new
 			&& old.as_deref() != Some(v.as_str())
 		{
-			// a last line without its newline would get the key glued on
-			if !ctn.is_empty() && !ctn.ends_with('\n') {
-				ctn.push('\n');
-			}
-			ctn.push_str(&format!("{key} = {}\n", toml::Value::String(v)));
+			ctn = crate::config::set_key(&ctn, key, &v);
 		}
-	};
-	add("domain", domain, cfg.domain);
-	add("email", email, cfg.email);
-
-	// a key set twice is an error in toml, keep the last one
-	let mut seen = std::collections::HashSet::new();
-	let mut lines: Vec<&str> = ctn.lines().rev().collect();
-	lines.retain(|l| {
-		let key = l.split('=').next().unwrap_or("").trim();
-		l.trim_start().starts_with('#') || !l.contains('=') || seen.insert(key)
-	});
-	lines.reverse();
+	}
 
 	std::fs::create_dir_all(path.parent().unwrap())
 		.map_err(|e| e.to_string())?;
-	std::fs::write(path, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
+	std::fs::write(path, ctn).map_err(|e| e.to_string())?;
 	Ok(())
 }
 

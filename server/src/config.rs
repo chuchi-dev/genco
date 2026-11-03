@@ -72,3 +72,50 @@ impl Config {
 		self.data_dir.join("notes.md")
 	}
 }
+
+/// The config file's text with `key` set to `value`: its line replaced
+/// where it is, or added at the end; the other keys and the comments
+/// stay. A key set twice is an error in toml, the later lines go.
+pub fn set_key(ctn: &str, key: &str, value: &str) -> String {
+	let line = format!("{key} = {}", toml::Value::String(value.into()));
+	let is_key = |l: &str| {
+		!l.trim_start().starts_with('#')
+			&& l.split_once('=').is_some_and(|(k, _)| k.trim() == key)
+	};
+	let mut out = vec![];
+	let mut set = false;
+	for l in ctn.lines() {
+		if !is_key(l) {
+			out.push(l.to_string());
+		} else if !set {
+			out.push(line.clone());
+			set = true;
+		}
+	}
+	if !set {
+		out.push(line);
+	}
+	out.join("\n") + "\n"
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_key_is_set_in_place_and_the_rest_stays() {
+		let ctn = "# genco\ndomain = \"old.example.ch\"\n\
+			email = \"a@example.ch\"\n# the domain = below\n\
+			mail-host = \"mail.example.ch\"\ndomain=\"twice.example.ch\"";
+		assert_eq!(
+			set_key(ctn, "domain", "panel.example.ch"),
+			"# genco\ndomain = \"panel.example.ch\"\n\
+			email = \"a@example.ch\"\n# the domain = below\n\
+			mail-host = \"mail.example.ch\"\n"
+		);
+		assert_eq!(
+			set_key("email = \"a@example.ch\"", "domain", "panel.example.ch"),
+			"email = \"a@example.ch\"\ndomain = \"panel.example.ch\"\n"
+		);
+	}
+}

@@ -294,6 +294,12 @@ field in the panel.
   anything that might be an admin's or a client's (an office, a
   monitoring service, an address in `genco activity`); genco refuses
   its own addresses and those admins logged in from lately.
+- Renaming the panel: `genco panel rename <new domain>` (see `genco docs
+  operations`, "Renaming the panel"), never by hand; it restarts genco,
+  so tell the admins first and what it printed (DNS records, runner
+  commands) after. With mail domains ask whether the mail host moves
+  too (`--keep-mail-host` keeps it). `genco panel forget-old <old>`
+  once runners and CI use the new name.
 - `genco activity` shows who did what: logins, every change in the
   panel or with an API token, `genco` commands and your tool calls.
 - `{{inventory}}` is what `genco setup` found on the server before it

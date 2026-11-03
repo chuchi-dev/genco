@@ -418,6 +418,48 @@ pub fn panel_file(domain: &str, listen: &str, cert: bool) -> File {
 	}
 }
 
+/// An old name of the panel: every page redirects to the new one, except
+/// the API, which runners, CI jobs and webhooks call and they don't
+/// follow redirects.
+pub fn panel_redirect_file(
+	old: &str,
+	new: &str,
+	listen: &str,
+	cert: bool,
+) -> File {
+	let body = format!(
+		"\taccess_log /var/log/nginx/genco/{old}.access.log genco_panel;
+	error_log /var/log/nginx/genco/{old}.error.log crit;
+	# artifacts of the runners
+	client_max_body_size 2g;
+
+	location /api/ {{
+		proxy_pass http://{listen};
+		proxy_set_header Host $host;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_buffering off;
+		proxy_read_timeout 1h;
+	}}
+
+	location = /api/users/login {{
+		limit_req zone=genco_login burst=5 nodelay;
+		proxy_pass http://{listen};
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+	}}
+
+	location / {{
+		return 308 https://{new}$request_uri;
+	}}
+"
+	);
+	File {
+		path: nginx_config(old),
+		content: server_blocks(old, cert, &body),
+		private_to: None,
+	}
+}
+
 /// A port 80 server that answers ACME challenges, with a certificate it
 /// redirects to a 443 server with `body`. 308, not 301: a POST stays a
 /// POST with its body (a server-side GraphQL call to an http:// URL).
@@ -1005,6 +1047,36 @@ mod tests {
 			.find(|f| f.path == Path::new(path))
 			.unwrap_or_else(|| panic!("no file {path}"))
 			.content
+	}
+
+	#[test]
+	fn an_old_panel_name_redirects_but_its_api_stays() {
+		let f = panel_redirect_file(
+			"old.example.ch",
+			"panel.example.ch",
+			"127.0.0.1:4100",
+			true,
+		);
+		assert_eq!(f.path, Path::new("/etc/nginx/genco/old.example.ch.conf"));
+		let site = &f.content;
+		assert!(site.contains("server_name old.example.ch;"));
+		assert!(site.contains("live/old.example.ch/fullchain.pem"));
+		let api = site.find("location /api/ {").unwrap();
+		assert!(site[api..].starts_with(
+			"location /api/ {\n\t\tproxy_pass http://127.0.0.1:4100;"
+		));
+		assert!(site.contains(
+			"location / {\n\t\treturn 308 https://panel.example.ch$request_uri;"
+		));
+		// without a certificate the same on port 80
+		let f = panel_redirect_file(
+			"old.example.ch",
+			"panel.example.ch",
+			"x",
+			false,
+		);
+		assert!(!f.content.contains("443"));
+		assert!(f.content.contains("location /api/ {"));
 	}
 
 	#[test]

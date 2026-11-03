@@ -8,8 +8,9 @@ need neither the panel nor an LLM.
 2. [Running the server without the panel](#2-running-the-server-without-the-panel)
 3. [Restoring one site](#3-restoring-one-site)
 4. [Moving or rebuilding the whole server](#4-moving-or-rebuilding-the-whole-server)
-5. [Where things are](#5-where-things-are)
-6. [Notifications and the agent's model](#6-notifications-and-the-agents-model)
+5. [Renaming the panel](#5-renaming-the-panel)
+6. [Where things are](#6-where-things-are)
+7. [Notifications and the agent's model](#7-notifications-and-the-agents-model)
 
 **Do this today, not on the day you need it:** keep a copy of
 `/etc/genco/restic-password` outside the server, for example in your
@@ -318,7 +319,8 @@ You need:
    cp /tmp/sys/var/lib/genco/genco-backup.db /var/lib/genco/genco.db
    ```
 
-   If the panel's domain changes, edit `domain` in `config.toml` now.
+   If the panel's domain changes, rename it once genco runs, see
+   [section 5](#5-renaming-the-panel).
 4. **Install genco** as in section 1, step 4. The script finds the
    config, the database and the password, so it asks nothing. Setup and
    `genco apply` recreate the following, with empty sites and databases:
@@ -346,7 +348,50 @@ You need:
    run on the new one: `genco restic snapshots --tag system` shows
    today's date.
 
-## 5. Where things are
+## 5. Renaming the panel
+
+Never edit the name by hand, one command changes everything that comes
+from it:
+
+```sh
+genco panel rename panel.example.ch
+```
+
+1. It checks the new name: a valid domain, not a domain, mail domain or
+   the mail host of this server, and its A or AAAA record points here
+   (`--force` renames anyway, the certificate comes with a later
+   `genco apply`).
+2. It sets `domain` in `/etc/genco/config.toml` (the other lines stay)
+   and writes `/etc/mailname`.
+3. `genco apply` writes the panel's site, gets its certificate and sets
+   postfix's `myhostname`.
+4. The old name keeps answering: every page redirects (308) to the new
+   name, only `/api/` is still served, because runners, CI jobs and git
+   webhooks don't follow redirects.
+5. It prints the DNS records the new name needs (A, SPF, DKIM
+   `genco-panel._domainkey.<new name>`, DMARC, PTR) and which records of
+   the old name can go later.
+6. Runners keep the URL in `/etc/genco/runner.toml` on their own box; it
+   prints the command for them:
+   `sed -i 's|https://<old>|https://<new>|' /etc/genco/runner.toml &&
+   systemctl restart genco-runner`.
+7. genco restarts a few seconds later and answers as the new name.
+
+With mail domains the mail host `mail.<panel>` moves along unless
+`mail-host` is set in the config. That changes what every mail program
+uses for IMAP and SMTP, the webmail's address, and the MX and SRV records
+of every mail domain; the new mail host must point here first, the
+command prints the records. `--keep-mail-host` keeps the old one instead
+(it writes `mail-host = "mail.<old name>"`).
+
+Once runners, CI jobs and webhooks use the new name, the old one goes
+with its certificate:
+
+```sh
+genco panel forget-old old.example.ch
+```
+
+
 
 | What | Where |
 | --- | --- |
@@ -361,7 +406,7 @@ You need:
 | Deleted via the panel (30 days) | `/var/backups/genco/trash` |
 | Logs | `journalctl -u genco`, `journalctl -u genco-backup`, `/srv/genco/<group>/logs`, per domain `/var/log/nginx/genco/<domain>.access.log` and `.error.log`; logrotate keeps 14 days (`/etc/logrotate.d/genco`, `genco-<group>`) |
 
-## 6. Notifications and the agent's model
+## 7. Notifications and the agent's model
 
 ### Where reports go
 

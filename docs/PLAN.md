@@ -353,11 +353,10 @@ Still open:
   that doesn't serve the zone): a domain got "no DNS record" and no
   certificate. Treat empty/REFUSED/non-authoritative (no aa flag)
   answers as no answer and try the next server.
-- Renaming the panel (done by hand by the agents on two servers): a
-  command that sets the domain and /etc/mailname, keeps the old name as
-  a 308 redirect with /api/ passed through (runners and CI don't follow
-  redirects), tells the runners, removes old certificates and shows the
-  new DNS records.
+- `genco panel rename` that moves the mail host leaves the certificate
+  of mail.<old name> behind (`certbot delete --cert-name` by hand), and
+  `forget-old` can't tell whether runners still use the old name (the
+  old name's access log shows /api/ calls).
 - Moving a site with a database: an app's first start after `genco
   database add` runs its migrations on the empty database and restoring
   the dump afterwards collides. Document (and maybe check): import the

@@ -29,7 +29,7 @@ use crate::render::File;
 use crate::users::Authed;
 use crate::util;
 
-pub use cli::{MailCmd, cli};
+pub use cli::{MailCmd, cli, dns_text, records_text};
 pub use conf::{
 	SUBMISSION, SUBMISSION_OPTIONS, docker_bridges, files, postfix_settings,
 };
