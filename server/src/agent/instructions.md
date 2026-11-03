@@ -276,6 +276,9 @@ field in the panel.
   content to the trash first and runs the dump as the group's database
   user, so a dump can't reach other groups' databases; admins do the same
   on the database's page.
+  Import before the first deploy or start of the app (moving a site in):
+  an app that migrated the empty database collides with the dump; then
+  `mariadb -e 'DROP DATABASE <name>'`, `genco apply` and import again.
 - Admins edit a group's files in the panel (Files tab) and download
   databases there or with a token (`/api/databases/<name>/dump`, Craft
   without personal data); developers who want a copy can get one that

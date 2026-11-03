@@ -22,7 +22,7 @@ use crate::job::{self, Log};
 use crate::render;
 use crate::users::Authed;
 
-const DIR: &str = "/var/lib/genco/imports";
+pub(crate) const DIR: &str = "/var/lib/genco/imports";
 /// like nginx lets through to the panel
 const MAX_UPLOAD: usize = 2 * 1024 * 1024 * 1024;
 

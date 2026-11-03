@@ -359,8 +359,9 @@ Still open:
   old name's access log shows /api/ calls).
 - Moving a site with a database: an app's first start after `genco
   database add` runs its migrations on the empty database and restoring
-  the dump afterwards collides. Document (and maybe check): import the
-  data before the first deploy.
+  the dump afterwards collides. Documented (import the data before the
+  first deploy, OPERATIONS.md and the agent's instructions); maybe a
+  check later.
 - Automatic IP blocking (operator, 2026-11-03): not yet. First watch real
   traffic (Top addresses) once sites have moved; then probably the
   agent's health check suggests blocks with a reason instead of fixed

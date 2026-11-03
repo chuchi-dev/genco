@@ -386,6 +386,7 @@ pub fn spawn(
 			tick.tick().await;
 			checker.round(&db, &runner).await;
 			crate::activity::prune(&db.conn());
+			crate::job::prune(&db);
 			crate::routines::due(&db, &runner).await;
 			crate::update::due(&db).await;
 			crate::proposals::due_mails(&cfg, &db).await;

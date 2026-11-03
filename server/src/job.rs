@@ -1,7 +1,9 @@
 //! What deploys and backups share: a log file per run that the panel
 //! shows, one run of a kind at a time on the server (a file lock, the CLI
-//! runs them too) and the output of commands in the log.
+//! runs them too), the output of commands in the log and the pruning of
+//! old logs.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -9,6 +11,8 @@ use tokio::io::{
 	AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader,
 };
 use tokio::process::Command;
+
+use crate::db::{Db, get_setting, now, set_setting};
 
 pub struct Log {
 	file: tokio::fs::File,
@@ -23,6 +27,11 @@ pub struct Log {
 /// The longest line and the most output a step logs.
 const MAX_LINE: u64 = 8 * 1024;
 const MAX_LOG: usize = 10 * 1024 * 1024;
+
+/// Deploy logs kept per group, backup and import logs kept for days.
+const KEEP_DEPLOYS: usize = 50;
+const KEEP_DAYS: i64 = 90;
+const DAY: i64 = 24 * 60 * 60 * 1000;
 
 fn path(dir: &str, id: i64) -> PathBuf {
 	Path::new(dir).join(format!("{id}.log"))
@@ -90,6 +99,127 @@ pub fn is_free(path: &str) -> bool {
 		return true;
 	};
 	file.try_lock().is_ok()
+}
+
+/// Called every minute, prunes once a day: deploy logs beyond the newest
+/// `KEEP_DEPLOYS` of a group, backup and import logs older than
+/// `KEEP_DAYS`. The rows stay, the panel shows their log as removed.
+pub fn prune(db: &Db) {
+	let conn = db.conn();
+	let now = now();
+	let last = get_setting(&conn, "logs:pruned").ok().flatten();
+	if last.and_then(|l| l.parse::<i64>().ok()) > Some(now - DAY) {
+		return;
+	}
+	if let Err(e) = set_setting(&conn, "logs:pruned", &now.to_string()) {
+		tracing::error!("pruning logs: {e}");
+		return;
+	}
+
+	// the files before the rows: a run's row is there before its log
+	let dir = crate::deploy::LOG_DIR;
+	let ids: Vec<i64> = logs(dir).into_iter().map(|(id, _)| id).collect();
+	let deploys = conn
+		.prepare(
+			"SELECT id, group_id, status IN ('queued', 'running')
+			FROM deploys",
+		)
+		.and_then(|mut stmt| {
+			stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+				.collect::<rusqlite::Result<Vec<_>>>()
+		});
+	match deploys {
+		Ok(deploys) => {
+			for id in old_deploys(&ids, &deploys, KEEP_DEPLOYS) {
+				let _ = std::fs::remove_file(path(dir, id));
+			}
+		}
+		Err(e) => tracing::error!("pruning deploy logs: {e}"),
+	}
+
+	for (dir, table) in [
+		(crate::backup::LOG_DIR, "backups"),
+		(crate::imports::DIR, "db_imports"),
+	] {
+		let files = logs(dir);
+		let running = conn
+			.prepare(&format!(
+				"SELECT id FROM {table} WHERE status = 'running'"
+			))
+			.and_then(|mut stmt| {
+				stmt.query_map([], |r| r.get(0))?
+					.collect::<rusqlite::Result<HashSet<i64>>>()
+			});
+		match running {
+			Ok(running) => {
+				for id in old_runs(&files, &running, now - KEEP_DAYS * DAY) {
+					let _ = std::fs::remove_file(path(dir, id));
+				}
+			}
+			Err(e) => tracing::error!("pruning {table} logs: {e}"),
+		}
+	}
+}
+
+/// The runs with a log in `dir` and when it was last written.
+fn logs(dir: &str) -> Vec<(i64, i64)> {
+	let mut logs = vec![];
+	for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+		let name = entry.file_name().to_string_lossy().to_string();
+		let Some(id) = name
+			.strip_suffix(".log")
+			.and_then(|n| n.parse::<i64>().ok())
+		else {
+			continue;
+		};
+		let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+			continue;
+		};
+		let ms = modified
+			.duration_since(std::time::UNIX_EPOCH)
+			.map_or(0, |d| d.as_millis() as i64);
+		logs.push((id, ms));
+	}
+	logs
+}
+
+/// The deploy logs to remove: all but the newest `keep` of each group and
+/// those without a deploy (its group was deleted). `deploys` are id,
+/// group and whether it still runs, which is never removed.
+fn old_deploys(
+	logs: &[i64],
+	deploys: &[(i64, i64, bool)],
+	keep: usize,
+) -> Vec<i64> {
+	let mut groups: HashMap<i64, Vec<i64>> = HashMap::new();
+	let mut kept = HashSet::new();
+	for &(id, group, running) in deploys {
+		groups.entry(group).or_default().push(id);
+		if running {
+			kept.insert(id);
+		}
+	}
+	for ids in groups.values_mut() {
+		ids.sort_unstable_by(|a, b| b.cmp(a));
+		kept.extend(ids.iter().take(keep));
+	}
+
+	logs.iter()
+		.filter(|id| !kept.contains(id))
+		.copied()
+		.collect()
+}
+
+/// The logs (id, last written) older than `before` whose run is over.
+fn old_runs(
+	logs: &[(i64, i64)],
+	running: &HashSet<i64>,
+	before: i64,
+) -> Vec<i64> {
+	logs.iter()
+		.filter(|(id, written)| *written < before && !running.contains(id))
+		.map(|(id, _)| *id)
+		.collect()
 }
 
 impl Log {
@@ -212,5 +342,28 @@ mod tests {
 		assert!(res.unwrap_err().contains("failed"));
 		assert_eq!(read(dir, 1).await, "a\n\u{fffd}\u{fffd} b\nc\n");
 		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn a_group_keeps_its_newest_deploy_logs() {
+		// group 1: 1, 2, 4, 5 (1 still runs), group 2: 3, 6; 9 has no row
+		let deploys = [
+			(1, 1, true),
+			(2, 1, false),
+			(3, 2, false),
+			(4, 1, false),
+			(5, 1, false),
+			(6, 2, false),
+		];
+		let mut old = old_deploys(&[1, 2, 3, 4, 5, 6, 9], &deploys, 2);
+		old.sort();
+		assert_eq!(old, [2, 9]);
+	}
+
+	#[test]
+	fn old_logs_go_unless_they_run() {
+		let logs = [(1, 10), (2, 50), (3, 10), (4, 200)];
+		let running = HashSet::from([3]);
+		assert_eq!(old_runs(&logs, &running, 100), [1, 2]);
 	}
 }

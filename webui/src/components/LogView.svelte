@@ -15,6 +15,7 @@
 	} = $props();
 
 	let text = $state('');
+	let loaded = $state(false);
 	let error = $state<string | null>(null);
 	// an older response doesn't overwrite a newer one
 	const latest = newest();
@@ -25,6 +26,7 @@
 			(t: string) => {
 				text = t;
 				error = null;
+				loaded = true;
 			},
 			e => (error = e.message),
 		);
@@ -40,8 +42,10 @@
 	});
 </script>
 
+<!-- old logs are removed after a while, their runs stay -->
 <pre class="log selectable" style:height="{height}px">{error ??
-		(text || '…')}</pre>
+		(text ||
+			(loaded && !live ? 'No log, removed after a while.' : '…'))}</pre>
 
 <style lang="scss">
 	@use 'styles/win' as *;

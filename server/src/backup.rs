@@ -24,7 +24,7 @@ use crate::users::Authed;
 
 const REPOSITORY: &str = "/var/backups/genco/restic";
 pub const PASSWORD_FILE: &str = "/etc/genco/restic-password";
-const LOG_DIR: &str = "/var/lib/genco/backups";
+pub(crate) const LOG_DIR: &str = "/var/lib/genco/backups";
 pub const LOCK: &str = "/var/lib/genco/backup.lock";
 /// a consistent copy of genco's database, the live one may change while
 /// restic reads it

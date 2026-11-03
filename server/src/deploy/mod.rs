@@ -46,7 +46,7 @@ use shell::*;
 type Res<T> = std::result::Result<T, String>;
 
 const KEEP_RELEASES: usize = 5;
-const LOG_DIR: &str = "/var/lib/genco/deploys";
+pub(crate) const LOG_DIR: &str = "/var/lib/genco/deploys";
 /// One deploy or rollback of a group at a time, other groups go on.
 pub fn lock_path(group: &str) -> String {
 	format!("{LOG_DIR}/{group}.lock")

@@ -340,6 +340,21 @@ You need:
 
    Then run `genco apply` once, `genco deploy <group>` for the groups
    with Node apps, and `rm -rf /tmp/restore /tmp/sys`.
+
+   Import a database before the first deploy or start of its app: an
+   app that starts on the empty database runs its migrations there, and
+   the dump then collides with the tables it created. The same holds for
+   a site moving in from elsewhere: `genco database add`, then `genco
+   database import <name> <file>` (or the Databases tab), then the
+   deploy. If an app already migrated the empty MariaDB database, drop
+   it and let `genco apply` create it again (PostgreSQL imports drop
+   what was there already):
+
+   ```sh
+   mariadb -e 'DROP DATABASE shop'
+   genco apply
+   genco database import shop /root/shop.sql.gz
+   ```
 6. **Test before switching DNS.** Point the domains to the new IP in your
    own `/etc/hosts` and open the sites. Then change DNS. Certificates for
    domains that had none yet come with the next `genco apply` once the DNS
