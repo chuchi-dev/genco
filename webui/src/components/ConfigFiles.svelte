@@ -80,12 +80,6 @@
 			align-items: center;
 			white-space: nowrap;
 		}
-
-		input[type='checkbox'] {
-			width: 13px;
-			height: 13px;
-			padding: 0;
-		}
 	}
 
 	.file {

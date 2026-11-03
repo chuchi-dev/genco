@@ -207,11 +207,6 @@
 			gap: 6px;
 			align-items: center;
 		}
-
-		input {
-			box-shadow: none;
-			padding: 0;
-		}
 	}
 
 	.port25 {
