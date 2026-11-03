@@ -142,7 +142,9 @@ by default): a deploy or rollback starts the new release in the slot
 that isn't live, waits up to 60 s until it accepts connections on its
 port, points nginx at it (`nginx -t`, reload) and then stops the old
 process. If the new one never listens it is stopped, the old one stays
-live and the deploy fails. Apply Changes (a new environment variable)
+live and the deploy fails; `current` points to the new release all the
+same (no automatic rollback), so a restart or reboot of the app would
+start it: roll back in the Deploy tab or deploy a fix. Apply Changes (a new environment variable)
 still restarts the live process in place. It is opt-in because old and
 new process run at the same time for a few seconds: migrations must
 work with the old code for that moment, background jobs inside the app

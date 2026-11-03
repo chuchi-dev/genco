@@ -320,7 +320,15 @@ Still open:
   Apply Changes still restarts in place.
 - Drop-down menus (Start, Run, conversations) could share one component.
 - A group's PostgreSQL role sees the names of the other databases
-  (pg_database), not their content.
+  (pg_database), not their content. Kept (2026-11-03): hiding them means
+  revoking pg_database from the roles, which breaks pg_dump, Craft's
+  backups and many drivers.
+- A release whose app doesn't start stays `current` (with and without
+  "Restart without downtime"): the old process keeps serving what it
+  loaded, but a restart or reboot of the app would start the broken
+  release; the deploy fails and says so. Kept on purpose (operator,
+  2026-11-03): no automatic rollback, the admin rolls back in the Deploy
+  tab or deploys a fix.
 - Chat attachments in `/var/lib/genco/uploads` are never deleted: decide
   on a cleanup (e.g. after 90 days, or with their conversation; operator
   not sure yet, 2026-11-02).
