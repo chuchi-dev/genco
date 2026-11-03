@@ -138,9 +138,67 @@ pub fn private_dir(path: &Path) -> std::io::Result<()> {
 	set_mode(path, 0o700)
 }
 
+/// Reloads nginx and checks that its master took the config: a reload
+/// only signals the master, which keeps the old config when it can't load
+/// the new one, e.g. an older running binary than the one `nginx -t`
+/// tested. Then a restart brings the new one. True when it restarted.
+pub async fn reload_nginx() -> Result<bool, String> {
+	// without a master there is nothing to wait for
+	let Some(before) = nginx_workers() else {
+		run(&["systemctl", "reload-or-restart", "nginx"]).await?;
+		return Ok(false);
+	};
+	run(&["systemctl", "reload", "nginx"]).await?;
+
+	// the master starts new workers for a new config
+	for _ in 0..50 {
+		if nginx_workers().is_some_and(|after| reloaded(&before, &after)) {
+			return Ok(false);
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+	}
+	tracing::warn!("nginx kept its old config on reload, restarting it");
+	run(&["systemctl", "restart", "nginx"]).await?;
+	Ok(true)
+}
+
+/// The processes of nginx's master, None without a running master: a
+/// pid file left from a crash may name no process or another one.
+fn nginx_workers() -> Option<Vec<u32>> {
+	let pid = std::fs::read_to_string("/run/nginx.pid").ok()?;
+	let pid = pid.trim();
+	let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+	if comm.trim() != "nginx" {
+		return None;
+	}
+	let children =
+		std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+			.ok()?;
+	Some(
+		children
+			.split_whitespace()
+			.filter_map(|p| p.parse().ok())
+			.collect(),
+	)
+}
+
+/// A new process means the master loaded the config again.
+fn reloaded(before: &[u32], after: &[u32]) -> bool {
+	after.iter().any(|p| !before.contains(p))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_reload_shows_in_new_nginx_processes() {
+		assert!(reloaded(&[10, 11], &[10, 11, 12]));
+		// old workers still serving their connections
+		assert!(reloaded(&[10, 11], &[11, 13]));
+		assert!(!reloaded(&[10, 11], &[10, 11]));
+		assert!(!reloaded(&[10, 11], &[10]));
+	}
 
 	#[test]
 	fn random_hex_has_twice_the_length() {

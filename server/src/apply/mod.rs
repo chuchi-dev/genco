@@ -223,7 +223,13 @@ async fn sync(
 	// also without a change: a reload that failed before is tried again,
 	// it is graceful
 	if r.run(&["nginx", "-t", "-q"]).await {
-		reload_nginx(r).await;
+		match crate::util::reload_nginx().await {
+			Ok(true) => {
+				r.info("nginx kept its old config on reload, restarted it")
+			}
+			Ok(false) => {}
+			Err(e) => r.error(e),
+		}
 	} else {
 		r.error("nginx keeps the old config until the error is fixed");
 	}

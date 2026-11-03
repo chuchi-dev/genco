@@ -482,7 +482,8 @@ include /etc/nginx/genco/*.conf;
 		/etc/nginx/sites-available/genco-panel",
 	)
 	.await?;
-	sh("nginx -t -q && systemctl reload nginx").await?;
+	crate::util::run(&["nginx", "-t", "-q"]).await?;
+	crate::util::reload_nginx().await?;
 	Ok(())
 }
 

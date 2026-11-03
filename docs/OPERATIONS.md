@@ -122,6 +122,20 @@ into the server's config, and the CLI does the same:
 Delete commands only send the admins a confirmation mail; the deletion
 happens when someone opens the link.
 
+`genco apply` never takes over a database it didn't create: when a
+PostgreSQL or MariaDB database of a genco database's name exists already
+and isn't the group's (another role owns it, the group has no grant on
+it), apply leaves it alone, sets up everything else and ends with an
+error naming it. Rename one of the two, or hand the database over by
+hand (PostgreSQL: `ALTER DATABASE <name> OWNER TO "g-<group>"`;
+MariaDB: grant `g-<group>`@localhost all privileges on it, with `_` in
+the name written as `\_`) and run `genco apply` again. Deleting a database
+in genco drops it and, in MariaDB, the group's grant on its name.
+
+nginx reloads gracefully; when its master keeps the old config after a
+reload (no new workers within 10 s), apply restarts nginx and says so,
+which cuts the open connections once.
+
 Mail services follow the mail domains: without one, `genco apply` keeps
 Dovecot, Rspamd, Redis and postsrsd stopped and disabled (installed, they
 start with the first mail domain) and Postfix listens only on localhost
@@ -163,11 +177,12 @@ MariaDB are normal systemd services:
 Restart without downtime (a domain option for Node and Rust apps, off
 by default): a deploy or rollback starts the new release in the slot
 that isn't live, waits up to 60 s until it accepts connections on its
-port, points nginx at it (`nginx -t`, reload) and then stops the old
-process. If the new one never listens it is stopped, the old one stays
-live and the deploy fails; `current` points to the new release all the
-same (no automatic rollback), so a restart or reboot of the app would
-start it: roll back in the Deploy tab or deploy a fix. Apply Changes (a new environment variable)
+port, points nginx at it (`nginx -t`, reload, a restart if the reload
+doesn't take) and then stops the old process; when nginx doesn't take the
+new config the old process stays live. If the new one never listens it
+is stopped, the old one stays live and the deploy fails;
+`current` points to the new release all the same (no automatic
+rollback), so a restart or reboot of the app would start it: roll back in the Deploy tab or deploy a fix. Apply Changes (a new environment variable)
 still restarts the live process in place. It is opt-in because old and
 new process run at the same time for a few seconds: migrations must
 work with the old code for that moment, background jobs inside the app

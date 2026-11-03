@@ -396,12 +396,13 @@ async fn delete_database(
 	id: i64,
 	log: &mut Vec<String>,
 ) -> std::result::Result<(), String> {
-	let (name, engine): (String, String) = db
+	let (name, engine, group): (String, String, String) = db
 		.conn()
 		.query_row(
-			"SELECT name, engine FROM databases WHERE id = ?1",
+			"SELECT d.name, d.engine, g.name FROM databases d
+			JOIN domain_groups g ON g.id = d.group_id WHERE d.id = ?1",
 			[id],
-			|r| Ok((r.get(0)?, r.get(1)?)),
+			|r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
 		)
 		.map_err(|e| e.to_string())?;
 	let database = crate::hosting::Database {
@@ -441,6 +442,12 @@ async fn delete_database(
 	};
 	let drop: Vec<&str> = drop.iter().map(String::as_str).collect();
 	run(log, &drop).await?;
+	if database.engine == crate::hosting::Engine::Mariadb
+		&& let Some(revoke) =
+			crate::engines::mariadb_revoke(&name, &group).await?
+	{
+		log.push(format!("$ mariadb -e '{revoke}'"));
+	}
 	db.conn()
 		.execute("DELETE FROM databases WHERE id = ?1", [id])
 		.map_err(|e| e.to_string())?;

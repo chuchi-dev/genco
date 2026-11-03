@@ -16,6 +16,10 @@ pub(super) async fn databases(r: &mut Report, groups: &[Group]) {
 	r.run_input(&["mariadb"], Some(&sql)).await;
 }
 
+/// How many foreign names the error lists: its message has up to 512
+/// characters, a name up to 64.
+const FOREIGN_NAMES: usize = 5;
+
 /// MariaDB has no owners: genco grants a database to its group only when
 /// it creates it or the group has it already. One of the same name that
 /// is there without the group's grant (another app's, made before genco
@@ -33,9 +37,7 @@ fn mariadb_sql(groups: &[Group]) -> String {
 		));
 		for db in g.databases.iter().filter(|d| d.engine == Engine::Mariadb) {
 			let name = &db.name;
-			// in a grant "_" matches any character: shop_1 would also
-			// cover shopx1 of another group
-			let grant = name.replace('_', "\\_");
+			let grant = crate::engines::mariadb_grant(name);
 			sql.push_str(&format!(
 				"BEGIN NOT ATOMIC\n\
 				IF NOT EXISTS (SELECT 1 FROM information_schema.schemata \
@@ -45,10 +47,13 @@ fn mariadb_sql(groups: &[Group]) -> String {
 				CREATE DATABASE IF NOT EXISTS `{name}` \
 				CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n\
 				GRANT ALL PRIVILEGES ON `{grant}`.* TO `{user}`@localhost;\n\
-				ELSE SET @foreign = CONCAT_WS(', ', @foreign, '{name}');\n\
+				ELSE SET @foreign_n = IFNULL(@foreign_n, 0) + 1;\n\
+				IF @foreign_n <= {FOREIGN_NAMES} THEN \
+				SET @foreign = CONCAT_WS(', ', @foreign, '{name}');\n\
+				END IF;\n\
 				END IF;\n\
 				END;;\n",
-				literal = grant.replace('\\', "\\\\"),
+				literal = crate::engines::mariadb_grant_literal(name),
 			));
 		}
 	}
@@ -59,7 +64,9 @@ fn mariadb_sql(groups: &[Group]) -> String {
 		"DELIMITER ;;\n{sql}\
 		BEGIN NOT ATOMIC\n\
 		DECLARE msg VARCHAR(512) DEFAULT CONCAT('genco leaves these \
-		databases alone, they are not its own: ', @foreign);\n\
+		databases alone, they are not its own: ', @foreign, \
+		IF(@foreign_n > {FOREIGN_NAMES}, \
+		CONCAT(' and ', @foreign_n - {FOREIGN_NAMES}, ' more'), ''));\n\
 		IF @foreign IS NOT NULL THEN \
 		SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;\n\
 		END IF;\n\
@@ -195,49 +202,6 @@ fn cert_hint(domain: &str) -> String {
 	)
 }
 
-/// Reloads nginx and checks that its master took the config: a reload
-/// only signals the master, which keeps the old config when it can't load
-/// the new one, e.g. an older running binary than the one `nginx -t`
-/// tested. Then a restart brings the new one.
-pub(super) async fn reload_nginx(r: &mut Report) {
-	let before = nginx_workers();
-	if !r.run(&["systemctl", "reload", "nginx"]).await {
-		return;
-	}
-	// the master starts new workers for a new config
-	let Some(before) = before else {
-		return;
-	};
-	for _ in 0..50 {
-		if nginx_workers().is_some_and(|after| reloaded(&before, &after)) {
-			return;
-		}
-		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-	}
-	r.info("nginx kept its old config on reload, restarting it");
-	r.run(&["systemctl", "restart", "nginx"]).await;
-}
-
-/// The processes of nginx's master, None without a running master.
-fn nginx_workers() -> Option<Vec<u32>> {
-	let pid = std::fs::read_to_string("/run/nginx.pid").ok()?;
-	let pid = pid.trim();
-	let children =
-		std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-			.ok()?;
-	Some(
-		children
-			.split_whitespace()
-			.filter_map(|p| p.parse().ok())
-			.collect(),
-	)
-}
-
-/// A new process means the master loaded the config again.
-fn reloaded(before: &[u32], after: &[u32]) -> bool {
-	after.iter().any(|p| !before.contains(p))
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -268,11 +232,24 @@ mod tests {
 	}
 
 	#[test]
-	fn a_reload_shows_in_new_nginx_processes() {
-		assert!(reloaded(&[10, 11], &[10, 11, 12]));
-		// old workers still serving their connections
-		assert!(reloaded(&[10, 11], &[11, 13]));
-		assert!(!reloaded(&[10, 11], &[10, 11]));
-		assert!(!reloaded(&[10, 11], &[10]));
+	fn names_only_a_few_foreign_databases() {
+		let g = Group {
+			name: "shop".into(),
+			databases: (0..8)
+				.map(|i| Database {
+					id: i,
+					group_id: 1,
+					name: format!("db{i}"),
+					engine: Engine::Mariadb,
+				})
+				.collect(),
+			..Group::default()
+		};
+		let sql = mariadb_sql(&[g]);
+		if let Ok(path) = std::env::var("GENCO_SQL_OUT") {
+			std::fs::write(path, &sql).unwrap();
+		}
+		assert!(sql.contains("IF @foreign_n <= 5 THEN"));
+		assert!(sql.contains("CONCAT(' and ', @foreign_n - 5, ' more')"));
 	}
 }

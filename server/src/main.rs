@@ -16,6 +16,7 @@ mod db;
 mod deploy;
 mod dns;
 mod dumps;
+mod engines;
 mod error;
 mod events;
 mod files;
@@ -410,12 +411,8 @@ async fn run(args: Args) -> Result<(), String> {
 		Cmd::Database(cmd) => {
 			if let cli::DatabaseCmd::Add { name, postgres, .. } = &cmd {
 				let db = Db::open(&cfg.db_path())?;
-				let req = hosting::DatabaseReq {
-					group_id: 0,
-					name: name.clone(),
-					engine: cli::engine(*postgres),
-				};
-				hosting::check_database_free(&db, &req)
+				let engine = cli::engine(*postgres);
+				engines::check_database_free(&db, name, engine)
 					.await
 					.map_err(|e| e.to_string())?;
 			}

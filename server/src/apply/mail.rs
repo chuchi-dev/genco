@@ -132,12 +132,6 @@ pub(super) async fn webmail_service(
 		Ok(false) => {}
 		Err(e) => r.error(format!("webmail config: {e}")),
 	}
-	// the mail host's site is new or changed
-	if changed.iter().any(|p| p.starts_with("/etc/nginx/genco"))
-		&& r.run(&["nginx", "-t", "-q"]).await
-	{
-		r.run(&["systemctl", "reload", "nginx"]).await;
-	}
 }
 
 /// The users and directories mail needs, before its files are written.

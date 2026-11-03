@@ -131,15 +131,21 @@ async fn point_nginx(ctx: &Ctx, d: &Domain) -> Res<()> {
 	let old = std::fs::read_to_string(&path).ok();
 	std::fs::write(&path, &file.content)
 		.map_err(|e| format!("writing {}: {e}", path.display()))?;
-	let reloaded = match util::run(&["nginx", "-t", "-q"]).await {
-		Ok(_) => util::run(&["systemctl", "reload", "nginx"]).await,
-		Err(e) => Err(e),
-	};
-	if let Err(e) = reloaded {
-		if let Some(old) = old {
-			let _ = std::fs::write(&path, old);
-		}
+	if let Err(e) = util::run(&["nginx", "-t", "-q"]).await {
+		restore(&path, old);
+		return Err(format!("nginx: {e}"));
+	}
+	// the old slot stops after this: nginx must have the new config
+	if let Err(e) = util::reload_nginx().await {
+		restore(&path, old);
+		let _ = util::reload_nginx().await;
 		return Err(format!("nginx: {e}"));
 	}
 	Ok(())
+}
+
+fn restore(path: &Path, old: Option<String>) {
+	if let Some(old) = old {
+		let _ = std::fs::write(path, old);
+	}
 }
