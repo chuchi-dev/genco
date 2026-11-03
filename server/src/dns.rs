@@ -13,24 +13,81 @@ pub fn plain_name(name: &str) -> bool {
 			.all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c))
 }
 
-/// `dig +short`, without a shell; nothing for an odd name. `kind` is a
-/// record type or `-x` for the reverse lookup of an address.
+/// What the DNS says now, from the zone's own name servers: a resolver
+/// keeps answers up to their TTL and a missing record for the zone's
+/// negative TTL (often an hour), so a record just set would stay
+/// "missing". Like `dig +short`, without a shell; nothing for an odd
+/// name. `kind` is a record type or `-x` for the reverse lookup of an
+/// address.
 pub async fn dig(kind: &str, name: &str) -> Vec<String> {
 	if !plain_name(name) {
 		return vec![];
 	}
-	let Ok(out) = Command::new("dig")
-		.args(["+short", "+time=3", "+tries=2", kind, name])
+	let (kind, name) = match kind {
+		"-x" => match reverse_name(name) {
+			Some(arpa) => ("PTR", arpa),
+			None => return vec![],
+		},
+		k => (k, name.to_string()),
+	};
+	for ns in zone_servers(&name).await {
+		let at = format!("@{ns}");
+		if let Some(found) = run_dig(&["+norecurse", &at, kind, &name]).await {
+			return found;
+		}
+	}
+	// no name server answered: what the resolver knows
+	run_dig(&[kind, &name]).await.unwrap_or_default()
+}
+
+/// `dig +short` with `args`, `None` if it got no answer at all.
+async fn run_dig(args: &[&str]) -> Option<Vec<String>> {
+	let out = Command::new("dig")
+		.args(["+short", "+time=3", "+tries=2"])
+		.args(args)
 		.output()
 		.await
-	else {
-		return vec![];
-	};
-	String::from_utf8_lossy(&out.stdout)
-		.lines()
-		.map(|l| l.trim().trim_end_matches('.').to_string())
-		.filter(|l| !l.is_empty())
-		.collect()
+		.ok()?;
+	let text = String::from_utf8_lossy(&out.stdout);
+	// "no servers could be reached" comes on stdout too
+	if !out.status.success() || text.contains(";;") {
+		return None;
+	}
+	Some(
+		text.lines()
+			.map(|l| l.trim().trim_end_matches('.').to_string())
+			.filter(|l| !l.is_empty())
+			.collect(),
+	)
+}
+
+/// The name servers of the zone `name` is in, from the resolver (their
+/// names change rarely): the first of its parent names that has some.
+async fn zone_servers(name: &str) -> Vec<String> {
+	let mut zone = name;
+	loop {
+		let found: Vec<String> = run_dig(&["NS", zone])
+			.await
+			.unwrap_or_default()
+			.into_iter()
+			// a CNAME comes first, then its target's servers
+			.filter(|n| plain_name(n) && n.contains('.'))
+			.collect();
+		if !found.is_empty() {
+			return found;
+		}
+		match zone.split_once('.') {
+			Some((_, parent)) if parent.contains('.') => zone = parent,
+			_ => return vec![],
+		}
+	}
+}
+
+/// `7.3.0.203.in-addr.arpa` for `203.0.3.7`.
+fn reverse_name(ip: &str) -> Option<String> {
+	let ip: std::net::Ipv4Addr = ip.parse().ok()?;
+	let o = ip.octets();
+	Some(format!("{}.{}.{}.{}.in-addr.arpa", o[3], o[2], o[1], o[0]))
 }
 
 /// TXT records come quoted and maybe in pieces.
@@ -88,6 +145,15 @@ mod tests {
 		assert!(plain_name("203.0.113.7"));
 		assert!(!plain_name("x;rm -rf /"));
 		assert!(!plain_name("-x"));
+	}
+
+	#[test]
+	fn reverse_names() {
+		assert_eq!(
+			reverse_name("203.0.3.7").as_deref(),
+			Some("7.3.0.203.in-addr.arpa")
+		);
+		assert_eq!(reverse_name("2001:db8::1"), None);
 	}
 
 	#[test]

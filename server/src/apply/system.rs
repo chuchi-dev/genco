@@ -164,9 +164,12 @@ fn cert_hint(domain: &str) -> String {
 	)
 }
 
+/// The domain's addresses as its name servers say now, not as a resolver
+/// still has them: a domain just moved here gets its certificate.
 pub(super) async fn resolve(domain: &str) -> Vec<String> {
-	match tokio::net::lookup_host((domain, 80)).await {
-		Ok(addrs) => addrs.map(|a| a.ip().to_string()).collect(),
-		Err(_) => vec![],
-	}
+	let mut ips = crate::dns::dig("A", domain).await;
+	ips.extend(crate::dns::dig("AAAA", domain).await);
+	// a CNAME comes first, keep the addresses
+	ips.retain(|ip| ip.parse::<std::net::IpAddr>().is_ok());
+	ips
 }
