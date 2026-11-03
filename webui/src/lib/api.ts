@@ -368,6 +368,7 @@ export type Proposal = {
 	status: 'pending' | 'approved' | 'answered' | 'rejected' | 'expired';
 	decidedBy: string | null;
 	conversationId: number | null;
+	/** what went back: the agent's answer, or the reason of a rejection */
 	answer: string | null;
 	createdAt: number;
 };

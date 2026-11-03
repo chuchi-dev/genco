@@ -10,6 +10,7 @@
 	import Form from '../win/Form.svelte';
 	import ListView from '../win/ListView.svelte';
 	import Tabs from '../win/Tabs.svelte';
+	import RejectDialog from './RejectDialog.svelte';
 
 	// other AI agents that look after the server: one key each (status,
 	// databases, proposals), and their webhook gets the reports and the
@@ -35,6 +36,7 @@
 	let key = $state<string | null>(null);
 	let testResult = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	let rejecting = $state<Proposal | null>(null);
 
 	const peer = $derived(peers.find(p => p.id === selected));
 	const proposal = $derived(
@@ -146,13 +148,8 @@
 		await load();
 	}
 
-	async function reject() {
-		if (!proposal) return;
-		try {
-			await post(`/proposals/${proposal.id}/reject`, {});
-		} catch (e: any) {
-			message.show('Not Rejected', e.message);
-		}
+	async function rejected() {
+		rejecting = null;
 		await load();
 	}
 
@@ -181,7 +178,7 @@
 			code: `${auth} -H "Content-Type: application/json" \\\n  -d '{"text": "…", "approver": "admin@example.ch", "mailDelay": 10}' \\\n  ${location.origin}/api/proposals`,
 		},
 		{
-			text: 'Its status and answer (the webhook gets the answer too):',
+			text: 'Its status and answer, or the reason of a rejection (the webhook gets them too, and a message when it expires after 7 days):',
 			code: `${auth} ${location.origin}/api/proposals/<id>`,
 		},
 	]);
@@ -224,8 +221,8 @@
 					<code>status</code>, <code>kind</code>, <code>title</code>,
 					<code>text</code>, <code>url</code>, <code>proposal</code>)
 					and the agent's key as <code>Authorization: Bearer</code>:
-					reports, and the answer to a proposal (kind
-					<code>proposal</code>).
+					reports, and the answer to a proposal, its rejection or
+					expiry (kind <code>proposal</code>).
 				</p>
 			{:else}
 				<p>
@@ -372,8 +369,17 @@
 						{proposal.decidedBy}.
 					</p>
 				{/if}
+				{#if proposal.status === 'expired'}
+					<p class="hint">
+						Nobody decided within 7 days, {proposal.from} was told.
+					</p>
+				{/if}
 				{#if proposal.answer}
-					<p>The answer that went back:</p>
+					<p>
+						{proposal.status === 'rejected'
+							? `The reason sent to ${proposal.from}:`
+							: 'The answer that went back:'}
+					</p>
 					<div class="text selectable">
 						<Markdown text={proposal.answer} />
 					</div>
@@ -393,10 +399,10 @@
 					Approve…
 				</Button>
 				<Button
-					onclick={reject}
+					onclick={() => (rejecting = proposal ?? null)}
 					disabled={proposal?.status !== 'pending'}
 				>
-					Reject
+					Reject…
 				</Button>
 				<Button
 					onclick={() =>
@@ -424,6 +430,10 @@
 		</div>
 	</Tabs>
 </Dialog>
+
+{#if rejecting}
+	<RejectDialog proposal={rejecting} onclose={rejected} />
+{/if}
 
 <style lang="scss">
 	@use 'styles/win' as *;

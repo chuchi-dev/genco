@@ -307,6 +307,8 @@ terminal.
 - [x] A small model rewrites a proposal into a short formatted version
   (operator 2026-11-03): the admin approves that, genco's agent gets it,
   the panel shows the original too
+- [x] A rejection can have a reason for the proposing agent, an expired
+  proposal tells it once
 
 ### Later
 - GitHub deploys tested, malware scanning (Imunify or CrowdSec,

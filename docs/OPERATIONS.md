@@ -537,8 +537,8 @@ notices.
 ```
 
 `status` is `ok` or `attention`, `kind` is `report` (routines and
-alerts), `update`, `proposal` (the answer to a proposal, with its id in
-`proposal`) or `test`, `url` opens the conversation in the panel.
+alerts), `update`, `proposal` (the answer to a proposal, its rejection
+or expiry, with its id in `proposal`) or `test`, `url` opens the conversation in the panel.
 Typical receivers are another agent that looks after several servers,
 or a small relay to a chat: Slack's or Teams' incoming webhooks expect
 their own JSON (`{"text": ...}`), so they need a few lines in between
@@ -567,7 +567,12 @@ agent may:
   7 days. Approved, it becomes a conversation of the
   server agent; when the agent is done, its answer goes to the agent's
   webhook (kind `proposal`) and `GET /api/proposals/<id>` shows the
-  status and `answer`.
+  status and `answer`. Rejected, the webhook gets "<admin> rejected
+  the proposal: <reason>" (or "<admin> rejected the proposal." without
+  a reason) and `answer` is the reason; the admin's reason is optional,
+  at most 2000 characters, cleaned like the text. Nobody decided within
+  7 days, the status becomes `expired` and the webhook gets "The
+  proposal expired after 7 days without a decision." once.
 
   `text` says what the agent wants and why, not a long list of steps:
   genco's agent works out the details itself. Before the admins see

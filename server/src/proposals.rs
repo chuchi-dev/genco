@@ -4,6 +4,8 @@
 //! any admin decides. With a delay the mail goes only if nobody decided in
 //! the panel meanwhile. When the agent is done, its last answer goes back
 //! to the proposing agent's webhook; the agent can also poll the proposal.
+//! A rejection (with the admin's reason, if any) and the expiry after 7
+//! days go to the webhook too.
 //! A small model rewrites the proposal into a short formatted version
 //! first: the admin approves that version and genco's agent gets it.
 
@@ -35,6 +37,8 @@ const MAX_MAIL_DELAY: i64 = 24 * 60;
 /// A proposal nobody decided on in this time expires.
 const VALID_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_TEXT: usize = 20_000;
+/// The longest reason of a rejection, in characters.
+const MAX_REASON: usize = 2000;
 /// More undecided proposals of one agent are refused, a loop mustn't mail
 /// the admins without end.
 const MAX_PENDING: i64 = 10;
@@ -74,6 +78,8 @@ pub struct Proposal {
 	pub status: String,
 	pub decided_by: Option<String>,
 	pub conversation_id: Option<i64>,
+	/// what went back to the agent: genco's agent's answer, or the
+	/// admin's reason of a rejection
 	pub answer: Option<String>,
 	pub created_at: i64,
 	#[serde(skip)]
@@ -795,22 +801,108 @@ async fn approve(
 	Ok(Json(conversation))
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RejectReq {
+	/// the reason the proposing agent gets, empty for none
+	#[serde(default)]
+	message: String,
+}
+
+/// The reason as the agent gets it, cleaned like a proposal; `None` when
+/// there is none.
+fn reason(message: &str) -> Result<Option<String>> {
+	let (text, _) = clean_text(message);
+	let text = text.trim();
+	if text.chars().count() > MAX_REASON {
+		return Err(Error::Invalid(format!(
+			"a reason has at most {MAX_REASON} characters"
+		)));
+	}
+	Ok((!text.is_empty()).then(|| text.into()))
+}
+
+/// What the proposing agent is told about the rejection.
+fn rejected_text(by: &str, reason: Option<&str>) -> String {
+	match reason {
+		Some(reason) => format!("{by} rejected the proposal: {reason}"),
+		None => format!("{by} rejected the proposal."),
+	}
+}
+
+/// Rejects a pending proposal, its reason is the answer the agent can
+/// read.
+fn rejected(
+	conn: &Connection,
+	id: i64,
+	by: &crate::users::User,
+	reason: Option<&str>,
+) -> Result<Proposal> {
+	decide(conn, id, "rejected", by)?;
+	conn.execute(
+		"UPDATE proposals SET answer = ?1 WHERE id = ?2",
+		params![reason, id],
+	)?;
+	get_one(conn, id)
+}
+
+/// The reason is optional, old clients send no body or `{}`.
 async fn reject(
 	authed: Authed,
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	Path(id): Path<i64>,
+	req: Option<Json<RejectReq>>,
 ) -> Result<Json<()>> {
 	let by = authed.user.name.clone();
-	let p = {
-		let conn = db.conn();
-		decide(&conn, id, "rejected", &authed.user)?;
-		get_one(&conn, id)?
-	};
+	let reason = reason(&req.unwrap_or_default().message)?;
+	let p = rejected(&db.conn(), id, &authed.user, reason.as_deref())?;
 	events.send(Event::Proposals);
-	tell(&cfg, &db, &p, format!("{by} rejected the proposal.")).await;
+	tell(&cfg, &db, &p, rejected_text(&by, reason.as_deref())).await;
 	Ok(Json(()))
+}
+
+/// Marks the proposals nobody decided on in time as expired, once;
+/// returns the ones it marked.
+fn expire(conn: &Connection) -> Result<Vec<Proposal>> {
+	let ids = conn
+		.prepare(
+			"SELECT id FROM proposals
+			WHERE status = 'pending' AND created_at + ?1 < ?2",
+		)?
+		.query_map(params![VALID_MS, now()], |r| r.get(0))?
+		.collect::<rusqlite::Result<Vec<i64>>>()?;
+	let mut expired = vec![];
+	for id in ids {
+		let changed = conn.execute(
+			"UPDATE proposals SET status = 'expired', mail_at = NULL
+			WHERE id = ?1 AND status = 'pending'",
+			[id],
+		)?;
+		if changed == 1 {
+			expired.push(get_one(conn, id)?);
+		}
+	}
+	Ok(expired)
+}
+
+/// Every minute: the proposing agents of proposals that expired are told.
+pub async fn due_expiries(cfg: &Config, db: &Db, events: &Events) {
+	let expired = match expire(&db.conn()) {
+		Ok(expired) => expired,
+		Err(e) => {
+			tracing::error!("expiring proposals: {e}");
+			return;
+		}
+	};
+	if expired.is_empty() {
+		return;
+	}
+	events.send(Event::Proposals);
+	for p in expired {
+		let text = "The proposal expired after 7 days without a decision.";
+		tell(cfg, db, &p, text.into()).await;
+	}
 }
 
 pub fn routes() -> Router<AppState> {
@@ -929,6 +1021,78 @@ mod tests {
 			.unwrap();
 		assert_eq!(get_one(&conn, id).unwrap().status, "expired");
 		assert!(decide(&conn, id, "approved", &admin(&conn, "a")).is_err());
+	}
+
+	#[test]
+	fn expired_proposals_are_marked_once() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let p = peer(&conn);
+		let old = add(&conn, p, "Update Craft", None).unwrap();
+		let fresh = add(&conn, p, "Update PHP", None).unwrap();
+		conn.execute(
+			"UPDATE proposals SET created_at = 0, mail_at = 1 WHERE id = ?1",
+			[old],
+		)
+		.unwrap();
+
+		let expired = expire(&conn).unwrap();
+		assert_eq!(expired.iter().map(|p| p.id).collect::<Vec<_>>(), [old]);
+		assert!(expire(&conn).unwrap().is_empty());
+		let (status, mail_at): (String, Option<i64>) = conn
+			.query_row(
+				"SELECT status, mail_at FROM proposals WHERE id = ?1",
+				[old],
+				|r| Ok((r.get(0)?, r.get(1)?)),
+			)
+			.unwrap();
+		assert_eq!((status.as_str(), mail_at), ("expired", None));
+		assert_eq!(get_one(&conn, fresh).unwrap().status, "pending");
+	}
+
+	#[test]
+	fn a_rejection_may_have_a_reason() {
+		assert_eq!(reason("").unwrap(), None);
+		assert_eq!(reason(" \u{200B}\n ").unwrap(), None);
+		assert_eq!(
+			reason(" Not\u{0} now,\r\nask\u{202E} again\u{7F}. ")
+				.unwrap()
+				.as_deref(),
+			Some("Not now,\nask again.")
+		);
+		assert!(reason(&"ä".repeat(MAX_REASON)).is_ok());
+		assert!(reason(&"ä".repeat(MAX_REASON + 1)).is_err());
+
+		assert_eq!(rejected_text("a", None), "a rejected the proposal.");
+		assert_eq!(
+			rejected_text("a", Some("Not now.")),
+			"a rejected the proposal: Not now."
+		);
+	}
+
+	#[test]
+	fn the_reason_is_stored_as_the_answer() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let p = peer(&conn);
+		let a = admin(&conn, "a");
+		let id = add(&conn, p, "Update Craft", None).unwrap();
+		let r = rejected(&conn, id, &a, Some("Not now.")).unwrap();
+		assert_eq!(r.status, "rejected");
+		assert_eq!(r.answer.as_deref(), Some("Not now."));
+		assert!(rejected(&conn, id, &a, None).is_err());
+
+		let id = add(&conn, p, "Update PHP", None).unwrap();
+		assert_eq!(rejected(&conn, id, &a, None).unwrap().answer, None);
+	}
+
+	#[test]
+	fn a_reject_body_is_optional() {
+		let req: RejectReq = serde_json::from_str("{}").unwrap();
+		assert_eq!(req.message, "");
+		let req: RejectReq =
+			serde_json::from_str(r#"{"message": "Not now."}"#).unwrap();
+		assert_eq!(req.message, "Not now.");
 	}
 
 	#[test]

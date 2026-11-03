@@ -399,6 +399,7 @@ pub fn spawn(
 	cfg: std::sync::Arc<crate::config::Config>,
 	db: Db,
 	runner: Runner,
+	events: crate::events::Events,
 ) {
 	tokio::spawn(async move {
 		let mut checker = Checker::default();
@@ -412,6 +413,7 @@ pub fn spawn(
 			crate::routines::due(&db, &runner).await;
 			crate::update::due(&db).await;
 			crate::proposals::due_mails(&cfg, &db).await;
+			crate::proposals::due_expiries(&cfg, &db, &events).await;
 			crate::firewall::due(&cfg, &db).await;
 		}
 	});
