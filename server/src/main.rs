@@ -191,6 +191,23 @@ pub(crate) enum Cmd {
 }
 
 impl Cmd {
+	/// Servers, interactive and system-changing jobs, which write to
+	/// sockets and child processes.
+	fn long_running(&self) -> bool {
+		matches!(
+			self,
+			Cmd::Serve
+				| Cmd::Chat { .. }
+				| Cmd::Runner(_)
+				| Cmd::Setup { .. }
+				| Cmd::Apply | Cmd::Deploy { .. }
+				| Cmd::Backup
+				| Cmd::Restic { .. }
+				| Cmd::Update { .. }
+				| Cmd::Panel(_)
+		)
+	}
+
 	/// Whether it may change something, for the activity log; reading and
 	/// long-running commands stay out (an update logs itself).
 	fn changes(&self) -> bool {
@@ -254,6 +271,12 @@ pub struct AppState {
 #[tokio::main]
 async fn main() {
 	let args = Args::parse();
+	// a command piped into `head` ends quietly instead of panicking on
+	// the closed stdout; long jobs keep getting EPIPE as an error, their
+	// sockets and child pipes must not kill them
+	if !args.cmd.long_running() {
+		unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+	}
 
 	// plain text when the agent runs a command
 	tracing_subscriber::fmt()
