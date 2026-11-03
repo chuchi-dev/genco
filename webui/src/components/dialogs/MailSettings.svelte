@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { get, post } from '@/lib/api';
 	import { mail } from '@/lib/mail.svelte';
+	import { message } from '@/lib/dialogs.svelte';
 	import { session } from '@/lib/session.svelte';
 	import Button from '../win/Button.svelte';
 	import Form from '../win/Form.svelte';
@@ -50,6 +51,12 @@
 		.catch(e => (error = e.message));
 
 	async function save() {
+		// a stolen session mustn't send the mails through its own relay
+		const auth = await message.password(
+			'Mail Settings',
+			'change how mail is sent',
+		);
+		if (auth === null) return false;
 		await post('/settings/mail', {
 			mode,
 			relayHost,
@@ -57,6 +64,7 @@
 			relayUser,
 			relayPassword,
 			sender,
+			...auth,
 		});
 		if (relayPassword) hasPassword = true;
 		relayPassword = '';

@@ -158,7 +158,18 @@ pub async fn reload_nginx() -> Result<bool, String> {
 		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 	}
 	tracing::warn!("nginx kept its old config on reload, restarting it");
-	run(&["systemctl", "restart", "nginx"]).await?;
+	if let Err(e) = run(&["systemctl", "restart", "nginx"]).await {
+		// a failed restart leaves nginx stopped and every site down: one
+		// more start, the error stays either way
+		return Err(match run(&["systemctl", "start", "nginx"]).await {
+			Ok(_) => format!("restarting nginx failed, started it again: {e}"),
+			Err(again) => {
+				format!(
+					"nginx is down, restarting failed: {e}, starting: {again}"
+				)
+			}
+		});
+	}
 	Ok(true)
 }
 

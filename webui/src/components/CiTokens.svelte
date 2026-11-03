@@ -31,15 +31,15 @@
 		);
 		if (!name) return;
 		try {
-			const password = await message.password(
+			const auth = await message.password(
 				'Deploy Token',
 				'create a deploy token',
 			);
-			if (password === null) return;
+			if (auth === null) return;
 			newToken = await post('/tokens', {
 				name,
 				scopes: [scope],
-				password,
+				...auth,
 			});
 			await load();
 		} catch (e: any) {

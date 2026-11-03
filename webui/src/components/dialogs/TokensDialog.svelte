@@ -39,15 +39,12 @@
 	}
 
 	async function add() {
-		const password = await message.password(
-			'New Token',
-			'create an API token',
-		);
-		if (password === null) return;
+		const auth = await message.password('New Token', 'create an API token');
+		if (auth === null) return;
 		created = await post('/tokens', {
 			name,
 			scopes: ['databases'],
-			password,
+			...auth,
 		});
 		adding = false;
 		name = '';

@@ -63,12 +63,12 @@
 	onDestroy(() => clearInterval(poll));
 
 	async function add() {
-		const password = await message.password(
+		const auth = await message.password(
 			'New Runner',
 			'create a runner token',
 		);
-		if (password === null) return;
-		const token = await post('/runners', { name, password });
+		if (auth === null) return;
+		const token = await post('/runners', { name, ...auth });
 		created = `genco runner register ${location.origin} ${token}`;
 		adding = false;
 		name = '';

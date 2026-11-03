@@ -427,19 +427,17 @@ async fn check_totp(
 		return Err(Error::TotpRequired);
 	};
 	let key = format!("code:{user_id}");
-	let step = attempts_allowed(&key, MAX_CODE_FAILURES)
+	let used = attempts_allowed(&key, MAX_CODE_FAILURES)
 		.then(|| check_code(secret, email, code, last_step))
-		.flatten();
-	let Some(step) = step else {
+		.flatten()
+		.map(|step| use_step(db, user_id, step))
+		.transpose()?;
+	if used != Some(true) {
 		let why = "Login, wrong two-factor code";
 		return Err(reject(db, email, from, why, &key, MAX_CODE_FAILURES).await);
-	};
+	}
 
 	CODE_FAILURES.lock().unwrap().remove(&key);
-	db.conn().execute(
-		"UPDATE users SET totp_step = ?1 WHERE id = ?2",
-		params![step, user_id],
-	)?;
 	Ok(())
 }
 
@@ -508,7 +506,7 @@ async fn delete_user(
 	if id == authed.user.id {
 		return Err(Error::Invalid("you can't delete yourself".into()));
 	}
-	verify_password(&db, &authed.user, &req.password).await?;
+	verify_password_and_code(&db, &authed.user, &req).await?;
 	db.conn().execute("DELETE FROM users WHERE id = ?1", [id])?;
 	Ok(Json(()))
 }
@@ -553,10 +551,13 @@ pub async fn verify_password(
 	Ok(())
 }
 
-/// What a dangerous request sends along: the admin's password.
-#[derive(Debug, Deserialize)]
+/// What a dangerous request sends along: the admin's password, and the
+/// 2FA code when the admin has 2FA (`verify_password_and_code`).
+#[derive(Debug, Default, Deserialize)]
 pub struct PasswordOnly {
 	pub password: String,
+	#[serde(default)]
+	pub code: String,
 }
 
 /// Needs the current password, a stolen session can't lock the admin
@@ -781,8 +782,10 @@ const INVITE_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 struct InviteReq {
 	email: String,
 	name: String,
-	/// the inviting admin's: a new admin is lasting access
-	password: String,
+	/// the inviting admin's password and code: a new admin is lasting
+	/// access
+	#[serde(flatten)]
+	auth: PasswordOnly,
 }
 
 /// Adds an admin without a password, the mail has a link to set one.
@@ -795,7 +798,7 @@ async fn invite(
 	if mail::off(&db) {
 		return Err(mail::off_error("add the admin with a password"));
 	}
-	verify_password(&db, &authed.user, &req.password).await?;
+	verify_password_and_code(&db, &authed.user, &req.auth).await?;
 	// nobody knows this password, the invite sets the real one
 	let hash = hash_password_async(util::random_hex(32)).await?;
 	let user = create(&db.conn(), &req.email, &req.name, &hash)?;
@@ -818,7 +821,8 @@ struct AddReq {
 	/// the new admin's
 	new_password: String,
 	/// the adding admin's, as for an invite
-	password: String,
+	#[serde(flatten)]
+	auth: PasswordOnly,
 }
 
 /// Adds an admin with a password, who can log in right away, for a
@@ -830,7 +834,7 @@ async fn add(
 	State(db): State<Db>,
 	Json(req): Json<AddReq>,
 ) -> Result<Json<User>> {
-	verify_password(&db, &authed.user, &req.password).await?;
+	verify_password_and_code(&db, &authed.user, &req.auth).await?;
 	let hash = hash_password_async(req.new_password).await?;
 	let user = create(&db.conn(), &req.email, &req.name, &hash)?;
 
@@ -868,7 +872,7 @@ async fn reinvite(
 	Path(id): Path<i64>,
 	Json(req): Json<PasswordOnly>,
 ) -> Result<Json<()>> {
-	verify_password(&db, &authed.user, &req.password).await?;
+	verify_password_and_code(&db, &authed.user, &req).await?;
 	let user = by_id(&db.conn(), id)?;
 	send_invite(&cfg, &db, &user, &authed.user.name).await?;
 	Ok(Json(()))
@@ -1032,21 +1036,40 @@ pub async fn verify_code(db: &Db, user: &User, code: &str) -> Result<()> {
 		|r| Ok((r.get(0)?, r.get(1)?)),
 	)?;
 	let key = format!("code:{}", user.id);
-	let step = attempts_allowed(&key, MAX_CODE_FAILURES)
+	let used = attempts_allowed(&key, MAX_CODE_FAILURES)
 		.then(|| check_code(&secret, &user.email, code, last_step))
-		.flatten();
-	let Some(step) = step else {
+		.flatten()
+		.map(|step| use_step(db, user.id, step))
+		.transpose()?;
+	if used != Some(true) {
 		attempt_failed(&key, MAX_CODE_FAILURES);
 		tokio::time::sleep(Duration::from_secs(1)).await;
 		return Err(Error::Invalid("the two-factor code is wrong".into()));
-	};
+	}
 
 	CODE_FAILURES.lock().unwrap().remove(&key);
-	db.conn().execute(
-		"UPDATE users SET totp_step = ?1 WHERE id = ?2",
-		params![step, user.id],
-	)?;
 	Ok(())
+}
+
+/// Uses up the code of `step`, false if it or a later one was used in
+/// between: parallel requests with the same code don't both get in.
+fn use_step(db: &Db, user_id: i64, step: u64) -> rusqlite::Result<bool> {
+	let changed = db.conn().execute(
+		"UPDATE users SET totp_step = ?1 WHERE id = ?2 AND totp_step < ?1",
+		params![step, user_id],
+	)?;
+	Ok(changed == 1)
+}
+
+/// The admin's password and, with 2FA on, a code of the authenticator
+/// app: for what a stolen session and password mustn't do either.
+pub async fn verify_password_and_code(
+	db: &Db,
+	user: &User,
+	req: &PasswordOnly,
+) -> Result<()> {
+	verify_password(db, user, &req.password).await?;
+	verify_code(db, user, &req.code).await
 }
 
 #[derive(Debug, Serialize)]
@@ -1098,29 +1121,15 @@ async fn enable_totp(
 	Ok(Json(()))
 }
 
-#[derive(Debug, Deserialize)]
-struct DisableTotpReq {
-	code: String,
-	password: String,
-}
-
 async fn disable_totp(
 	authed: Authed,
 	State(db): State<Db>,
-	Json(req): Json<DisableTotpReq>,
+	Json(req): Json<PasswordOnly>,
 ) -> Result<Json<()>> {
-	verify_password(&db, &authed.user, &req.password).await?;
-	let secret: Option<String> = db.conn().query_row(
-		"SELECT totp_secret FROM users WHERE id = ?1",
-		[authed.user.id],
-		|r| r.get(0),
-	)?;
-	let ok = secret.is_some_and(|s| {
-		check_code(&s, &authed.user.email, &req.code, 0).is_some()
-	});
-	if !ok {
-		return Err(Error::Invalid("the code doesn't match".into()));
+	if !authed.user.totp {
+		return Err(Error::Invalid("two-factor login is off".into()));
 	}
+	verify_password_and_code(&db, &authed.user, &req).await?;
 	db.conn().execute(
 		"UPDATE users SET totp_secret = NULL WHERE id = ?1",
 		[authed.user.id],
@@ -1209,12 +1218,40 @@ mod tests {
 		assert!(normalize("a@example.ch", " ").is_err());
 	}
 
+	fn auth(password: &str, code: &str) -> PasswordOnly {
+		PasswordOnly {
+			password: password.into(),
+			code: code.into(),
+		}
+	}
+
+	/// An admin with 2FA and its own id, wrong codes of other tests
+	/// don't count against it.
+	fn admin_with_2fa(db: &Db, id: i64, email: &str) -> (User, String) {
+		let hash = hash_password("admin password").unwrap();
+		let a = create(&db.conn(), email, "A", &hash).unwrap();
+		let secret = Secret::generate_secret().to_encoded().to_string();
+		db.conn()
+			.execute(
+				"UPDATE users SET id = ?1, totp_secret = ?2 WHERE id = ?3",
+				params![id, secret, a.id],
+			)
+			.unwrap();
+		(by_id(&db.conn(), id).unwrap(), secret)
+	}
+
+	/// the code of 30 s before, now or after: three codes to use up
+	fn code_at(secret: &str, email: &str, offset: i64) -> String {
+		let t = (now() / 1000 + offset) as u64;
+		totp(secret, email).unwrap().generate(t)
+	}
+
 	fn add_req(email: &str, new: &str) -> AddReq {
 		AddReq {
 			email: email.into(),
 			name: "New".into(),
 			new_password: new.into(),
-			password: "admin password".into(),
+			auth: auth("admin password", ""),
 		}
 	}
 
@@ -1235,7 +1272,7 @@ mod tests {
 		let weak = add_one(add_req("a@example.ch", "short"));
 		assert!(weak.await.is_err());
 		let mut wrong = add_req("a@example.ch", "long enough 1");
-		wrong.password = "wrong".into();
+		wrong.auth.password = "wrong".into();
 		assert!(add_one(wrong).await.is_err());
 		let broken = add_req("a b@example.ch", "long enough 1");
 		assert!(add_one(broken).await.is_err());
@@ -1335,7 +1372,7 @@ mod tests {
 		let req = InviteReq {
 			email: "b@example.ch".into(),
 			name: "B".into(),
-			password: "admin password".into(),
+			auth: auth("admin password", ""),
 		};
 		let invited =
 			invite(authed(), State(cfg.clone()), State(db.clone()), Json(req));
@@ -1363,6 +1400,119 @@ mod tests {
 				.0;
 		assert_eq!(resp.confirm_sent, None);
 		assert_eq!(resp.user.email, "new@example.ch");
+	}
+
+	#[tokio::test]
+	async fn sensitive_actions_need_the_code_with_2fa() {
+		let db = Db::memory();
+		let cfg: Arc<Config> = Arc::new(toml::from_str("").unwrap());
+		let (admin, secret) = admin_with_2fa(&db, 701, "2fa@example.ch");
+		let code = |offset| code_at(&secret, &admin.email, offset);
+		let authed = || Authed {
+			token: String::new(),
+			user: admin.clone(),
+		};
+		let is_code_error = |r: Result<Json<()>>| {
+			r.unwrap_err()
+				.to_string()
+				.contains("two-factor code is wrong")
+		};
+
+		let mut req = add_req("new@example.ch", "long enough 1");
+		let added =
+			add(authed(), State(cfg.clone()), State(db.clone()), Json(req));
+		assert!(added.await.unwrap_err().to_string().contains("two-factor"));
+		assert_eq!(list(&db.conn()).unwrap().len(), 1);
+		req = add_req("new@example.ch", "long enough 1");
+		req.auth.code = code(-30);
+		let new =
+			add(authed(), State(cfg.clone()), State(db.clone()), Json(req))
+				.await
+				.unwrap()
+				.0;
+
+		let deleted = delete_user(
+			authed(),
+			State(db.clone()),
+			Path(new.id),
+			Json(auth("admin password", "")),
+		);
+		assert!(is_code_error(deleted.await));
+		let req = InviteReq {
+			email: "b@example.ch".into(),
+			name: "B".into(),
+			auth: auth("admin password", ""),
+		};
+		let invited =
+			invite(authed(), State(cfg.clone()), State(db.clone()), Json(req));
+		assert!(
+			invited
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("two-factor")
+		);
+		let resent = reinvite(
+			authed(),
+			State(cfg.clone()),
+			State(db.clone()),
+			Path(new.id),
+			Json(auth("admin password", "")),
+		);
+		assert!(is_code_error(resent.await));
+		assert_eq!(list(&db.conn()).unwrap().len(), 2);
+
+		delete_user(
+			authed(),
+			State(db.clone()),
+			Path(new.id),
+			Json(auth("admin password", &code(0))),
+		)
+		.await
+		.unwrap()
+		.0;
+		assert_eq!(list(&db.conn()).unwrap().len(), 1);
+
+		let off = |code: String| {
+			disable_totp(
+				authed(),
+				State(db.clone()),
+				Json(auth("admin password", &code)),
+			)
+		};
+		assert!(is_code_error(off(String::new()).await));
+		// used up by the deletion
+		assert!(is_code_error(off(code(0)).await));
+		off(code(30)).await.unwrap().0;
+		assert!(!by_id(&db.conn(), admin.id).unwrap().totp);
+	}
+
+	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+	async fn parallel_requests_cant_use_a_code_twice() {
+		let db = Db::memory();
+		let (admin, secret) = admin_with_2fa(&db, 702, "par@example.ch");
+		let code = code_at(&secret, &admin.email, 0);
+
+		let tries: Vec<_> = (0..8)
+			.map(|_| {
+				let (db, admin, code) =
+					(db.clone(), admin.clone(), code.clone());
+				tokio::spawn(
+					async move { verify_code(&db, &admin, &code).await },
+				)
+			})
+			.collect();
+		let mut ok = 0;
+		for t in tries {
+			ok += t.await.unwrap().is_ok() as u32;
+		}
+		assert_eq!(ok, 1);
+
+		// the database refuses the step a request checked against an old
+		// state
+		let step = check_code(&secret, &admin.email, &code, 0).unwrap();
+		assert!(!use_step(&db, admin.id, step).unwrap());
+		assert!(use_step(&db, admin.id, step + 1).unwrap());
 	}
 
 	#[test]

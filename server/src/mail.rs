@@ -192,21 +192,36 @@ fn delivery(id: &str, log: &str, queue: &str) -> Option<Delivery> {
 		})
 }
 
-/// Waits up to 15 s for postfix to deliver the mail or give its reason.
-async fn wait_for_delivery(id: &str) -> Option<Delivery> {
+/// postfix's delivery agents and queue manager, only they write the
+/// status of a mail; any other program could log a line like theirs. Its
+/// unit is set by journald, the name (`-t`) by the program that logs.
+const POSTFIX_UNITS: [&str; 2] = [
+	"_SYSTEMD_UNIT=postfix.service",
+	"_SYSTEMD_UNIT=postfix@-.service",
+];
+const POSTFIX_LOGS: [&str; 6] = [
+	"postfix/smtp",
+	"postfix/qmgr",
+	"postfix/bounce",
+	"postfix/lmtp",
+	"postfix/local",
+	"postfix/error",
+];
+
+/// Waits up to 15 s for postfix to deliver the mail or give its reason,
+/// reading postfix's log lines since the mail was queued at `since`.
+async fn wait_for_delivery(id: &str, since: i64) -> Option<Delivery> {
+	// a second earlier: journalctl's --since has whole seconds
+	let since = format!("@{}", since / 1000 - 1);
+	let mut args = vec!["journalctl", "-q", "--no-pager", "-o", "cat"];
+	args.extend(POSTFIX_UNITS);
+	for t in POSTFIX_LOGS {
+		args.extend(["-t", t]);
+	}
+	args.extend(["--since", &since]);
 	for _ in 0..15 {
 		tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-		let log = crate::util::run(&[
-			"journalctl",
-			"-q",
-			"--no-pager",
-			"-o",
-			"cat",
-			"--since",
-			"-5min",
-		])
-		.await
-		.unwrap_or_default();
+		let log = crate::util::run(&args).await.unwrap_or_default();
 		let queue = crate::util::run(&["postqueue", "-j"])
 			.await
 			.unwrap_or_default();
@@ -387,11 +402,24 @@ async fn get_settings(
 	Ok(Json(settings(&db)?))
 }
 
+#[derive(Debug, Deserialize)]
+struct SaveReq {
+	#[serde(flatten)]
+	settings: MailSettings,
+	/// the admin's password and code: a relay of a stolen session would
+	/// get the mails that confirm deletions
+	#[serde(flatten)]
+	auth: crate::users::PasswordOnly,
+}
+
 async fn save_settings(
-	_authed: Authed,
+	authed: Authed,
 	State(db): State<Db>,
-	Json(mut new): Json<MailSettings>,
+	Json(req): Json<SaveReq>,
 ) -> Result<Json<()>> {
+	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
+		.await?;
+	let mut new = req.settings;
 	match new.mode.as_str() {
 		"direct" | "off" => {}
 		"relay" => {
@@ -468,6 +496,7 @@ async fn test_mail(
 	State(db): State<Db>,
 	Json(req): Json<TestReq>,
 ) -> Result<Json<String>> {
+	let since = crate::db::now();
 	let id = queue(
 		&cfg,
 		&db,
@@ -488,7 +517,7 @@ async fn test_mail(
 			"postfix took it for {to}, check the inbox (and the spam folder)."
 		)));
 	};
-	match wait_for_delivery(&id).await {
+	match wait_for_delivery(&id, since).await {
 		Some(Delivery::Sent(reply)) => Ok(Json(format!(
 			"Delivered for {to} ({reply}), check the inbox (and the spam \
 			folder)."
@@ -558,6 +587,44 @@ mod tests {
 			sender: sender.into(),
 			..Default::default()
 		}
+	}
+
+	#[tokio::test]
+	async fn saving_needs_the_password_and_code() {
+		let db = Db::memory();
+		let hash = crate::users::hash_password("admin password").unwrap();
+		let a = crate::users::create(&db.conn(), "m@example.ch", "A", &hash)
+			.unwrap();
+		let secret = totp_rs::Secret::generate_secret().to_encoded();
+		db.conn()
+			.execute(
+				"UPDATE users SET id = 703, totp_secret = ?1 WHERE id = ?2",
+				rusqlite::params![secret.to_string(), a.id],
+			)
+			.unwrap();
+		let authed = || Authed {
+			token: String::new(),
+			user: crate::users::by_id(&db.conn(), 703).unwrap(),
+		};
+		let save = |password: &str| {
+			let req = serde_json::json!({
+				"mode": "relay",
+				"relayHost": "evil.example.ch",
+				"relayPort": 587,
+				"password": password,
+			});
+			save_settings(
+				authed(),
+				State(db.clone()),
+				Json(serde_json::from_value(req).unwrap()),
+			)
+		};
+
+		let wrong = save("wrong").await.unwrap_err().to_string();
+		assert!(wrong.contains("password is wrong"), "{wrong}");
+		let no_code = save("admin password").await.unwrap_err().to_string();
+		assert!(no_code.contains("two-factor"), "{no_code}");
+		assert_ne!(settings(&db).unwrap().relay_host, "evil.example.ch");
 	}
 
 	#[test]

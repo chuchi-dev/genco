@@ -1,3 +1,5 @@
+import { session } from './session.svelte';
+
 // the desktop's dialog, pages open one with `dialogs.open = 'group'`
 export type DialogKind =
 	| 'client'
@@ -30,8 +32,13 @@ type Box = {
 	kind: 'message' | 'confirm' | 'ask' | 'password';
 	/** the input's value of an `ask` */
 	value: string;
-	done: (answer: string | null) => void;
+	/** a `password` box asks for the two-factor code too */
+	code: boolean;
+	done: (answer: string | null, code: string) => void;
 };
+
+/** what a dangerous request sends along, see `message.password` */
+export type Auth = { password: string; code: string };
 
 /**
  * Message boxes like Windows': `show` tells something, `confirm` and `ask`
@@ -46,12 +53,16 @@ class Message {
 		text: string,
 		value = '',
 	): Promise<string | null> {
+		return new Promise(done =>
+			this.box({ kind, title, text, value, done }),
+		);
+	}
+
+	private box(b: Omit<Box, 'code'> & { code?: boolean }) {
 		// a box still open is answered with Cancel, its caller would wait
 		// forever otherwise
-		this.current?.done(null);
-		return new Promise(done => {
-			this.current = { kind, title, text, value, done };
-		});
+		this.current?.done(null, '');
+		this.current = { code: false, ...b };
 	}
 
 	show(title: string, text: string) {
@@ -69,18 +80,33 @@ class Message {
 	}
 
 	/**
-	 * The admin's own password for what a stolen session alone mustn't do
-	 * (invites, tokens), null for Cancel.
+	 * The admin's own password, and the two-factor code when 2FA is on,
+	 * for what a stolen session and password mustn't do (invites, tokens,
+	 * mail settings), null for Cancel.
 	 */
-	password(title: string, what: string): Promise<string | null> {
-		return this.open('password', title, `Your password, to ${what}:`);
+	password(title: string, what: string): Promise<Auth | null> {
+		const code = session.user?.totp ?? false;
+		const text = code
+			? `Your password and a two-factor code, to ${what}:`
+			: `Your password, to ${what}:`;
+		return new Promise(done =>
+			this.box({
+				kind: 'password',
+				title,
+				text,
+				value: '',
+				code,
+				done: (password, code) =>
+					done(password === null ? null : { password, code }),
+			}),
+		);
 	}
 
 	/** closes the box with an answer, null is No or Cancel */
-	answer(value: string | null) {
+	answer(value: string | null, code = '') {
 		const box = this.current;
 		this.current = null;
-		box?.done(value);
+		box?.done(value, code);
 	}
 }
 
@@ -99,11 +125,10 @@ export async function confirmDelete(o: {
 }): Promise<boolean> {
 	const { del } = await import('./api');
 	if (!(await message.confirm(o.title, o.text))) return false;
-	let body: object | null = null;
+	let body: Auth | null = null;
 	if (o.password) {
-		const password = await message.password(o.title, o.password);
-		if (password === null) return false;
-		body = { password };
+		body = await message.password(o.title, o.password);
+		if (body === null) return false;
 	}
 	try {
 		await del(o.path, body);

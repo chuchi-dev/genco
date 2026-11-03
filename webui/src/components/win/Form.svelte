@@ -4,7 +4,8 @@
 
 	// a dialog form: labeled rows, OK / Cancel and the error line. It runs
 	// `onsubmit` once at a time; an error it throws shows below the rows,
-	// with `done` the OK button says so for a moment (e.g. "Saved").
+	// with `done` the OK button says so for a moment (e.g. "Saved"), not
+	// when `onsubmit` returns false (canceled).
 	// `extra` buttons go to the left end of the OK row.
 	let {
 		onsubmit,
@@ -32,8 +33,8 @@
 		busy = true;
 		error = null;
 		try {
-			await onsubmit();
-			if (done) {
+			const result = await onsubmit();
+			if (done && result !== false) {
 				flash = true;
 				setTimeout(() => (flash = false), 1500);
 			}

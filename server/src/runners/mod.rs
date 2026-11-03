@@ -280,8 +280,10 @@ async fn list_route(
 #[derive(Deserialize)]
 struct CreateReq {
 	name: String,
-	/// the admin's: a runner token takes the groups' sources
-	password: String,
+	/// the admin's password and code: a runner token takes the groups'
+	/// sources
+	#[serde(flatten)]
+	auth: crate::users::PasswordOnly,
 }
 
 async fn create_route(
@@ -289,7 +291,8 @@ async fn create_route(
 	State(db): State<Db>,
 	Json(req): Json<CreateReq>,
 ) -> Result<Json<String>> {
-	crate::users::verify_password(&db, &authed.user, &req.password).await?;
+	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
+		.await?;
 	Ok(Json(create(&db.conn(), &req.name)?))
 }
 

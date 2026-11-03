@@ -37,12 +37,12 @@
 
 	async function invite() {
 		const sentTo = email;
-		const password = await message.password(
+		const auth = await message.password(
 			'Invite',
 			`invite ${email} as an admin`,
 		);
-		if (password === null) return;
-		await post('/users/invite', { email, name, password });
+		if (auth === null) return;
+		await post('/users/invite', { email, name, ...auth });
 		adding = null;
 		email = name = '';
 
@@ -53,16 +53,16 @@
 	async function add() {
 		newPasswordInput?.check();
 		const added = email;
-		const password = await message.password(
+		const auth = await message.password(
 			'Add User',
 			`add ${email} as an admin`,
 		);
-		if (password === null) return;
+		if (auth === null) return;
 		await post('/users/add', {
 			email,
 			name,
 			newPassword,
-			password,
+			...auth,
 		});
 		adding = null;
 		email = name = newPassword = '';
@@ -82,13 +82,13 @@
 			))
 		)
 			return;
-		const password = await message.password(
+		const auth = await message.password(
 			'Send Invite',
 			`send ${u.name} a new link`,
 		);
-		if (password === null) return;
+		if (auth === null) return;
 		try {
-			await post(`/users/${u.id}/invite`, { password });
+			await post(`/users/${u.id}/invite`, auth);
 			message.show('Invite Sent', `${u.email} got a new link.`);
 		} catch (e: any) {
 			error = e.message;

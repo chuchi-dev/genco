@@ -2,7 +2,7 @@
 	import Markdown from '../Markdown.svelte';
 	import OneTimeSecret from '../OneTimeSecret.svelte';
 	import { formatTime, get, post, type Peer, type Proposal } from '@/lib/api';
-	import { message, confirmDelete } from '@/lib/dialogs.svelte';
+	import { message, confirmDelete, type Auth } from '@/lib/dialogs.svelte';
 	import { proposals } from '@/lib/proposals.svelte';
 	import { setChat } from '@/lib/router.svelte';
 	import Button from '../win/Button.svelte';
@@ -68,23 +68,22 @@
 		if (editing) {
 			// genco sends the key to the webhook: a new one needs the password
 			const old = peers.find(p => p.id === editing)?.webhookUrl;
-			let password = '';
+			let auth: Auth | null = null;
 			if (form.webhookUrl.trim() !== old) {
-				const pw = await message.password(
+				auth = await message.password(
 					'Change Webhook',
 					'send the key to another webhook',
 				);
-				if (pw === null) return;
-				password = pw;
+				if (auth === null) return;
 			}
-			await post(`/peers/${editing}`, { ...form, password });
+			await post(`/peers/${editing}`, { ...form, ...auth });
 		} else {
-			const password = await message.password(
+			const auth = await message.password(
 				'New AI Agent',
 				'create a key for an AI agent',
 			);
-			if (password === null) return;
-			key = await post('/peers', { ...form, password });
+			if (auth === null) return;
+			key = await post('/peers', { ...form, ...auth });
 		}
 		editing = null;
 		await load();
@@ -97,10 +96,10 @@
 			`Make a new key for ${peer.name}? The old one stops working, the agent needs the new one.`,
 		);
 		if (!ok) return;
-		const password = await message.password('New Key', 'make a new key');
-		if (password === null) return;
+		const auth = await message.password('New Key', 'make a new key');
+		if (auth === null) return;
 		try {
-			key = await post(`/peers/${peer.id}/key`, { password });
+			key = await post(`/peers/${peer.id}/key`, auth);
 		} catch (e: any) {
 			message.show('No New Key', e.message);
 		}

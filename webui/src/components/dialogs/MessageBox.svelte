@@ -7,11 +7,18 @@
 	// the message, question or input of `message`, see lib/dialogs
 	const box = $derived(message.current);
 	let value = $state('');
+	let code = $state('');
+
+	// a new box starts without the code of the last one
+	$effect.pre(() => {
+		if (box) code = '';
+	});
 
 	function submit(e: SubmitEvent) {
 		e.preventDefault();
 		message.answer(
 			box?.kind === 'ask' || box?.kind === 'password' ? value : '',
+			code,
 		);
 	}
 </script>
@@ -39,6 +46,15 @@
 									el.select();
 								});
 							}}
+						/>
+					{/if}
+					{#if box.code}
+						<input
+							aria-label="Two-factor code"
+							placeholder="Two-factor code"
+							inputmode="numeric"
+							autocomplete="one-time-code"
+							bind:value={code}
 						/>
 					{/if}
 				</div>
