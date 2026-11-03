@@ -600,12 +600,10 @@ async fn change_account(
 
 	let domain = cfg.domain.as_deref().unwrap_or("this server");
 	let body = format!(
-		"Hi {name}
-
-The email of your genco admin account on {domain} 		was changed to {email}. Log in with it from now on.
-
-If that 		wasn't you, tell another admin right away.
-",
+		"Hi {name}\n\n\
+		The email of your genco admin account on {domain} was changed to \
+		{email}. Log in with it from now on.\n\n\
+		If that wasn't you, tell another admin right away.\n",
 		name = user.name,
 		email = user.email,
 	);
