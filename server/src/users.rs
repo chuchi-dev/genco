@@ -140,8 +140,8 @@ fn check_password(password: &str) -> Result<()> {
 }
 
 /// Extractor that only succeeds with a valid session token, sent as
-/// `session-token` header. The `token` query param only counts for what a
-/// browser opens itself: the event stream and downloads.
+/// `session-token` header. What a browser opens itself (the event stream
+/// and downloads) is let in by a ticket in the query instead.
 pub struct Authed {
 	/// the hash of the session's token, as stored
 	pub token: String,
@@ -194,9 +194,8 @@ where
 }
 
 /// The hashed session token of a request: from its header, or for the
-/// event stream (EventSource can't send a header) from the query, or for
-/// a download from its ticket (the token stays out of the browser's
-/// download list).
+/// event stream (EventSource can't send a header) and downloads from a
+/// ticket, the token stays out of URLs (proxy logs, the download list).
 fn session_hash(parts: &Parts) -> Result<String> {
 	if let Some(token) = parts
 		.headers
@@ -226,10 +225,7 @@ fn session_hash(parts: &Parts) -> Result<String> {
 	if parts.method != Method::GET {
 		return Err(Error::MissingSessionToken);
 	}
-	if path == "/api/events" {
-		return Ok(tokens::hash(value("token")?));
-	}
-	if !is_download(&path) {
+	if !takes_ticket(&path) {
 		return Err(Error::MissingSessionToken);
 	}
 	// the ticket is for this path with exactly these parameters
@@ -247,13 +243,14 @@ fn session_hash(parts: &Parts) -> Result<String> {
 	redeem(ticket, &target).ok_or(Error::InvalidSessionToken)
 }
 
-/// A download link: a database dump or files.
-fn is_download(path: &str) -> bool {
-	path.starts_with("/api/")
-		&& (path.ends_with("/files/download") || path.ends_with("/dump"))
+/// The event stream or a download link (a database dump or files).
+fn takes_ticket(path: &str) -> bool {
+	path == "/api/events"
+		|| path.starts_with("/api/")
+			&& (path.ends_with("/files/download") || path.ends_with("/dump"))
 }
 
-/// A single-use link to one download, for a minute.
+/// A single-use link to one download or event stream, for a minute.
 struct Ticket {
 	/// the session's hashed token
 	session: String,
@@ -307,7 +304,7 @@ pub fn ticket_session(ticket: &str) -> Option<String> {
 #[derive(Debug, Deserialize)]
 struct TicketReq {
 	/// the download's path with its parameters, as the browser will ask
-	/// for it, `/api/groups/1/files/download?path=a.txt`
+	/// for it, `/api/groups/1/files/download?path=a.txt`, or `/api/events`
 	path: String,
 }
 
@@ -316,8 +313,8 @@ async fn create_ticket(
 	Json(req): Json<TicketReq>,
 ) -> Result<Json<String>> {
 	let path = req.path.split('?').next().unwrap_or("");
-	if !is_download(path) {
-		return Err(Error::Invalid("no download".into()));
+	if !takes_ticket(path) {
+		return Err(Error::Invalid("no download or event stream".into()));
 	}
 	Ok(Json(new_ticket(&authed.token, &req.path)))
 }
@@ -878,8 +875,39 @@ mod tests {
 		assert!(redeem(&t, path).is_none());
 		// the activity log still finds who it was
 		assert_eq!(ticket_session(&t).as_deref(), Some("session-hash"));
-		assert!(is_download("/api/groups/1/files/download"));
-		assert!(!is_download("/api/events"));
+		assert!(takes_ticket("/api/groups/1/files/download"));
+		assert!(takes_ticket("/api/events"));
+		assert!(!takes_ticket("/api/users/me"));
+	}
+
+	fn parts(uri: &str) -> Parts {
+		axum::http::Request::get(uri)
+			.body(())
+			.unwrap()
+			.into_parts()
+			.0
+	}
+
+	#[test]
+	fn a_ticket_opens_the_event_stream_once() {
+		let t = new_ticket("session-hash", "/api/events");
+		let url = format!("/api/events?ticket={t}");
+		assert!(
+			session_hash(&parts(&format!("/api/users/me?ticket={t}"))).is_err()
+		);
+		assert_eq!(session_hash(&parts(&url)).unwrap(), "session-hash");
+		assert!(session_hash(&parts(&url)).is_err());
+
+		// an expired one doesn't
+		let t = new_ticket("session-hash", "/api/events");
+		TICKETS.lock().unwrap().get_mut(&t).unwrap().expires =
+			std::time::Instant::now() - Duration::from_secs(1);
+		assert!(
+			session_hash(&parts(&format!("/api/events?ticket={t}"))).is_err()
+		);
+
+		// the session token itself stays out of URLs
+		assert!(session_hash(&parts("/api/events?token=abc")).is_err());
 	}
 
 	#[test]

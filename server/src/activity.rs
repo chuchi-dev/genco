@@ -242,12 +242,9 @@ fn actor(conn: &Connection, req: &Request) -> Option<String> {
 		})
 	};
 	// a download names its session through its ticket
-	let session = header("session-token")
-		.map(tokens::hash)
-		.or_else(|| query("token").map(|t| tokens::hash(&t)))
-		.or_else(|| {
-			query("ticket").and_then(|t| crate::users::ticket_session(&t))
-		});
+	let session = header("session-token").map(tokens::hash).or_else(|| {
+		query("ticket").and_then(|t| crate::users::ticket_session(&t))
+	});
 
 	if let Some(hashed) = session {
 		return conn
