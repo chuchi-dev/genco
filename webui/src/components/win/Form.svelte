@@ -5,17 +5,20 @@
 	// a dialog form: labeled rows, OK / Cancel and the error line. It runs
 	// `onsubmit` once at a time; an error it throws shows below the rows,
 	// with `done` the OK button says so for a moment (e.g. "Saved").
+	// `extra` buttons go to the left end of the OK row.
 	let {
 		onsubmit,
 		oncancel,
 		ok = 'OK',
 		done,
+		extra,
 		children,
 	}: {
 		onsubmit: () => unknown;
 		oncancel?: () => void;
 		ok?: string;
 		done?: string;
+		extra?: Snippet;
 		children: Snippet;
 	} = $props();
 
@@ -50,6 +53,10 @@
 		<p class="error">{error}</p>
 	{/if}
 	<div class="buttons">
+		{#if extra}
+			{@render extra()}
+			<span class="gap"></span>
+		{/if}
 		<Button type="submit" primary disabled={busy}>
 			{flash && done ? done : ok}
 		</Button>
@@ -87,5 +94,9 @@
 		justify-content: flex-end;
 		gap: 6px;
 		margin-top: 16px;
+	}
+
+	.gap {
+		flex: 1;
 	}
 </style>

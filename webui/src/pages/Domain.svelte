@@ -135,22 +135,26 @@
 		placeholder="added to the server block, e.g. add_header …;"
 		bind:value={nginxExtra}
 	></textarea>
-</Form>
-
-<div class="row-buttons">
-	<!-- a proxy has no files here -->
-	{#if domain.kind !== 'proxy'}
-		<Button onclick={() => go(`/groups/${group.id}/files/${domain.root}`)}>
-			Open Folder
+	{#snippet extra()}
+		<!-- a proxy has no files here -->
+		{#if domain.kind !== 'proxy'}
+			<Button
+				onclick={() => go(`/groups/${group.id}/files/${domain.root}`)}
+			>
+				Open Folder
+			</Button>
+		{/if}
+		<Button
+			onclick={() =>
+				requestDelete(
+					`/domains/${domain.id}`,
+					`the domain ${domain.name}`,
+				)}
+		>
+			Delete Domain…
 		</Button>
-	{/if}
-	<Button
-		onclick={() =>
-			requestDelete(`/domains/${domain.id}`, `the domain ${domain.name}`)}
-	>
-		Delete Domain…
-	</Button>
-</div>
+	{/snippet}
+</Form>
 
 {#if app}
 	<hr class="groove" />
@@ -166,9 +170,9 @@
 <h4>Usage</h4>
 <Usage scope="domain:{domain.id}" {app} />
 
-<hr class="groove" />
-
 {#if files}
+	<hr class="groove" />
+
 	<ConfigFiles {files} />
 {/if}
 
@@ -177,5 +181,10 @@
 
 	.mono {
 		font-family: $mono;
+	}
+
+	// one section gap; after a groove the margins collapse into it
+	h4 {
+		margin: 14px 0 6px;
 	}
 </style>
