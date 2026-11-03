@@ -87,6 +87,10 @@ field in the panel.
   (`postgresql:///<name>?host=/run/postgresql`); as root use `mariadb`
   or `runuser -u postgres -- psql`. Backups, downloads and imports work
   for both.
+- Never add a genco database with the name of one that exists already
+  (another app's, e.g. a container's): check `genco tree` and the engine
+  (`SHOW DATABASES`, `\l`) first. To move an existing database into
+  genco, add one with a new name and import a dump into it.
 - Static and PHP domains serve `/srv/genco/<group>/<root>`. PHP runs in
   `genco-<group>-php<version>.service`, logs in `<group dir>/logs`.
 - Node and Rust apps run in `<group dir>/<root>` as

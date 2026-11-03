@@ -8,6 +8,20 @@ pub(super) const ACME_DIR: &str = "/var/lib/genco-acme";
 /// socket, no password; the same in PostgreSQL, see pg.rs.
 pub(super) async fn databases(r: &mut Report, groups: &[Group]) {
 	postgres(r, groups).await;
+	let sql = mariadb_sql(groups);
+	if sql.is_empty() {
+		return;
+	}
+
+	r.run_input(&["mariadb"], Some(&sql)).await;
+}
+
+/// MariaDB has no owners: genco grants a database to its group only when
+/// it creates it or the group has it already. One of the same name that
+/// is there without the group's grant (another app's, made before genco
+/// knew the name) stays as it is, and the script fails at the end naming
+/// it, after everything else is set up.
+fn mariadb_sql(groups: &[Group]) -> String {
 	let mut sql = String::new();
 	let mariadb =
 		|g: &&Group| g.databases.iter().any(|d| d.engine == Engine::Mariadb);
@@ -15,25 +29,42 @@ pub(super) async fn databases(r: &mut Report, groups: &[Group]) {
 		let user = render::group_user(&g.name);
 		sql.push_str(&format!(
 			"CREATE USER IF NOT EXISTS `{user}`@localhost \
-			IDENTIFIED VIA unix_socket;\n"
+			IDENTIFIED VIA unix_socket;;\n"
 		));
 		for db in g.databases.iter().filter(|d| d.engine == Engine::Mariadb) {
 			let name = &db.name;
+			// in a grant "_" matches any character: shop_1 would also
+			// cover shopx1 of another group
+			let grant = name.replace('_', "\\_");
 			sql.push_str(&format!(
-				"CREATE DATABASE IF NOT EXISTS `{name}` \
+				"BEGIN NOT ATOMIC\n\
+				IF NOT EXISTS (SELECT 1 FROM information_schema.schemata \
+				WHERE schema_name = '{name}') OR EXISTS (SELECT 1 FROM \
+				mysql.db WHERE Db = '{literal}' AND User = '{user}' \
+				AND Host = 'localhost') THEN\n\
+				CREATE DATABASE IF NOT EXISTS `{name}` \
 				CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n\
-				GRANT ALL PRIVILEGES ON `{grant}`.* TO `{user}`@localhost;\n",
-				// in a grant "_" matches any character: shop_1 would also
-				// cover shopx1 of another group
-				grant = name.replace('_', "\\_"),
+				GRANT ALL PRIVILEGES ON `{grant}`.* TO `{user}`@localhost;\n\
+				ELSE SET @foreign = CONCAT_WS(', ', @foreign, '{name}');\n\
+				END IF;\n\
+				END;;\n",
+				literal = grant.replace('\\', "\\\\"),
 			));
 		}
 	}
 	if sql.is_empty() {
-		return;
+		return sql;
 	}
-
-	r.run_input(&["mariadb"], Some(&sql)).await;
+	format!(
+		"DELIMITER ;;\n{sql}\
+		BEGIN NOT ATOMIC\n\
+		DECLARE msg VARCHAR(512) DEFAULT CONCAT('genco leaves these \
+		databases alone, they are not its own: ', @foreign);\n\
+		IF @foreign IS NOT NULL THEN \
+		SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;\n\
+		END IF;\n\
+		END;;\n"
+	)
 }
 
 /// PostgreSQL, installed with its first database.
@@ -162,4 +193,34 @@ fn cert_hint(domain: &str) -> String {
 		security group in front of the server (Hetzner, Infomaniak, AWS) \
 		blocks it until it allows ports 80 and 443; then run genco apply"
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::hosting::Database;
+
+	#[test]
+	fn grants_only_its_own_databases() {
+		let g = Group {
+			name: "shop".into(),
+			databases: vec![Database {
+				id: 1,
+				group_id: 1,
+				name: "shop_db".into(),
+				engine: Engine::Mariadb,
+			}],
+			..Group::default()
+		};
+		let sql = mariadb_sql(&[g]);
+		assert!(sql.starts_with("DELIMITER ;;\n"));
+		assert!(sql.contains(
+			"IF NOT EXISTS (SELECT 1 FROM information_schema.schemata \
+			WHERE schema_name = 'shop_db') OR EXISTS (SELECT 1 FROM \
+			mysql.db WHERE Db = 'shop\\\\_db' AND User = 'g-shop'"
+		));
+		assert!(sql.contains("GRANT ALL PRIVILEGES ON `shop\\_db`.*"));
+		assert!(sql.contains("SIGNAL SQLSTATE"));
+		assert!(mariadb_sql(&[]).is_empty());
+	}
 }

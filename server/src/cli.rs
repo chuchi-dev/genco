@@ -420,6 +420,14 @@ pub fn domain(
 	}
 }
 
+pub fn engine(postgres: bool) -> hosting::Engine {
+	if postgres {
+		hosting::Engine::Postgres
+	} else {
+		hosting::Engine::Mariadb
+	}
+}
+
 pub fn database(conn: &Connection, cmd: DatabaseCmd) -> Result<String> {
 	let DatabaseCmd::Add {
 		name,
@@ -429,15 +437,10 @@ pub fn database(conn: &Connection, cmd: DatabaseCmd) -> Result<String> {
 	else {
 		unreachable!("deletions go through actions");
 	};
-	let engine = if postgres {
-		hosting::Engine::Postgres
-	} else {
-		hosting::Engine::Mariadb
-	};
 	let req = hosting::DatabaseReq {
 		group_id: group_id(conn, &group)?,
 		name,
-		engine,
+		engine: engine(postgres),
 	};
 	let id = hosting::insert_database(conn, &req)?;
 	Ok(format!("added database {id}, run genco apply"))

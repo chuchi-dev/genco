@@ -41,6 +41,12 @@ pub fn ident(name: &str) -> String {
 
 /// The SQL that creates the roles and databases genco knows, safe to run
 /// again. Names are checked to be [a-z0-9_] and [a-z0-9-].
+///
+/// genco creates a database owned by its group's role, so it only ever
+/// touches one that its group's role owns: a database of the same name
+/// that another role owns (another app's, made before genco knew the
+/// name) keeps its owner and grants, and the script fails at the end
+/// naming it, after everything else is set up.
 pub fn setup_sql(groups: &[Group]) -> String {
 	// the groups' roles list neither the maintenance databases nor, from
 	// there, the other groups'
@@ -48,6 +54,7 @@ pub fn setup_sql(groups: &[Group]) -> String {
 		"REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;\n\
 		REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;\n",
 	);
+	let mut foreign = Vec::new();
 	for g in groups {
 		let dbs: Vec<_> = g
 			.databases
@@ -70,10 +77,26 @@ pub fn setup_sql(groups: &[Group]) -> String {
 				"SELECT 'CREATE DATABASE {id} OWNER {role} ENCODING ''UTF8'' \
 				TEMPLATE template0' WHERE NOT EXISTS \
 				(SELECT FROM pg_database WHERE datname = '{name}')\\gexec\n\
-				REVOKE ALL ON DATABASE {id} FROM PUBLIC;\n\
-				ALTER DATABASE {id} OWNER TO {role};\n"
+				SELECT 'REVOKE ALL ON DATABASE {id} FROM PUBLIC' \
+				FROM pg_database WHERE datname = '{name}' \
+				AND pg_get_userbyid(datdba) = '{user}'\\gexec\n"
+			));
+			foreign.push(format!(
+				"(datname = '{name}' AND pg_get_userbyid(datdba) <> '{user}')"
 			));
 		}
+	}
+	if !foreign.is_empty() {
+		sql.push_str(&format!(
+			"DO $$DECLARE names text; BEGIN \
+			SELECT string_agg(datname || ' (owned by ' || \
+			pg_get_userbyid(datdba) || ')', ', ') INTO names \
+			FROM pg_database WHERE {}; \
+			IF names IS NOT NULL THEN RAISE EXCEPTION \
+			'genco leaves these databases alone, they are not its own: %', \
+			names; END IF; END$$;\n",
+			foreign.join(" OR ")
+		));
 	}
 	// nothing to do without a group database
 	if !used(groups) {
@@ -197,6 +220,14 @@ mod tests {
 		assert!(sql.contains("WHERE rolname = 'g-shop'"));
 		assert!(sql.contains("CREATE DATABASE \"shop_pg\" OWNER \"g-shop\""));
 		assert!(sql.contains("REVOKE ALL ON DATABASE \"shop_pg\" FROM PUBLIC"));
+		// never takes over a database another role owns
+		assert!(!sql.contains("OWNER TO"));
+		assert!(sql.contains(
+			"WHERE datname = 'shop_pg' AND pg_get_userbyid(datdba) = 'g-shop'"
+		));
+		assert!(sql.contains(
+			"(datname = 'shop_pg' AND pg_get_userbyid(datdba) <> 'g-shop')"
+		));
 		assert!(
 			sql.contains("REVOKE CONNECT ON DATABASE postgres FROM PUBLIC")
 		);

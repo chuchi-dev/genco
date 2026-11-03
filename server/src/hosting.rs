@@ -949,12 +949,57 @@ pub fn insert_database(conn: &Connection, req: &DatabaseReq) -> Result<i64> {
 	Ok(conn.last_insert_rowid())
 }
 
+/// Refuses a database that exists in its engine already but isn't
+/// genco's: apply would hand another app's data to the group (and take
+/// it from the app). One of genco's own the insert refuses itself.
+pub async fn check_database_free(db: &Db, req: &DatabaseReq) -> Result<()> {
+	check_database_name(&req.name)?;
+	let ours: bool = db.conn().query_row(
+		"SELECT EXISTS(SELECT 1 FROM databases WHERE name = ?1)",
+		[&req.name],
+		|r| r.get(0),
+	)?;
+	if ours {
+		return Ok(());
+	}
+
+	// the name is checked to be [a-z0-9_]
+	let query = match req.engine {
+		Engine::Postgres if !crate::pg::installed() => return Ok(()),
+		Engine::Postgres => format!(
+			"runuser -u postgres -- psql -qAtX -c \"SELECT 1 FROM pg_database \
+			WHERE datname = '{}'\"",
+			req.name
+		),
+		Engine::Mariadb => format!(
+			"mariadb -N -B -e \"SELECT 1 FROM information_schema.schemata \
+			WHERE schema_name = '{}'\"",
+			req.name
+		),
+	};
+	let out = util::sh(&query).await.map_err(Error::Internal)?;
+	foreign_database(&req.name, &out)
+}
+
+/// `out` is what the engine says about the name: "1" if it exists.
+fn foreign_database(name: &str, out: &str) -> Result<()> {
+	if out.trim().is_empty() {
+		return Ok(());
+	}
+	Err(Error::Invalid(format!(
+		"a database {name} exists already on this server and isn't \
+		genco's: pick another name (or move its data into a new genco \
+		database)"
+	)))
+}
+
 async fn create_database(
 	_authed: Authed,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	Json(req): Json<DatabaseReq>,
 ) -> Result<Json<i64>> {
+	check_database_free(&db, &req).await?;
 	let id = insert_database(&db.conn(), &req)?;
 	events.send(Event::Tree);
 	Ok(Json(id))
@@ -1017,6 +1062,13 @@ pub fn routes() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn foreign_databases() {
+		assert!(foreign_database("shop", "").is_ok());
+		let err = foreign_database("shop", "1\n").unwrap_err().to_string();
+		assert!(err.contains("a database shop exists already"));
+	}
 
 	#[test]
 	fn group_names() {

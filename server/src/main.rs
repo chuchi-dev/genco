@@ -407,7 +407,20 @@ async fn run(args: Args) -> Result<(), String> {
 		Cmd::Database(cli::DatabaseCmd::Import { name, file }) => {
 			import_cmd(cfg, name, file).await
 		}
-		Cmd::Database(cmd) => edit(cfg, |_, conn| cli::database(conn, cmd)),
+		Cmd::Database(cmd) => {
+			if let cli::DatabaseCmd::Add { name, postgres, .. } = &cmd {
+				let db = Db::open(&cfg.db_path())?;
+				let req = hosting::DatabaseReq {
+					group_id: 0,
+					name: name.clone(),
+					engine: cli::engine(*postgres),
+				};
+				hosting::check_database_free(&db, &req)
+					.await
+					.map_err(|e| e.to_string())?;
+			}
+			edit(cfg, |_, conn| cli::database(conn, cmd))
+		}
 		Cmd::Worker(cmd) => edit(cfg, |_, conn| cli::worker(conn, cmd)),
 		Cmd::Schedule(cli::ScheduleCmd::Run { name, group }) => {
 			let unit = render::schedule_unit(&group, &name);
