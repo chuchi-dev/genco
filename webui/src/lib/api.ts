@@ -169,6 +169,16 @@ export type Group = {
 	workers: Worker[];
 	schedules: Schedule[];
 	php: PhpSettings;
+	limits: Limits;
+};
+
+/** what a group's slice may use, null is the default */
+export type Limits = {
+	memoryMaxMb: number | null;
+	/** two thirds of the max by default */
+	memoryHighMb: number | null;
+	cpuPercent: number | null;
+	tasksMax: number | null;
 };
 
 /** what a group's PHP may use */
@@ -234,9 +244,14 @@ export type ConfigFile = {
 	path: string;
 	expected: string;
 	actual: string | null;
+	/** a drop-in someone else wrote, it overrides genco's unit */
+	foreign: boolean;
 };
 
-export function fileState(f: ConfigFile): 'ok' | 'missing' | 'changed' {
+export function fileState(
+	f: ConfigFile,
+): 'ok' | 'missing' | 'changed' | 'foreign' {
+	if (f.foreign) return 'foreign';
 	if (f.actual === null) return 'missing';
 	return f.actual === f.expected ? 'ok' : 'changed';
 }
@@ -490,14 +505,22 @@ export async function download(
 
 /**
  * Saves a group: the server takes all its fields, the General and the
- * Deploy tab each change only theirs.
+ * Deploy tab each change only theirs. The limits only when given; the
+ * warning says when the groups' memory limits are more than the server has.
  */
 export function saveGroup(
 	group: Group,
 	change: Partial<
-		Pick<Group, 'clientId' | 'notes' | 'repo' | 'branch' | 'php'>
+		Pick<Group, 'clientId' | 'notes' | 'repo' | 'branch' | 'php' | 'limits'>
 	>,
-) {
+): Promise<{ warning: string | null }> {
 	const { clientId, notes, repo, branch, php } = { ...group, ...change };
-	return post('/groups/' + group.id, { clientId, notes, repo, branch, php });
+	return post('/groups/' + group.id, {
+		clientId,
+		notes,
+		repo,
+		branch,
+		php,
+		limits: change.limits,
+	});
 }

@@ -4,7 +4,8 @@
 	import Button from './win/Button.svelte';
 
 	// config files with what genco writes and what is on the disk
-	let { files }: { files: ConfigFile[] } = $props();
+	let { files, group = '<group>' }: { files: ConfigFile[]; group?: string } =
+		$props();
 
 	// svelte-ignore state_referenced_locally
 	let path = $state(
@@ -14,8 +15,16 @@
 
 	const file = $derived(files.find(f => f.path === path) ?? files[0]);
 	const current = $derived(file ? fileState(file) : 'ok');
-	const pending = $derived(files.filter(f => fileState(f) !== 'ok').length);
-	const LABELS = { ok: '', missing: ' (missing)', changed: ' (differs)' };
+	const pending = $derived(
+		files.filter(f => ['missing', 'changed'].includes(fileState(f))).length,
+	);
+	const foreign = $derived(files.filter(f => f.foreign).length);
+	const LABELS = {
+		ok: '',
+		missing: ' (missing)',
+		changed: ' (differs)',
+		foreign: " (not genco's)",
+	};
 </script>
 
 {#if pending}
@@ -25,6 +34,19 @@
 			writes.
 		</span>
 		<Button onclick={() => (dialogs.open = 'apply')}>Apply…</Button>
+	</div>
+{/if}
+
+{#if foreign}
+	<div class="pending">
+		<span>
+			{foreign} drop-in{foreign > 1 ? 's' : ''} not written by genco override{foreign >
+			1
+				? ''
+				: 's'} the group's units. Move limits into the group's limits (General
+			tab, or
+			<code>genco group adopt-limits {group}</code>).
+		</span>
 	</div>
 {/if}
 
@@ -42,7 +64,8 @@
 			</label>
 		{/if}
 	</div>
-	<pre class="file selectable">{showDisk && current === 'changed'
+	<pre class="file selectable">{(showDisk && current === 'changed') ||
+		current === 'foreign'
 			? file.actual
 			: file.expected}</pre>
 {:else}

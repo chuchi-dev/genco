@@ -25,6 +25,7 @@ mod host;
 mod hosting;
 mod imports;
 mod job;
+mod limits;
 mod llm;
 mod mail;
 mod mailbox;
@@ -402,6 +403,14 @@ async fn run(args: Args) -> Result<(), String> {
 			)?;
 			println!("{key}");
 			Ok(())
+		}
+		Cmd::Group(cli::GroupCmd::AdoptLimits { name }) => {
+			let db = Db::open(&cfg.db_path())?;
+			let msg = cli::adopt_limits(&db, &name)
+				.await
+				.map_err(|e| e.to_string())?;
+			println!("{msg}");
+			apply_cmd(cfg).await
 		}
 		Cmd::Group(cmd) => edit(cfg, |_, conn| cli::group(conn, cmd)),
 		Cmd::Domain(cmd) => edit(cfg, |cfg, conn| cli::domain(cfg, conn, cmd)),

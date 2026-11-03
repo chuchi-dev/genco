@@ -180,6 +180,7 @@ async fn find(db: &Db) -> Vec<Problem> {
 	found.extend(disks().await);
 	found.extend(load());
 	found.extend(memory());
+	found.extend(limits(&groups));
 	found.extend(certificates(&groups).await);
 	found.extend(jobs(&db.conn()).unwrap_or_default());
 	found
@@ -285,6 +286,27 @@ fn memory() -> Option<Problem> {
 		)
 		.minutes(5)
 	})
+}
+
+/// A group's memory limit near the RAM, the groups' limits add up to more
+/// than the server has (with one of its own, see limits::memory_problem),
+/// drop-ins override genco's units.
+fn limits(groups: &[Group]) -> Vec<Problem> {
+	let mut found = vec![];
+	let (ram, swap) = crate::limits::server_memory();
+	let all: Vec<(&str, _)> =
+		groups.iter().map(|g| (g.name.as_str(), g.limits)).collect();
+	if let Some(text) = crate::limits::memory_problem(&all, ram, swap) {
+		found.push(Problem::new("limits:memory", text));
+	}
+	let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+	for d in crate::limits::foreign_here(&names) {
+		found.push(Problem::new(
+			format!("dropin:{}", d.path.display()),
+			d.text(),
+		));
+	}
+	found
 }
 
 /// Certbot renews 30 days ahead, 14 days left means renewing fails.

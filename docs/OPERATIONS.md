@@ -103,6 +103,7 @@ into the server's config, and the CLI does the same:
 | Back up now | `genco backup` |
 | Add a client, group, domain or database | `genco client add`, `genco group add`, `genco domain add`, `genco database add` (see `--help`) |
 | Change a domain | `genco domain set <name> --php 8.4` |
+| Give a group more memory, CPU or tasks | `genco group set <g> --memory 2.5G --cpu 200% --tasks 1024`, then `genco apply` (see "Group limits" below) |
 | Restart a Node or Rust app without downtime | `genco domain set <name> --zero-downtime true`, then `genco apply` (see below) |
 | Which sender domains apps may use (SPF) | `genco mail senders` |
 | DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
@@ -207,6 +208,70 @@ window answers with an error. Top up the key, or put another one into
 `/etc/genco/config.toml`, either `anthropic-key = "..."` or an
 `openrouter-key = "..."` as the fallback. Then run
 `systemctl restart genco`.
+
+### Group limits
+
+Every group runs in its own systemd slice, `genco-<group>.slice`: all its
+processes (PHP, apps, workers, schedules, deploys) share its limits. The
+defaults are 1.5 GB memory (`MemoryMax`, slowing down from 1 GB,
+`MemoryHigh`), 150% CPU (one and a half cores) and 512 tasks. Change them
+on the group's General tab (Limits) or with
+
+```sh
+genco group set shop --memory 2.5G --cpu 200% --tasks 1024
+genco group set shop --memory-high 2G   # the soft limit, else 2/3 of --memory
+genco group set shop --memory default   # back to the default
+genco apply
+```
+
+Sizes take `G` or `M` (a plain number is MB). The memory limit is 128 MB
+to the server's RAM, CPU 10% to 100% per core, tasks 64 to 65536. Above
+`MemoryHigh` the kernel slows the group down and takes back memory, at
+`MemoryMax` it kills a process of the group (the OOM killer, in `journalctl
+-k`). `genco apply` writes the slice and sets the new limits on the running
+slice (`systemctl set-property --runtime`, systemd doesn't apply a changed
+slice file before a unit starts in it); nothing restarts. `systemctl show
+genco-<group>.slice -p MemoryMax` or
+`/sys/fs/cgroup/genco.slice/genco-<group>.slice/memory.max` show what holds
+now; `genco tree` has each group's `limits` (`null` is the default).
+
+When the groups' memory limits add up to more than the server's RAM,
+saving warns ("Group memory limits add up to 6.5 GB, the server has 3.9
+GB and no swap"). It is no error: groups rarely all use their limit at
+once, but if they do, the server runs out of memory before one of them
+hits its own. The minute check reports it as a problem only once a group
+has a memory limit of its own (many groups on the defaults add up on a
+small server, that is normal), and whenever a single group's limit is
+more than 90% of the RAM.
+
+**Drop-ins.** Files in `/etc/systemd/system/genco-*.slice.d/` or
+`genco-*.service.d/` override what genco writes, so the panel's limits
+would no longer be what holds. genco never writes or removes them by
+itself: `genco apply` lists them as warnings, the minute check reports each
+as a problem, and the group's Configuration tab shows them. To move the
+limits of a slice drop-in (`MemoryHigh`, `MemoryMax`, `CPUQuota`,
+`TasksMax`) into the group's settings:
+
+```sh
+genco group adopt-limits shop
+```
+
+It reads the drop-ins of `genco-shop.slice.d` in systemd's order, stores
+the limits, moves the files to `/var/backups/genco/trash`, reloads systemd
+and runs `genco apply`. A drop-in with other settings (or `infinity`, a
+percentage) is refused; move that one by hand.
+
+**ImageMagick.** PHP's Imagick keeps a photo's pixels in memory: a Craft
+transform of a large original takes 500 to 700 MB and can push a group
+over its limit. For groups with PHP genco sets `MAGICK_MEMORY_LIMIT` (a
+quarter of the group's `MemoryHigh`, at most 256 MiB), `MAGICK_MAP_LIMIT`
+(twice that) and `MAGICK_THREAD_LIMIT=1` in the environment of its
+php-fpm, workers and schedules; above them ImageMagick uses its disk cache
+in `/tmp` (the unit's own), slower but within the limit. ImageMagick reads them
+when PHP starts, so a site's `.env` can't change them (it is loaded too
+late); only `Imagick::setResourceLimit()` in the site's code does, and
+`/etc/ImageMagick-*/policy.xml` can only lower them. Resizing originals on
+upload keeps transforms fast.
 
 ## 3. Restoring one site
 

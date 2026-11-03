@@ -1407,6 +1407,13 @@ mod tests {
 		let db = Db::memory();
 		let cfg: Arc<Config> = Arc::new(toml::from_str("").unwrap());
 		let (admin, secret) = admin_with_2fa(&db, 701, "2fa@example.ch");
+		// the codes count on one 30 s step: start early in a step, the
+		// password hashes take a few seconds
+		let into_step = now() / 1000 % 30;
+		if into_step >= 15 {
+			let rest = (30 - into_step) as u64;
+			tokio::time::sleep(std::time::Duration::from_secs(rest)).await;
+		}
 		let code = |offset| code_at(&secret, &admin.email, offset);
 		let authed = || Authed {
 			token: String::new(),

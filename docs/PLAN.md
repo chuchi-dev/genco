@@ -281,6 +281,15 @@ terminal.
       a bearer token), OK reports optionally too; noah takes them at
       `/api/observe/<server>/genco`
 
+### 11c. Group limits (operator 2026-11-03)
+- [x] memory, CPU and tasks of a group's slice as settings (panel
+      General tab, `genco group set --memory --cpu --tasks`), applied to
+      the running slice without restarts; a warning when the groups'
+      memory adds up to more than the RAM
+- [x] drop-ins that override genco's units reported by apply, the minute
+      check and the config view; `genco group adopt-limits`
+- [x] ImageMagick limits for groups with PHP, from the group's memory
+
 ### 9. Access for other agents (operator 2026-11-01, later)
 - [x] a `read` token scope: `GET /api/status` (server, groups with their
       services and last deploy, backups, problems, reports that need

@@ -80,7 +80,8 @@ field in the panel.
 
 - A group is one project: user `g-<group>`, files in
   `/srv/genco/<group>/` (nginx reads them as member of the group), its
-  databases, its units in `genco-<group>.slice` (1.5 GB RAM, 1.5 CPUs).
+  databases, its units in `genco-<group>.slice` (by default 1.5 GB RAM,
+  1.5 CPUs, 512 tasks; see limits below).
 - Databases are MariaDB (default) or PostgreSQL (`genco database add
   <name> --group <g> --postgres`, PostgreSQL is installed with the
   first one). Both log in as the group's user over the socket, no
@@ -241,6 +242,22 @@ field in the panel.
   to the repository (after `genco apply`). PHP limits per group:
   `genco group set <group> --php-upload <MB> --php-memory <MB>
   --php-time <s> --php-input-vars <n>`, then `genco apply`.
+- Limits of a group's slice: `genco group set <group> --memory 2.5G
+  [--memory-high 2G] --cpu 200% --tasks 1024` (`default` resets; the
+  soft limit is two thirds of --memory unless set), then `genco apply`:
+  the running slice gets them, nothing restarts. `genco tree` shows each
+  group's `limits` (null is the default). Change limits only this way,
+  never with drop-ins (`/etc/systemd/system/genco-*.slice.d/`,
+  `genco-*.service.d/`): they override genco and are reported as a
+  problem; `genco group adopt-limits <group>` moves a slice drop-in's
+  limits into the settings. Check the RAM first, genco warns when the
+  groups' limits add up to more than the server has.
+- Craft with Imagick: transforms of large originals take 500-700 MB.
+  genco limits ImageMagick per process for groups with PHP
+  (MAGICK_MEMORY_LIMIT a quarter of the soft limit, at most 256 MiB, then
+  it uses its disk cache), a site's .env can't change that. A site that
+  still runs out of memory on images: suggest resizing originals on
+  upload before raising the group's memory.
 - Backups: every night (`genco-backup.timer`, or `genco backup`) restic
   stores each group's files (without node_modules, caches, repo.git;
   SQLite files also as consistent copies in `.genco-sqlite/`, restore

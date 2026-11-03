@@ -8,6 +8,7 @@ use crate::actions;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::hosting::{self, Kind};
+use crate::limits;
 use crate::procs;
 
 #[derive(Debug, Parser)]
@@ -31,7 +32,8 @@ pub enum GroupCmd {
 	},
 	/// Ask the admins by mail to confirm deleting an empty group
 	Delete { name: String },
-	/// Change a group: its repository and branch, its PHP settings
+	/// Change a group: its repository and branch, its PHP settings, its
+	/// limits
 	Set {
 		name: String,
 		/// git URL the group deploys from
@@ -50,7 +52,24 @@ pub enum GroupCmd {
 		php_time: Option<u32>,
 		#[clap(long)]
 		php_input_vars: Option<u32>,
+		/// memory of the whole group (MemoryMax): 2.5G, 512M, 512 (MB) or
+		/// default (1.5G)
+		#[clap(long)]
+		memory: Option<String>,
+		/// where the kernel starts slowing it down (MemoryHigh), two
+		/// thirds of --memory unless set; or default
+		#[clap(long)]
+		memory_high: Option<String>,
+		/// CPU, 100% is one core: 200% or default (150%)
+		#[clap(long)]
+		cpu: Option<String>,
+		/// processes and threads: 1024 or default (512)
+		#[clap(long)]
+		tasks: Option<String>,
 	},
+	/// Take the limits of drop-ins in genco-<group>.slice.d into the
+	/// group's settings, move the files to the trash and apply
+	AdoptLimits { name: String },
 	/// Print the public key the group deploys with, for the repository
 	DeployKey { name: String },
 }
@@ -313,10 +332,30 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 		php_memory,
 		php_time,
 		php_input_vars,
+		memory,
+		memory_high,
+		cpu,
+		tasks,
 	} = cmd
 	{
 		let g = hosting::group_by_name(conn, &name)?
 			.ok_or_else(|| Error::Invalid(format!("no group {name}")))?;
+		// all or nothing: wrong limits change nothing else either
+		let mut l = g.limits;
+		if let Some(v) = memory {
+			l.memory_max_mb = limits::parse_size(&v)?;
+		}
+		if let Some(v) = memory_high {
+			l.memory_high_mb = limits::parse_size(&v)?;
+		}
+		if let Some(v) = cpu {
+			l.cpu_percent = limits::parse_percent(&v)?;
+		}
+		if let Some(v) = tasks {
+			l.tasks_max = limits::parse_count(&v)?;
+		}
+		limits::check_here(&l)?;
+
 		hosting::set_repo(conn, g.id, repo.as_deref(), branch.as_deref())?;
 		let php = hosting::PhpSettings {
 			upload_mb: php_upload.unwrap_or(g.php.upload_mb),
@@ -327,10 +366,18 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 		if php != g.php {
 			hosting::set_php(conn, g.id, &php)?;
 		}
-		return Ok("changed, run genco apply".into());
+		let mut msg = "changed, run genco apply".to_string();
+		if l != g.limits {
+			let warning = hosting::set_limits(conn, g.id, &l)?;
+			msg.push_str(&format!("\nlimits: {}", l.describe()));
+			if let Some(w) = warning {
+				msg.push_str(&format!("\nwarning: {w}"));
+			}
+		}
+		return Ok(msg);
 	}
-	if let GroupCmd::DeployKey { .. } = cmd {
-		unreachable!("main reads it as the group's user");
+	if let GroupCmd::DeployKey { .. } | GroupCmd::AdoptLimits { .. } = cmd {
+		unreachable!("main runs them");
 	}
 	let GroupCmd::Add { name, client } = cmd else {
 		unreachable!("deletions go through actions");
@@ -347,6 +394,58 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 	};
 	let id = hosting::insert_group(conn, &req)?;
 	Ok(format!("added group {id}, run genco apply"))
+}
+
+/// Takes the limits of the group's slice drop-ins into its settings, moves
+/// the files to the trash and reloads systemd; `genco apply` after it
+/// writes the slice and sets them on the running one.
+pub async fn adopt_limits(db: &crate::db::Db, name: &str) -> Result<String> {
+	let g = group_of(&db.conn(), name)?;
+	let files = limits::slice_dropins(&g.name);
+	if files.is_empty() {
+		return Err(Error::Invalid(format!(
+			"no drop-ins in /etc/systemd/system/genco-{name}.slice.d"
+		)));
+	}
+	let mut l = g.limits;
+	for f in &files {
+		let content = std::fs::read_to_string(f)
+			.map_err(|e| Error::Internal(format!("{}: {e}", f.display())))?;
+		l = limits::adopt(l, &content)
+			.map_err(|e| Error::Invalid(format!("{}: {e}", f.display())))?;
+	}
+	let warning = hosting::set_limits(&db.conn(), g.id, &l)?;
+
+	actions::trash_dir().map_err(Error::Internal)?;
+	let stamp = crate::util::stamp().await;
+	let mut msg = String::new();
+	for f in &files {
+		let dir = f.parent().and_then(|d| d.file_name()).unwrap_or_default();
+		let file = f.file_name().unwrap_or_default();
+		let to = format!(
+			"{}/{}-{}-{stamp}",
+			actions::TRASH,
+			dir.to_string_lossy(),
+			file.to_string_lossy()
+		);
+		std::fs::copy(f, &to)
+			.and_then(|_| std::fs::remove_file(f))
+			.map_err(|e| Error::Internal(format!("{}: {e}", f.display())))?;
+		msg.push_str(&format!("moved {} to {to}\n", f.display()));
+	}
+	// only when nothing else is in it
+	if let Some(dir) = files[0].parent() {
+		let _ = std::fs::remove_dir(dir);
+	}
+	crate::util::sh("systemctl daemon-reload")
+		.await
+		.map_err(Error::Internal)?;
+
+	msg.push_str(&format!("limits of {name}: {}", l.describe()));
+	if let Some(w) = warning {
+		msg.push_str(&format!("\nwarning: {w}"));
+	}
+	Ok(msg)
 }
 
 pub fn domain(

@@ -171,6 +171,13 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 		sync(&mut r, cfg, &groups, &blocked, &old_names).await;
 	}
 
+	// genco doesn't touch them, an admin moves them into the group's
+	// limits (genco group adopt-limits)
+	let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+	for d in crate::limits::foreign_here(&names) {
+		r.info(format!("warning: {}", d.text()));
+	}
+
 	r.info(if r.ok { "done" } else { "done with errors" });
 	r
 }
@@ -211,6 +218,7 @@ async fn sync(
 	}
 
 	for g in groups {
+		set_limits(r, g, &changed).await;
 		start_units(r, g, &changed).await;
 	}
 

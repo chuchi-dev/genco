@@ -29,6 +29,7 @@
 	import GroupProcs from '@/components/GroupProcs.svelte';
 	import GroupDatabases from '@/components/GroupDatabases.svelte';
 	import GroupSmtp from '@/components/GroupSmtp.svelte';
+	import GroupLimits from '@/components/GroupLimits.svelte';
 
 	let {
 		id,
@@ -175,6 +176,9 @@
 				</span>
 			{/if}
 		</Form>
+		{#key group.id}
+			<GroupLimits {group} />
+		{/key}
 		{#if group.mailDomains.length}
 			<hr class="groove" />
 			{#key group.id}
@@ -244,7 +248,7 @@
 		<GroupServices {group} />
 	{:else if tab === 'config'}
 		{#if files}
-			<ConfigFiles {files} />
+			<ConfigFiles {files} group={group.name} />
 		{:else}
 			<p class="hint">Loading…</p>
 		{/if}

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::hosting::{Domain, Group, Kind, PhpSettings};
+use crate::limits;
 use crate::procs::{Schedule, Worker};
 
 pub const HEADER: &str = "# written by genco, changes here are overwritten";
@@ -266,7 +267,7 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 	let g = &group.name;
 	let mut files = vec![File {
 		path: unit_path(&slice(g)),
-		content: slice_unit(g),
+		content: slice_unit(group),
 		private_to: None,
 	}];
 
@@ -278,7 +279,7 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 		});
 		files.push(File {
 			path: unit_path(&php_unit(g, v)),
-			content: php_service(g, v),
+			content: php_service(group, v),
 			private_to: None,
 		});
 	}
@@ -643,19 +644,42 @@ fn public_files(group: &Group, d: &Domain) -> String {
 	)
 }
 
-fn slice_unit(g: &str) -> String {
+/// apply sets them on the running slice too, systemd reads a changed
+/// slice's file but doesn't apply it until a unit starts in it.
+fn slice_unit(group: &Group) -> String {
+	let l = &group.limits;
 	format!(
-		"{HEADER}
+		"{HEADER}: change the limits in the panel or with genco group set
 [Unit]
 Description=Limits of the group {g}
 
 [Slice]
-MemoryHigh=1G
-MemoryMax=1536M
-TasksMax=512
-CPUQuota=150%
-"
+MemoryHigh={high}
+MemoryMax={max}
+TasksMax={tasks}
+CPUQuota={cpu}%
+",
+		g = group.name,
+		high = limits::unit_size(l.memory_high()),
+		max = limits::unit_size(l.memory_max()),
+		tasks = l.tasks(),
+		cpu = l.cpu(),
 	)
+}
+
+/// ImageMagick (PHP's Imagick) keeps a large photo's pixels in memory,
+/// 500 MB and more: with these limits it goes to its disk cache instead of
+/// pushing the group over its memory limit. ImageMagick reads them when
+/// PHP starts, so they are in the units' environment; an app's .env comes
+/// too late, only `Imagick::setResourceLimit()` in its code changes them.
+fn magick_env(group: &Group) -> Option<String> {
+	php_cli(group)?;
+	let mb = group.limits.magick_memory_mb();
+	Some(format!(
+		"MAGICK_MEMORY_LIMIT={mb}MiB MAGICK_MAP_LIMIT={}MiB \
+		MAGICK_THREAD_LIMIT=1",
+		2 * mb
+	))
 }
 
 /// Runs as the group's user and only sees its own files. `bind` is the
@@ -750,7 +774,12 @@ php_admin_value[sendmail_path] = \"/usr/bin/msmtp --host=127.0.0.1 --port=25 --r
 	)
 }
 
-fn php_service(g: &str, v: &str) -> String {
+fn php_service(group: &Group, v: &str) -> String {
+	let g = &group.name;
+	let magick = match magick_env(group) {
+		Some(env) => format!("Environment={env}\n"),
+		None => String::new(),
+	};
 	format!(
 		"{HEADER}
 [Unit]
@@ -759,7 +788,7 @@ After=network.target
 
 [Service]
 Type=notify
-ExecStart=/usr/sbin/php-fpm{v} --nodaemonize --fpm-config {conf}
+{magick}ExecStart=/usr/sbin/php-fpm{v} --nodaemonize --fpm-config {conf}
 ExecReload=/bin/kill -USR2 $MAINPID
 RuntimeDirectory=genco/{g}/php{v}
 RuntimeDirectoryMode=0750
@@ -816,10 +845,14 @@ WantedBy=multi-user.target
 }
 
 /// Environment of a worker or a schedule: the group's PHP first in PATH,
-/// its directory as HOME.
+/// its directory as HOME, ImageMagick's limits with PHP.
 fn group_env(group: &Group) -> String {
+	let magick = match magick_env(group) {
+		Some(env) => format!(" {env}"),
+		None => String::new(),
+	};
 	format!(
-		"Environment=PATH={} HOME={}\n",
+		"Environment=PATH={} HOME={}{magick}\n",
 		group_path(group),
 		group_dir(&group.name).display()
 	)
@@ -1108,6 +1141,56 @@ mod tests {
 	}
 
 	#[test]
+	fn the_slice_has_the_group_s_limits() {
+		let mut g = group(vec![]);
+		let slice = |g: &Group| {
+			group_files(g, &HashSet::new())
+				.into_iter()
+				.find(|f| {
+					f.path == Path::new("/etc/systemd/system/genco-shop.slice")
+				})
+				.unwrap()
+				.content
+		};
+		// the values from before limits were a setting
+		assert!(slice(&g).ends_with(
+			"[Slice]\nMemoryHigh=1G\nMemoryMax=1536M\nTasksMax=512\n\
+			CPUQuota=150%\n"
+		));
+
+		g.limits = limits::Limits {
+			memory_max_mb: Some(2560),
+			memory_high_mb: Some(2048),
+			cpu_percent: Some(200),
+			tasks_max: Some(1024),
+		};
+		assert!(slice(&g).ends_with(
+			"[Slice]\nMemoryHigh=2G\nMemoryMax=2560M\nTasksMax=1024\n\
+			CPUQuota=200%\n"
+		));
+	}
+
+	#[test]
+	fn php_gets_imagemagick_limits_from_its_soft_limit() {
+		let mut g = group(vec![domain(1, "admin.shop.ch", Kind::Php)]);
+		g.limits.memory_max_mb = Some(768);
+		let files = group_files(&g, &HashSet::new());
+		let unit =
+			find(&files, "/etc/systemd/system/genco-shop-php8.4.service");
+		assert!(unit.contains(
+			"Environment=MAGICK_MEMORY_LIMIT=128MiB MAGICK_MAP_LIMIT=256MiB \
+			MAGICK_THREAD_LIMIT=1\nExecStart=/usr/sbin/php-fpm8.4"
+		));
+
+		// an app without PHP doesn't
+		let g = group(vec![domain(1, "shop.ch", Kind::Node)]);
+		let files = group_files(&g, &HashSet::new());
+		let unit =
+			find(&files, "/etc/systemd/system/genco-shop-shop.ch.service");
+		assert!(!unit.contains("MAGICK"));
+	}
+
+	#[test]
 	fn group_logs_are_rotated_as_the_group() {
 		let g = group(vec![domain(1, "shop.ch", Kind::Php)]);
 		let files = group_files(&g, &HashSet::new());
@@ -1378,6 +1461,9 @@ mod tests {
 			"/etc/systemd/system/genco-shop-cron-statuses.service",
 		);
 		assert!(s.contains("Type=oneshot"));
+		// ImageMagick's limits with the group's PHP
+		assert!(s.contains("HOME=/srv/genco/shop MAGICK_MEMORY_LIMIT=256MiB"));
+		assert!(q.contains("MAGICK_THREAD_LIMIT=1\n"));
 		assert!(s.contains("TimeoutStartSec=10min"));
 		let t =
 			find(&files, "/etc/systemd/system/genco-shop-cron-statuses.timer");

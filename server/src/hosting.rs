@@ -16,6 +16,7 @@ use crate::db::{Db, now};
 use crate::error::{Error, Result};
 use crate::events::{Event, Events};
 use crate::host;
+use crate::limits::{self, Limits};
 use crate::render;
 use crate::users::Authed;
 use crate::util;
@@ -88,6 +89,8 @@ pub struct Group {
 	pub workers: Vec<crate::procs::Worker>,
 	pub schedules: Vec<crate::procs::Schedule>,
 	pub php: PhpSettings,
+	/// what its slice may use
+	pub limits: Limits,
 	/// password and Dovecot hash of its SMTP login `g-<group>`, made by
 	/// apply once it has mail domains; never to the browser with the tree
 	#[serde(skip)]
@@ -123,7 +126,7 @@ impl Default for PhpSettings {
 }
 
 impl PhpSettings {
-	/// Within what a group's slice (1.5 GB) and nginx can take.
+	/// Within what a group's default slice (1.5 GB) and nginx can take.
 	pub fn check(&self) -> Result<()> {
 		let ok = (1..=2048).contains(&self.upload_mb)
 			&& (64..=1024).contains(&self.memory_mb)
@@ -270,7 +273,8 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 
 	let mut stmt = conn.prepare(
 		"SELECT id, name, client_id, notes, repo, branch, php, smtp_password,
-		smtp_hash FROM domain_groups ORDER BY name",
+		smtp_hash, memory_max_mb, memory_high_mb, cpu_percent, tasks_max
+		FROM domain_groups ORDER BY name",
 	)?;
 	let groups: Vec<Group> = stmt
 		.query_map([], |row| {
@@ -290,6 +294,12 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 				smtp: match (row.get(7)?, row.get(8)?) {
 					(Some(p), Some(h)) => Some((p, h)),
 					_ => None,
+				},
+				limits: Limits {
+					memory_max_mb: row.get(9)?,
+					memory_high_mb: row.get(10)?,
+					cpu_percent: row.get(11)?,
+					tasks_max: row.get(12)?,
 				},
 				mail_host: None,
 				domains: util::matching(&domains, |d| d.group_id == id),
@@ -365,6 +375,35 @@ pub fn set_php(conn: &Connection, id: i64, php: &PhpSettings) -> Result<()> {
 		params![serde_json::to_string(php).unwrap(), id],
 	)?;
 	Ok(())
+}
+
+/// Checks the limits against the server, warns when the groups' memory
+/// limits together are more than it has.
+pub fn set_limits(
+	conn: &Connection,
+	id: i64,
+	limits: &Limits,
+) -> Result<Option<String>> {
+	limits::check_here(limits)?;
+	conn.execute(
+		"UPDATE domain_groups SET memory_max_mb = ?1, memory_high_mb = ?2,
+		cpu_percent = ?3, tasks_max = ?4 WHERE id = ?5",
+		params![
+			limits.memory_max_mb,
+			limits.memory_high_mb,
+			limits.cpu_percent,
+			limits.tasks_max,
+			id
+		],
+	)?;
+	Ok(memory_warning(conn)?)
+}
+
+/// When the groups' memory limits add up to more than the server has.
+pub fn memory_warning(conn: &Connection) -> rusqlite::Result<Option<String>> {
+	let (ram, swap) = limits::server_memory();
+	let all = groups(conn)?.into_iter().map(|g| g.limits);
+	Ok(limits::overcommit(all, ram, swap))
 }
 
 /// The repository a group deploys from and its branch, `None` keeps.
@@ -690,6 +729,14 @@ struct UpdateGroupReq {
 	branch: String,
 	/// unchanged when missing
 	php: Option<PhpSettings>,
+	/// unchanged when missing
+	limits: Option<Limits>,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateGroupResp {
+	/// the groups' memory limits add up to more than the server has
+	warning: Option<String>,
 }
 
 /// The name stays, it is the linux user and the directory.
@@ -699,7 +746,7 @@ async fn update_group(
 	State(events): State<Events>,
 	Path(id): Path<i64>,
 	Json(req): Json<UpdateGroupReq>,
-) -> Result<Json<()>> {
+) -> Result<Json<UpdateGroupResp>> {
 	let repo = req.repo.as_deref().map(str::trim).filter(|r| !r.is_empty());
 	if let Some(repo) = repo {
 		check_git(repo, "repository")?;
@@ -708,6 +755,9 @@ async fn update_group(
 	// all or nothing: wrong PHP settings change nothing else either
 	if let Some(php) = &req.php {
 		php.check()?;
+	}
+	if let Some(l) = &req.limits {
+		limits::check_here(l)?;
 	}
 	let n = db.conn().execute(
 		"UPDATE domain_groups SET client_id = ?1, notes = ?2, repo = ?3,
@@ -720,8 +770,12 @@ async fn update_group(
 	if let Some(php) = req.php {
 		set_php(&db.conn(), id, &php)?;
 	}
+	let warning = match req.limits {
+		Some(l) => set_limits(&db.conn(), id, &l)?,
+		None => None,
+	};
 	events.send(Event::Tree);
-	Ok(Json(()))
+	Ok(Json(UpdateGroupResp { warning }))
 }
 
 /// How a domain is served, the same when it is added and changed.

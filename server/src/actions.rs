@@ -629,7 +629,7 @@ async fn delete_group(
 }
 
 /// Only root may read it, it holds the data of every group.
-fn trash_dir() -> std::result::Result<(), String> {
+pub fn trash_dir() -> std::result::Result<(), String> {
 	util::private_dir(std::path::Path::new("/var/backups/genco"))
 		.and_then(|()| std::fs::create_dir_all(TRASH))
 		.map_err(|e| e.to_string())

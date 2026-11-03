@@ -70,6 +70,8 @@ pub struct ConfigFile {
 	pub expected: String,
 	/// what is on the disk, `None` if the file doesn't exist
 	pub actual: Option<String>,
+	/// a drop-in someone else wrote, it overrides genco's unit
+	pub foreign: bool,
 }
 
 /// The config files of a group, as genco would write them and as they are.
@@ -85,6 +87,15 @@ pub async fn config_files(group: &Group) -> Vec<ConfigFile> {
 			actual: tokio::fs::read_to_string(&f.path).await.ok(),
 			path: f.path.display().to_string(),
 			expected: f.content,
+			foreign: false,
+		});
+	}
+	for d in crate::limits::foreign_here(&[group.name.as_str()]) {
+		files.push(ConfigFile {
+			actual: tokio::fs::read_to_string(&d.path).await.ok(),
+			path: d.path.display().to_string(),
+			expected: String::new(),
+			foreign: true,
 		});
 	}
 	files

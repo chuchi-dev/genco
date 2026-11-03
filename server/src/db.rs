@@ -427,6 +427,13 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE proposals ADD COLUMN original_text TEXT;
 	ALTER TABLE proposals ADD COLUMN rewritten_by TEXT;
 "#,
+	// what a group's slice may use, NULL is the default (limits.rs)
+	r#"
+	ALTER TABLE domain_groups ADD COLUMN memory_max_mb INTEGER;
+	ALTER TABLE domain_groups ADD COLUMN memory_high_mb INTEGER;
+	ALTER TABLE domain_groups ADD COLUMN cpu_percent INTEGER;
+	ALTER TABLE domain_groups ADD COLUMN tasks_max INTEGER;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly
