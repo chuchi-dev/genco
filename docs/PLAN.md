@@ -329,6 +329,11 @@ Still open:
   release; the deploy fails and says so. Kept on purpose (operator,
   2026-11-03): no automatic rollback, the admin rolls back in the Deploy
   tab or deploys a fix.
+- Automatic IP blocking (operator, 2026-11-03): not yet. First watch real
+  traffic (Top addresses) once sites have moved; then probably the
+  agent's health check suggests blocks with a reason instead of fixed
+  rules. Port 22 is never blocked over HTTP traffic; SSH brute force
+  (keys only) isn't blocked either for now.
 - Chat attachments in `/var/lib/genco/uploads` are never deleted: decide
   on a cleanup (e.g. after 90 days, or with their conversation; operator
   not sure yet, 2026-11-02).
