@@ -116,17 +116,25 @@ export async function confirmDelete(o: {
 
 /**
  * Asks the server to delete something. It only mails the admins a link to
- * confirm it, the message box says so.
+ * confirm it, the message box says so; with mail off the confirmation
+ * page opens, the admin confirms with the password.
  */
 export async function requestDelete(path: string, what: string) {
 	const { del } = await import('./api');
+	const { mail } = await import('./mail.svelte');
+	const { go } = await import('./router.svelte');
 	const yes = await message.confirm(
 		'Delete',
-		`Delete ${what}? Every admin gets a mail to confirm it.`,
+		mail.off
+			? `Delete ${what}? You confirm it with your password next.`
+			: `Delete ${what}? Every admin gets a mail to confirm it.`,
 	);
 	if (!yes) return;
 	try {
-		message.show('Waiting for Confirmation', await del(path));
+		const req: { message: string; confirm: string | null } =
+			await del(path);
+		if (req.confirm) go(req.confirm);
+		else message.show('Waiting for Confirmation', req.message);
 	} catch (e: any) {
 		message.show('Not Deleted', e.message);
 	}

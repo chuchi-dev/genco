@@ -66,8 +66,10 @@ pub async fn cli(
 	password: impl FnOnce() -> std::result::Result<String, String>,
 ) -> Result<String> {
 	let groups = hosting::groups(&db.conn())?;
-	let deletion = |kind, id| {
+	let deletion = |kind, id| async move {
 		crate::actions::request(cfg, db, kind, id, crate::activity::cli_actor())
+			.await
+			.map(|r| r.message)
 	};
 	match cmd {
 		MailCmd::Senders => Ok(crate::senders::cli(cfg, db).await),

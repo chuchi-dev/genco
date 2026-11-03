@@ -415,6 +415,12 @@ const MIGRATIONS: &[&str] = &[
 	r#"
 	ALTER TABLE workers ADD COLUMN address TEXT NOT NULL DEFAULT '';
 "#,
+	// with mail off a deletion is confirmed with the password, not a
+	// mailed link
+	r#"
+	ALTER TABLE pending_actions ADD COLUMN by_password INTEGER NOT NULL
+		DEFAULT 0;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

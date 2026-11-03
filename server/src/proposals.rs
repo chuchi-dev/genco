@@ -387,10 +387,17 @@ struct ProposeReq {
 struct Created {
 	id: i64,
 	status: &'static str,
+	/// with mail off: nobody gets a mail, the admins see it in the panel
+	#[serde(skip_serializing_if = "Option::is_none")]
+	note: Option<&'static str>,
 }
 
-/// Mails the proposal to its approver or every admin, errors are logged.
+/// Mails the proposal to its approver or every admin, errors are logged;
+/// with mail off it is only in the panel's tray.
 async fn mail(cfg: &Config, db: &Db, id: i64) {
+	if crate::mail::off(db) {
+		return;
+	}
 	let found = (|| -> Result<Proposal> {
 		let p = get_one(&db.conn(), id)?;
 		Ok(p)
@@ -425,7 +432,7 @@ async fn mail(cfg: &Config, db: &Db, id: i64) {
 		p.from,
 		crate::util::first_line(&p.text, 60)
 	);
-	if let Err(e) = crate::mail::send(cfg, &to, &subject, &body).await {
+	if let Err(e) = crate::mail::send(cfg, db, &to, &subject, &body).await {
 		tracing::error!("mail about proposal {id}: {e}");
 	}
 }
@@ -498,9 +505,14 @@ async fn propose(
 		let db = db.clone();
 		tokio::spawn(async move { mail(&cfg, &db, id).await });
 	}
+	let note = crate::mail::off(&db).then_some(
+		"mail is off on this server: no mail goes to the approver, the \
+		admins see the proposal in the panel",
+	);
 	Ok(Json(Created {
 		id,
 		status: "pending",
+		note,
 	}))
 }
 

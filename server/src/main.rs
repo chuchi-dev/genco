@@ -319,10 +319,10 @@ async fn run(args: Args) -> Result<(), String> {
 		let who = std::env::var("GENCO_AGENT")
 			.map(|_| "the agent")
 			.unwrap_or("the terminal");
-		let msg = actions::request(&cfg, &db, kind, id, who)
+		let req = actions::request(&cfg, &db, kind, id, who)
 			.await
 			.map_err(|e| e.to_string())?;
-		println!("{msg}");
+		println!("{}", req.message);
 		return Ok(());
 	}
 

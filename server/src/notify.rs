@@ -1,6 +1,7 @@
 //! Where genco's reports go: a mail to the admins and the webhooks of the
 //! AI agents (peers.rs). Deletion confirmations and invites always go by
-//! mail, a person acts on them.
+//! mail, a person acts on them. With mail off only the webhooks and the
+//! panel get them.
 
 use axum::extract::State;
 use axum::routing::get;
@@ -56,6 +57,7 @@ pub struct Notice {
 pub async fn send(cfg: &Config, db: &Db, n: Notice) {
 	if n.attention
 		&& settings(db).mail
+		&& !crate::mail::off(db)
 		&& let Err(e) = mail(cfg, db, &n).await
 	{
 		tracing::error!("mail about {}: {e}", n.title);
@@ -76,7 +78,7 @@ async fn mail(cfg: &Config, db: &Db, n: &Notice) -> Result<()> {
 		"update" => format!("genco: {}", n.title),
 		_ => format!("genco needs attention: {}", n.title),
 	};
-	crate::mail::send(cfg, &to, &subject, &body).await
+	crate::mail::send(cfg, db, &to, &subject, &body).await
 }
 
 async fn get_settings(

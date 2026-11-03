@@ -9,11 +9,14 @@
 <script lang="ts">
 	import { post } from '@/lib/api';
 	import { go } from '@/lib/router.svelte';
+	import { session } from '@/lib/session.svelte';
 	import Button from '@/components/win/Button.svelte';
 	import Dialog from '@/components/win/Dialog.svelte';
+	import Form from '@/components/win/Form.svelte';
 	import Icon from '@/components/win/Icon.svelte';
 
-	// the link of a confirmation mail: an admin confirms a deletion
+	// the link of a confirmation mail: an admin confirms a deletion; with
+	// mail off nothing was mailed, the password and code confirm it
 	let {
 		token,
 		action,
@@ -24,6 +27,7 @@
 			requestedBy: string;
 			status: string;
 			createdAt: number;
+			byPassword: boolean;
 		};
 	} = $props();
 
@@ -33,15 +37,21 @@
 	let busy = $state(false);
 	let result = $state<{ ok: boolean; log: string[] } | null>(null);
 	let error = $state<string | null>(null);
+	let password = $state('');
+	let code = $state('');
 
 	async function confirmIt() {
 		busy = true;
 		try {
-			result = await post(`/actions/${token}/confirm`);
+			result = await post(`/actions/${token}/confirm`, {});
 		} catch (e: any) {
 			error = e.message;
 		}
 		busy = false;
+	}
+
+	async function confirmWithPassword() {
+		result = await post(`/actions/${token}/confirm`, { password, code });
 	}
 </script>
 
@@ -73,6 +83,31 @@
 		<div class="row-buttons end">
 			<Button primary onclick={() => go('/')}>Close</Button>
 		</div>
+	{:else if action.byPassword}
+		<Form
+			onsubmit={confirmWithPassword}
+			oncancel={() => go('/')}
+			ok="Delete"
+		>
+			<label for="c-password">Your password:</label>
+			<!-- svelte-ignore a11y_autofocus -->
+			<input
+				id="c-password"
+				type="password"
+				autocomplete="current-password"
+				autofocus
+				bind:value={password}
+			/>
+			{#if session.user?.totp}
+				<label for="c-code">Two-factor code:</label>
+				<input
+					id="c-code"
+					inputmode="numeric"
+					autocomplete="one-time-code"
+					bind:value={code}
+				/>
+			{/if}
+		</Form>
 	{:else}
 		{#if error}<p class="error">{error}</p>{/if}
 		<div class="row-buttons end">

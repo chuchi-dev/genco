@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { mail } from '@/lib/mail.svelte';
 	import { current, go } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 	import type { Worker } from '@/lib/api';
@@ -124,7 +125,7 @@
 				{
 					label: 'New Mail Domain…',
 					onclick: () => onnew('mail'),
-					disabled: !tree.groups.length,
+					disabled: !tree.groups.length || mail.off,
 				},
 			],
 		},
@@ -192,7 +193,11 @@
 						label: 'New Database…',
 						onclick: () => onnew('database'),
 					},
-					{ label: 'New Mail Domain…', onclick: () => onnew('mail') },
+					{
+						label: 'New Mail Domain…',
+						onclick: () => onnew('mail'),
+						disabled: mail.off,
+					},
 					sep,
 					tab('Files', 'files'),
 					tab('Services', 'services'),

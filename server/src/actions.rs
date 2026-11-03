@@ -2,6 +2,8 @@
 //! becomes a pending action and every admin gets a mail with a link. It
 //! runs when an admin opens the link while logged in and confirms. What
 //! it deletes goes to the trash first (dump, archive), kept 30 days.
+//! With mail off (Settings → Mail) the admin confirms it in the panel
+//! with their password and two-factor code instead.
 
 use std::sync::Arc;
 
@@ -9,7 +11,7 @@ use axum::extract::{Path, State};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::apply;
@@ -21,7 +23,7 @@ use crate::hosting;
 use crate::mail;
 use crate::render;
 use crate::tokens;
-use crate::users::Authed;
+use crate::users::{self, Authed};
 use crate::util;
 
 pub const TRASH: &str = "/var/backups/genco/trash";
@@ -68,6 +70,8 @@ pub struct Action {
 	/// pending, done, failed, expired
 	pub status: String,
 	pub created_at: i64,
+	/// confirmed with the password, it wasn't mailed
+	pub by_password: bool,
 	#[serde(skip)]
 	id: i64,
 	#[serde(skip)]
@@ -149,18 +153,30 @@ fn describe(conn: &Connection, kind: Kind, id: i64) -> Result<String> {
 	}
 }
 
-/// Creates the action and mails the admins the link to confirm it.
-/// Returns what the requester is told.
+#[derive(Debug, Serialize)]
+pub struct Requested {
+	/// what the requester is told
+	pub message: String,
+	/// with mail off, the page where an admin confirms it
+	pub confirm: Option<String>,
+}
+
+/// Creates the action and mails the admins the link to confirm it; with
+/// mail off the requester gets the link.
 pub async fn request(
 	cfg: &Config,
 	db: &Db,
 	kind: Kind,
 	target_id: i64,
 	requested_by: &str,
-) -> Result<String> {
-	let domain = cfg.domain.as_deref().ok_or(Error::Invalid(
-		"the panel has no domain for the link".into(),
-	))?;
+) -> Result<Requested> {
+	let by_password = mail::off(db);
+	let domain = cfg.domain.as_deref().unwrap_or_default();
+	if domain.is_empty() && !by_password {
+		return Err(Error::Invalid(
+			"the panel has no domain for the link".into(),
+		));
+	}
 	let token = util::random_hex(24);
 
 	let (id, description) = {
@@ -168,19 +184,32 @@ pub async fn request(
 		let description = describe(&conn, kind, target_id)?;
 		conn.execute(
 			"INSERT INTO pending_actions (kind, target_id, description,
-			token_hash, requested_by, status, created_at)
-			VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+			token_hash, requested_by, status, created_at, by_password)
+			VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
 			params![
 				kind.as_str(),
 				target_id,
 				description,
 				tokens::hash(&token),
 				requested_by,
-				now()
+				now(),
+				by_password
 			],
 		)?;
 		(conn.last_insert_rowid(), description)
 	};
+
+	if by_password {
+		let path = format!("/confirm/{token}");
+		let link = cfg.panel_url(&path).unwrap_or(path.clone());
+		return Ok(Requested {
+			message: format!(
+				"Waiting for confirmation: mail is off, an admin confirms \
+				it with their password at {link} ({description})"
+			),
+			confirm: Some(path),
+		});
+	}
 
 	let body = format!(
 		"{requested_by} asked genco on {domain} for this:\n\n{description}\n\n\
@@ -192,6 +221,7 @@ pub async fn request(
 	let first = description.split('.').next().unwrap_or(&description);
 	let sent = mail::send(
 		cfg,
+		db,
 		&mail::admins(db)?,
 		&format!("Confirm: {first}"),
 		&body,
@@ -203,17 +233,21 @@ pub async fn request(
 		return Err(e);
 	}
 
-	Ok(format!(
-		"Waiting for confirmation: every admin got a mail with a link to \
-		confirm it ({description})"
-	))
+	Ok(Requested {
+		message: format!(
+			"Waiting for confirmation: every admin got a mail with a link \
+			to confirm it ({description})"
+		),
+		confirm: None,
+	})
 }
 
 fn find(conn: &Connection, token: &str) -> Result<Action> {
 	let action = conn
 		.query_row(
 			"SELECT id, kind, target_id, description, requested_by, status,
-			created_at FROM pending_actions WHERE token_hash = ?1",
+			created_at, by_password FROM pending_actions
+			WHERE token_hash = ?1",
 			[tokens::hash(token)],
 			|row| {
 				Ok(Action {
@@ -224,6 +258,7 @@ fn find(conn: &Connection, token: &str) -> Result<Action> {
 					requested_by: row.get(4)?,
 					status: row.get(5)?,
 					created_at: row.get(6)?,
+					by_password: row.get(7)?,
 				})
 			},
 		)
@@ -626,17 +661,17 @@ async fn request_delete(
 	state: &AppState,
 	kind: Kind,
 	id: i64,
-) -> Result<Json<String>> {
-	let msg =
+) -> Result<Json<Requested>> {
+	let req =
 		request(&state.cfg, &state.db, kind, id, &authed.user.name).await?;
-	Ok(Json(msg))
+	Ok(Json(req))
 }
 
 async fn delete_domain_route(
 	authed: Authed,
 	State(state): State<AppState>,
 	Path(id): Path<i64>,
-) -> Result<Json<String>> {
+) -> Result<Json<Requested>> {
 	request_delete(&authed, &state, Kind::Domain, id).await
 }
 
@@ -644,7 +679,7 @@ async fn delete_database_route(
 	authed: Authed,
 	State(state): State<AppState>,
 	Path(id): Path<i64>,
-) -> Result<Json<String>> {
+) -> Result<Json<Requested>> {
 	request_delete(&authed, &state, Kind::Database, id).await
 }
 
@@ -652,7 +687,7 @@ async fn delete_group_route(
 	authed: Authed,
 	State(state): State<AppState>,
 	Path(id): Path<i64>,
-) -> Result<Json<String>> {
+) -> Result<Json<Requested>> {
 	request_delete(&authed, &state, Kind::Group, id).await
 }
 
@@ -660,7 +695,7 @@ async fn delete_mail_domain_route(
 	authed: Authed,
 	State(state): State<AppState>,
 	Path(id): Path<i64>,
-) -> Result<Json<String>> {
+) -> Result<Json<Requested>> {
 	request_delete(&authed, &state, Kind::MailDomain, id).await
 }
 
@@ -668,7 +703,7 @@ async fn delete_mailbox_route(
 	authed: Authed,
 	State(state): State<AppState>,
 	Path(id): Path<i64>,
-) -> Result<Json<String>> {
+) -> Result<Json<Requested>> {
 	request_delete(&authed, &state, Kind::Mailbox, id).await
 }
 
@@ -680,20 +715,47 @@ async fn get_action(
 	Ok(Json(find(&db.conn(), &token)?))
 }
 
-async fn confirm(
-	authed: Authed,
-	State(cfg): State<Arc<Config>>,
-	State(db): State<Db>,
-	State(events): State<Events>,
-	Path(token): Path<String>,
-) -> Result<Json<Outcome>> {
-	let action = find(&db.conn(), &token)?;
+#[derive(Debug, Default, Deserialize)]
+struct ConfirmReq {
+	/// the admin's, for an action that wasn't mailed
+	#[serde(default)]
+	password: String,
+	/// of the authenticator app when the admin has 2FA
+	#[serde(default)]
+	code: String,
+}
+
+/// The link of the mail proves the mailbox, without it the admin's
+/// password and code do.
+async fn check_confirm(
+	db: &Db,
+	authed: &Authed,
+	token: &str,
+	req: &ConfirmReq,
+) -> Result<Action> {
+	let action = find(&db.conn(), token)?;
 	if action.status != "pending" {
 		return Err(Error::Invalid(format!(
 			"this action is {} already",
 			action.status
 		)));
 	}
+	if action.by_password {
+		users::verify_password(db, &authed.user, &req.password).await?;
+		users::verify_code(db, &authed.user, &req.code).await?;
+	}
+	Ok(action)
+}
+
+async fn confirm(
+	authed: Authed,
+	State(cfg): State<Arc<Config>>,
+	State(db): State<Db>,
+	State(events): State<Events>,
+	Path(token): Path<String>,
+	Json(req): Json<ConfirmReq>,
+) -> Result<Json<Outcome>> {
+	let action = check_confirm(&db, &authed, &token, &req).await?;
 	let outcome = execute(&cfg, &db, &action, &authed.user.name).await?;
 	events.send(Event::Tree);
 	Ok(Json(outcome))
@@ -768,5 +830,42 @@ mod tests {
 		.unwrap();
 		assert_eq!(find(&conn, "tok").unwrap().status, "expired");
 		assert!(matches!(find(&conn, "other"), Err(Error::NotFound)));
+	}
+
+	#[tokio::test]
+	async fn without_mail_the_password_confirms() {
+		let db = Db::memory();
+		let cfg: Config =
+			toml::from_str("domain = 'panel.example.ch'").unwrap();
+		crate::db::set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#)
+			.unwrap();
+		db.conn()
+			.execute_batch(
+				"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+				INSERT INTO domain_groups (name, client_id, created_at)
+					VALUES ('shop', 1, 0);",
+			)
+			.unwrap();
+		let hash = users::hash_password("admin password").unwrap();
+		let user =
+			users::create(&db.conn(), "a@example.ch", "A", &hash).unwrap();
+		let authed = Authed {
+			token: String::new(),
+			user,
+		};
+
+		let req = request(&cfg, &db, Kind::Group, 1, "A").await.unwrap();
+		let path = req.confirm.unwrap();
+		assert!(req.message.contains("https://panel.example.ch/confirm/"));
+		let token = path.strip_prefix("/confirm/").unwrap();
+		assert!(find(&db.conn(), token).unwrap().by_password);
+
+		let none = ConfirmReq::default();
+		assert!(check_confirm(&db, &authed, token, &none).await.is_err());
+		let right = ConfirmReq {
+			password: "admin password".into(),
+			code: String::new(),
+		};
+		check_confirm(&db, &authed, token, &right).await.unwrap();
 	}
 }

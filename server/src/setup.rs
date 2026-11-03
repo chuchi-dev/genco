@@ -164,6 +164,14 @@ async fn inventory() -> String {
 		let value = sh(cmd).await.unwrap_or_else(|e| format!("({e})"));
 		out.push_str(&format!("{label}: {value}\n"));
 	}
+	// many cloud hosts block it, then only a relay gets mail out
+	let port25 = if crate::mail::port25_blocked().await {
+		"seems blocked (common at cloud hosts like Infomaniak): use an SMTP \
+		relay in Settings → Mail"
+	} else {
+		"open"
+	};
+	out.push_str(&format!("Outgoing port 25: {port25}\n"));
 	out
 }
 
@@ -496,9 +504,9 @@ fn domain_for_mail(config_path: &Path, domain: &Option<String>) -> String {
 }
 
 /// Only on localhost: it delivers directly or through the relay set in
-/// Settings → Mail, which this doesn't touch. The sites' PHP sends with
-/// msmtp to it, postfix's own sendmail needs setgid, which their sandbox
-/// doesn't allow.
+/// Settings → Mail, which this doesn't touch; the relay's login needs
+/// the SASL modules. The sites' PHP sends with msmtp to it, postfix's
+/// own sendmail needs setgid, which their sandbox doesn't allow.
 async fn postfix(domain: String) -> Result<(), String> {
 	sh(&format!(
 		"echo 'postfix postfix/main_mailer_type select Internet Site' \
@@ -506,7 +514,7 @@ async fn postfix(domain: String) -> Result<(), String> {
 		| debconf-set-selections"
 	))
 	.await?;
-	apt(&["postfix", "msmtp"]).await?;
+	apt(&["postfix", "msmtp", crate::mail::SASL_PACKAGE]).await?;
 	sh(&format!(
 		"postconf -e 'inet_interfaces = loopback-only' 'myhostname = {domain}' \
 		'mydestination = localhost' 'smtp_tls_security_level = may' \

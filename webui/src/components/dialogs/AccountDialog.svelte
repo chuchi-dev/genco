@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { post, type User } from '@/lib/api';
 	import { message } from '@/lib/dialogs.svelte';
+	import { mail } from '@/lib/mail.svelte';
 	import { session } from '@/lib/session.svelte';
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
@@ -31,8 +32,12 @@
 
 <Dialog title="Change Email" icon="key" {onclose}>
 	<p class="hint">
-		A new email needs the link mailed to it, then the old address gets a
-		mail about the change.
+		{#if mail.off}
+			Mail is off, a new email counts right away.
+		{:else}
+			A new email needs the link mailed to it, then the old address gets a
+			mail about the change.
+		{/if}
 	</p>
 	<Form onsubmit={save} oncancel={onclose}>
 		<label for="acc-name">Name:</label>

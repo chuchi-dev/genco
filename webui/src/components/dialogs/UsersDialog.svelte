@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { get, post, type User } from '@/lib/api';
 	import { message, confirmDelete } from '@/lib/dialogs.svelte';
+	import { mail } from '@/lib/mail.svelte';
 	import { session } from '@/lib/session.svelte';
 	import Button from '../win/Button.svelte';
 	import Dialog from '../win/Dialog.svelte';
@@ -140,7 +141,10 @@
 			{/if}
 		</Form>
 	{:else}
-		<p class="hint">Every user is an admin of this server.</p>
+		<p class="hint">
+			Every user is an admin of this server.
+			{#if mail.off}Mail is off, so add them with a password.{/if}
+		</p>
 		<ListView
 			items={users}
 			key={u => u.id}
@@ -156,9 +160,11 @@
 		</ListView>
 		{#if error}<p class="error">{error}</p>{/if}
 		<div class="row-buttons">
-			<Button onclick={() => (adding = 'invite')}>Invite…</Button>
+			<Button onclick={() => (adding = 'invite')} disabled={mail.off}>
+				Invite…
+			</Button>
 			<Button onclick={() => (adding = 'password')}>Add…</Button>
-			<Button onclick={reinvite} disabled={selected === null}>
+			<Button onclick={reinvite} disabled={selected === null || mail.off}>
 				Send Link
 			</Button>
 			<Button onclick={remove} disabled={!canRemove}>Remove</Button>

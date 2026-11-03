@@ -11,6 +11,7 @@
 
 <script lang="ts">
 	import { type DnsRecord, type Mailbox } from '@/lib/api';
+	import { mail } from '@/lib/mail.svelte';
 	import {
 		message,
 		requestDelete,
@@ -54,6 +55,13 @@
 		if (deleted) selectedForward = null;
 	}
 </script>
+
+{#if mail.off}
+	<p class="error">
+		Sending is off: mail is off in Start → Settings → Mail. The mailboxes
+		stay as they are.
+	</p>
+{/if}
 
 <dl class="props">
 	<dt>Mail domain:</dt>

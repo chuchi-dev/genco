@@ -134,6 +134,21 @@ pub(super) async fn webmail_service(
 	}
 }
 
+/// The relay's login needs the SASL modules.
+pub(super) async fn relay_sasl(r: &mut Report, db: &Db) {
+	if !crate::mail::settings(db).is_ok_and(|s| s.mode == "relay") {
+		return;
+	}
+	match crate::mail::ensure_sasl().await {
+		Ok(true) => {
+			r.info("installed the SASL modules for the relay's login");
+			r.run(&["postfix", "reload"]).await;
+		}
+		Ok(false) => {}
+		Err(e) => r.error(format!("SASL modules for the relay: {e}")),
+	}
+}
+
 /// The users and directories mail needs, before its files are written.
 pub(super) async fn prepare_mail(r: &mut Report, groups: &[Group]) {
 	// genco's own mails are signed with or without mail domains

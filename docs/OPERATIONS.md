@@ -106,6 +106,9 @@ into the server's config, and the CLI does the same:
 | Restart a Node or Rust app without downtime | `genco domain set <name> --zero-downtime true`, then `genco apply` (see below) |
 | Which sender domains apps may use (SPF) | `genco mail senders` |
 | DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
+| Send genco's mails through a relay as its account | Settings → Mail → Through an SMTP relay, Sender `ie@example.ch` (From and bounce address; signed by genco only as the panel's own domain) |
+| Why a mail doesn't arrive | Settings → Mail → Send Test Mail waits for postfix and shows its reason (deferred, bounced, a failed relay login); it also says when outgoing port 25 seems blocked (`genco setup` checks it too) |
+| A server without mail (port 25 blocked, no relay) | Settings → Mail → No mail: deletions are confirmed in the panel with password and 2FA code, no invites, no new mail domains, reports only in the panel and webhooks |
 | A PostgreSQL database | `genco database add <name> --group <g> --postgres`, then `genco apply` (installs PostgreSQL the first time) |
 | Environment variables of an app | `genco domain env <name> --set NAME=value --secret NAME=value --unset NAME`, then `genco apply` |
 | A stored password (Start → Passwords) | `genco secret list`, `genco secret show <name>` |
@@ -120,7 +123,8 @@ into the server's config, and the CLI does the same:
 | Go back to an older genco | `genco update --yes --version 0.1.2`, or `cp /usr/local/bin/genco.previous /usr/local/bin/genco && systemctl restart genco` |
 
 Delete commands only send the admins a confirmation mail; the deletion
-happens when someone opens the link.
+happens when someone opens the link. With mail off they print the link
+instead, an admin confirms it there with their password.
 
 `genco apply` never takes over a database it didn't create: when a
 PostgreSQL or MariaDB database of a genco database's name exists already
@@ -447,7 +451,7 @@ round, weekly security review), the minute checks' alerts and update
 notices.
 
 - **Mail** (Settings → Notifications): the reports that need attention
-  go to every admin.
+  go to every admin, not with mail off in Settings → Mail.
 - **Webhooks** of AI agents (Start → AI Agents): an `https://` address
   per agent. genco POSTs JSON with the agent's key as
   `Authorization: Bearer <key>`, the reports that need attention, or all
@@ -491,7 +495,9 @@ agent may:
   `approver` every admin does; any admin decides. With
   `"mailDelay": 10` the mail goes only if nobody decided within 10
   minutes (at most 1440), meanwhile the taskbar shows "1 to approve" to
-  every admin. The task waits in the Proposals tab (it shows who got
+  every admin. With mail off (Settings → Mail) no mail goes out, the
+  answer has a `note` saying so and only the taskbar shows it. The task
+  waits in the Proposals tab (it shows who got
   the mail) until it is approved or rejected, it expires after
   7 days. Approved, it becomes a conversation of the
   server agent; when the agent is done, its answer goes to the agent's

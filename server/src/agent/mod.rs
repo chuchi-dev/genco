@@ -553,7 +553,8 @@ impl Runner {
 				"{{notes_path}}",
 				&self.0.cfg.notes_path().display().to_string(),
 			)
-			.replace("{{inventory}}", crate::setup::INVENTORY);
+			.replace("{{inventory}}", crate::setup::INVENTORY)
+			.replace("{{mail_mode}}", &mail_mode(&self.0.db));
 		format!("{ctn}\n\n# Your notes\n\n{notes}")
 	}
 
@@ -571,6 +572,17 @@ impl Runner {
 			}
 			Err(e) => tracing::error!("failed to set status: {e}"),
 		}
+	}
+}
+
+/// Settings → Mail in a few words, off changes what the agent can do.
+fn mail_mode(db: &Db) -> String {
+	match crate::mail::settings(db).map(|s| s.mode).as_deref() {
+		Ok("off") => "off, genco sends no mail: no invites, no new mail \
+			domains, reports only reach the panel and webhooks"
+			.into(),
+		Ok("relay") => "through an SMTP relay".into(),
+		_ => "direct delivery".into(),
 	}
 }
 

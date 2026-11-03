@@ -1,9 +1,11 @@
 <script lang="ts" module>
+	import { mail } from '@/lib/mail.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
-	// the tree of the explorer, loaded once, events keep it fresh
+	// the tree of the explorer, loaded once, events keep it fresh; the
+	// mail mode decides which menus work
 	export async function loadProps() {
-		if (!tree.loaded) await tree.load();
+		await Promise.all([tree.loaded || tree.load(), mail.load()]);
 	}
 </script>
 

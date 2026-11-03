@@ -220,7 +220,13 @@ pub async fn ensure_smtp_logins(db: &Db) -> Result<()> {
 	Ok(())
 }
 
+/// Not with mail off: its mailboxes couldn't send.
 fn add_domain(conn: &Connection, group_id: i64, name: &str) -> Result<i64> {
+	if crate::mail::is_off(conn) {
+		return Err(crate::mail::off_error(
+			"a mail domain can't send; turn mail on first",
+		));
+	}
 	let name = name.trim().to_lowercase();
 	hosting::check_domain_name(&name)?;
 	conn.execute(
@@ -360,5 +366,23 @@ mod tests {
 		assert!(check_local_part("a..b").is_err());
 		assert!(check_local_part("a b").is_err());
 		assert!(check_local_part("Ä").is_err());
+	}
+
+	#[test]
+	fn no_mail_domain_with_mail_off() {
+		let db = crate::db::Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+				VALUES ('shop', 1, 0);",
+		)
+		.unwrap();
+		crate::db::set_setting(&conn, "mail", r#"{"mode":"off"}"#).unwrap();
+		let refused = add_domain(&conn, 1, "shop.ch").unwrap_err();
+		assert!(refused.to_string().contains("mail is off"));
+
+		crate::db::set_setting(&conn, "mail", r#"{"mode":"direct"}"#).unwrap();
+		add_domain(&conn, 1, "shop.ch").unwrap();
 	}
 }

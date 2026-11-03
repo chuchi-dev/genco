@@ -150,6 +150,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 	};
 	let blocked = blocked(&mut r, db);
 	let old_names = crate::panel::old_names(&db.conn());
+	relay_sasl(&mut r, db).await;
 
 	for g in &groups {
 		ensure_user(&mut r, g).await;

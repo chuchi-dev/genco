@@ -599,7 +599,8 @@ struct AccountResp {
 /// An admin changes their own name, and email: the new one only counts
 /// once the link mailed to it is opened, then the old address hears of
 /// it. With 2FA a stolen session and password alone can't move the
-/// account and its confirmation mails away.
+/// account and its confirmation mails away. With mail off no link can
+/// go, password and code change it right away.
 async fn change_account(
 	authed: Authed,
 	State(cfg): State<Arc<Config>>,
@@ -611,6 +612,10 @@ async fn change_account(
 	let (email, name) = normalize(&req.email, &req.name)?;
 
 	let confirm_sent = if email == user.email {
+		None
+	} else if mail::off(&db) {
+		verify_code(&db, &user, &req.code).await?;
+		set_email(&db.conn(), user.id, &email)?;
 		None
 	} else {
 		verify_code(&db, &user, &req.code).await?;
@@ -644,6 +649,17 @@ fn request_email(
 		params![email, tokens::hash(&token), now() + EMAIL_LINK_MS, user_id],
 	)?;
 	Ok(token)
+}
+
+/// The admin's email without a link, a pending one is dropped.
+fn set_email(conn: &Connection, user_id: i64, email: &str) -> Result<()> {
+	email_free(conn, email)?;
+	conn.execute(
+		"UPDATE users SET email = ?1, new_email = NULL, new_email_hash = NULL,
+		new_email_expires = NULL WHERE id = ?2",
+		params![email, user_id],
+	)?;
+	Ok(())
 }
 
 fn email_free(conn: &Connection, email: &str) -> Result<()> {
@@ -681,7 +697,8 @@ async fn send_email_link(
 		old = user.email,
 	);
 	let subject = format!("Confirm your admin email on {domain}");
-	if let Err(e) = mail::send(cfg, &[email.into()], &subject, &body).await {
+	if let Err(e) = mail::send(cfg, db, &[email.into()], &subject, &body).await
+	{
 		db.conn().execute(
 			"UPDATE users SET new_email = NULL, new_email_hash = NULL,
 			new_email_expires = NULL WHERE id = ?1",
@@ -749,7 +766,9 @@ async fn confirm_email_link(
 		email = user.email,
 	);
 	let subject = format!("Your admin email on {domain} was changed");
-	if let Err(e) = mail::send(&cfg, &[old], &subject, &body).await {
+	if !mail::off(&db)
+		&& let Err(e) = mail::send(&cfg, &db, &[old], &subject, &body).await
+	{
 		tracing::error!("mail about the changed email of {}: {e}", user.id);
 	}
 	Ok(Json(user))
@@ -773,6 +792,9 @@ async fn invite(
 	State(db): State<Db>,
 	Json(req): Json<InviteReq>,
 ) -> Result<Json<User>> {
+	if mail::off(&db) {
+		return Err(mail::off_error("add the admin with a password"));
+	}
 	verify_password(&db, &authed.user, &req.password).await?;
 	// nobody knows this password, the invite sets the real one
 	let hash = hash_password_async(util::random_hex(32)).await?;
@@ -818,7 +840,11 @@ async fn add(
 		.map(|u| u.email)
 		.collect();
 	// without a domain there is no address to send from
-	if let Some(domain) = cfg.domain.as_deref().filter(|_| !others.is_empty()) {
+	if let Some(domain) = cfg
+		.domain
+		.as_deref()
+		.filter(|_| !others.is_empty() && !mail::off(&db))
+	{
 		let body = format!(
 			"{by} added {email} ({name}) as an admin on {domain}.\n\n\
 			If that's news to you, ask {by} about it.\n",
@@ -827,7 +853,7 @@ async fn add(
 			name = user.name,
 		);
 		let subject = format!("New admin on {domain}");
-		if let Err(e) = mail::send(&cfg, &others, &subject, &body).await {
+		if let Err(e) = mail::send(&cfg, &db, &others, &subject, &body).await {
 			tracing::error!("mail about the added admin {}: {e}", user.id);
 		}
 	}
@@ -854,6 +880,11 @@ async fn send_invite(
 	user: &User,
 	by: &str,
 ) -> Result<()> {
+	if mail::off(db) {
+		return Err(mail::off_error(
+			"set a password with `genco user password`",
+		));
+	}
 	let domain = cfg
 		.domain
 		.as_deref()
@@ -874,6 +905,7 @@ async fn send_invite(
 	);
 	mail::send(
 		cfg,
+		db,
 		std::slice::from_ref(&user.email),
 		&format!("Your admin account for {domain}"),
 		&body,
@@ -990,7 +1022,7 @@ fn check_code(
 
 /// The code of the admin's authenticator app when 2FA is on, used up as
 /// at the login; wrong ones count against the same limit.
-async fn verify_code(db: &Db, user: &User, code: &str) -> Result<()> {
+pub async fn verify_code(db: &Db, user: &User, code: &str) -> Result<()> {
 	if !user.totp {
 		return Ok(());
 	}
@@ -1284,6 +1316,53 @@ mod tests {
 		verify_code(&db, &a, &code).await.unwrap();
 		// used up
 		assert!(verify_code(&db, &a, &code).await.is_err());
+	}
+
+	#[tokio::test]
+	async fn without_mail_no_invite_and_the_email_changes_directly() {
+		let db = Db::memory();
+		let cfg: Arc<Config> =
+			Arc::new(toml::from_str("domain = 'panel.example.ch'").unwrap());
+		crate::db::set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#)
+			.unwrap();
+		let hash = hash_password("admin password").unwrap();
+		let admin = create(&db.conn(), "a@example.ch", "A", &hash).unwrap();
+		let authed = || Authed {
+			token: String::new(),
+			user: admin.clone(),
+		};
+
+		let req = InviteReq {
+			email: "b@example.ch".into(),
+			name: "B".into(),
+			password: "admin password".into(),
+		};
+		let invited =
+			invite(authed(), State(cfg.clone()), State(db.clone()), Json(req));
+		assert!(
+			invited
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("mail is off")
+		);
+		assert_eq!(list(&db.conn()).unwrap().len(), 1);
+		let resent = send_invite(&cfg, &db, &admin, "A").await;
+		assert!(resent.is_err());
+
+		let req = AccountReq {
+			email: "new@example.ch".into(),
+			name: "A".into(),
+			password: "admin password".into(),
+			code: String::new(),
+		};
+		let resp =
+			change_account(authed(), State(cfg), State(db.clone()), Json(req))
+				.await
+				.unwrap()
+				.0;
+		assert_eq!(resp.confirm_sent, None);
+		assert_eq!(resp.user.email, "new@example.ch");
 	}
 
 	#[test]

@@ -39,8 +39,9 @@ so keep passwords out of it.
   terminal), set a new one instead if you need it.
 
 - Domains, databases and groups are deleted with `genco domain|database|
-  group delete <name>`: it only mails every admin a link, the deletion
-  runs when one confirms it in the panel (dump or archive to
+  group delete <name>`: it only mails every admin a link (with mail off
+  it prints the link, give it to the admin, who confirms with their
+  password), the deletion runs when one confirms it in the panel (dump or archive to
   /var/backups/genco/trash first). Never delete them another way, never
   drop tables or delete files of a site without an admin's explicit
   confirmation in this conversation for exactly that; back up first.
@@ -254,7 +255,8 @@ field in the panel.
   --target /tmp/restore-x`, a database with `genco restic dump latest
   --tag group:g,db:x /x.sql | mariadb x_restored` (create it first).
 - Mail: postfix listens on localhost only and delivers directly or
-  through the relay of Start → Settings (`postconf relayhost`). PHP's
+  through the relay of Start → Settings (`postconf relayhost`). This
+  server's mode: {{mail_mode}}. PHP's
   mail() sends with msmtp to it; apps like Craft use SMTP on
   127.0.0.1:25 without login. Delivery problems: `journalctl -u postfix`,
   `mailq`.
