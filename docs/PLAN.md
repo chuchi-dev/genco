@@ -322,9 +322,10 @@ Still open:
   (.env) too. Narrower (ACLs on the web roots only) breaks uploads in
   `shared/` behind links (Craft's web/assets): needs a model per shared
   folder first.
-- An app restart (deploy, rollback) answers 502 for about a second
-  unless the domain has "Restart without downtime" (opt-in, two slots);
-  Apply Changes still restarts in place.
+- An app restart (deploy, rollback) answers 502 for a few seconds
+  unless the domain has "Restart without downtime" (opt-in since 0.6.0,
+  two slots; a Node site on a move showed it); Apply Changes still
+  restarts in place.
 - Drop-down menus (Start, Run, conversations) could share one component.
 - A group's PostgreSQL role sees the names of the other databases
   (pg_database), not their content. Kept (2026-11-03): hiding them means
@@ -336,6 +337,29 @@ Still open:
   release; the deploy fails and says so. Kept on purpose (operator,
   2026-11-03): no automatic rollback, the admin rolls back in the Deploy
   tab or deploys a fix.
+- Rspamd + Redis only when needed (operator, 2026-11-03): genco setup
+  installs and starts them unconditionally; on a 3.8 GB server without
+  mail domains rspamd took 5 processes and ~600 MB. Start them (and the
+  milter settings) with the first mail domain, stop them without one.
+- postfix inet_interfaces: setup and every apply set loopback-only
+  without mail domains; Docker containers sending through
+  host.docker.internal:25 (172.17.0.1) lose their mail, and a manual
+  change is reset by the next apply. Allow the docker bridge (listen on
+  it, mynetworks) while containers need it, or keep a manual setting.
+- DNS checks: dns::dig takes the first name server's answer with
+  +norecurse, also an empty one from a lame server (a delegated server
+  that doesn't serve the zone): a domain got "no DNS record" and no
+  certificate. Treat empty/REFUSED/non-authoritative (no aa flag)
+  answers as no answer and try the next server.
+- Renaming the panel (done by hand by the agents on two servers): a
+  command that sets the domain and /etc/mailname, keeps the old name as
+  a 308 redirect with /api/ passed through (runners and CI don't follow
+  redirects), tells the runners, removes old certificates and shows the
+  new DNS records.
+- Moving a site with a database: an app's first start after `genco
+  database add` runs its migrations on the empty database and restoring
+  the dump afterwards collides. Document (and maybe check): import the
+  data before the first deploy.
 - Automatic IP blocking (operator, 2026-11-03): not yet. First watch real
   traffic (Top addresses) once sites have moved; then probably the
   agent's health check suggests blocks with a reason instead of fixed
