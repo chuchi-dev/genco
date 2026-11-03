@@ -82,6 +82,9 @@ code {
 	@include sunken;
 	padding: 2px;
 	overflow: auto;
+	// in a flex column (the Explorer's detail pane, dialogs) a scrolling box
+	// shrinks to nothing, so it keeps its height unless it fills (.fill)
+	flex: none;
 
 	table {
 		width: 100%;

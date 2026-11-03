@@ -77,6 +77,7 @@
 		{ label: 'Started' },
 	]}
 	empty="No backups yet."
+	minHeight={110}
 	maxHeight={160}
 >
 	{#snippet row(r)}
@@ -96,7 +97,8 @@
 	items={system}
 	key={s => s.id}
 	columns={[{ label: 'Snapshot' }, { label: 'Time' }, { label: 'Size' }]}
-	empty="None yet."
+	empty="No snapshots yet."
+	minHeight={110}
 	maxHeight={160}
 >
 	{#snippet row(s)}

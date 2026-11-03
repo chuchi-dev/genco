@@ -124,11 +124,6 @@
 <style lang="scss">
 	@use 'styles/win' as *;
 
-	// in the page's column it would shrink to nothing
-	.list-view {
-		flex: none;
-	}
-
 	.mono {
 		font-family: $mono;
 		width: 100%;

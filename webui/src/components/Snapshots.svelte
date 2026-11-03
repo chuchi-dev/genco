@@ -90,6 +90,8 @@
 		{ label: 'Size' },
 	]}
 	empty={snapshots ? 'No backups yet.' : 'Loading…'}
+	minHeight={110}
+	maxHeight={260}
 >
 	{#snippet row(s)}
 		<td><code>{s.id}</code></td>

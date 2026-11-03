@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tree } from '@/lib/tree.svelte';
 	import Icon from '@/components/win/Icon.svelte';
+	import ListView from '@/components/win/ListView.svelte';
 	import Backups from '@/components/Backups.svelte';
 	import Usage from '@/components/Usage.svelte';
 	import Costs from '@/components/Costs.svelte';
@@ -25,32 +26,20 @@
 	<dd>{databases}</dd>
 </dl>
 
-<div class="list-view">
-	<table>
-		<thead>
-			<tr>
-				<th>Client</th>
-				<th>Contact</th>
-				<th>Groups</th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each tree.clients as c (c.id)}
-				<tr>
-					<td><a href="/clients/{c.id}">{c.name}</a></td>
-					<td>{c.contact}</td>
-					<td>{c.groups.map(g => g.name).join(', ')}</td>
-				</tr>
-			{:else}
-				<tr>
-					<td colspan="3" class="empty">
-						No clients yet. Use File → New Client, or ask the agent.
-					</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
-</div>
+<ListView
+	items={tree.clients}
+	key={c => c.id}
+	columns={[{ label: 'Client' }, { label: 'Contact' }, { label: 'Groups' }]}
+	empty="No clients yet. Use File → New Client, or ask the agent."
+	minHeight={110}
+	maxHeight={260}
+>
+	{#snippet row(c)}
+		<td><a href="/clients/{c.id}">{c.name}</a></td>
+		<td>{c.contact}</td>
+		<td>{c.groups.map(g => g.name).join(', ')}</td>
+	{/snippet}
+</ListView>
 
 <h3 class="section">Usage</h3>
 <Usage scope="server" />
