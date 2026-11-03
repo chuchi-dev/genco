@@ -409,6 +409,23 @@ async fn mariadb() -> Result<(), String> {
 	Ok(())
 }
 
+/// The domains' nginx logs, rotated like Debian's /var/log/nginx/*.log.
+const NGINX_LOGROTATE: &str = "# written by genco
+/var/log/nginx/genco/*.log {
+	daily
+	missingok
+	rotate 14
+	compress
+	delaycompress
+	notifempty
+	create 0640 www-data adm
+	sharedscripts
+	postrotate
+		invoke-rc.d nginx rotate >/dev/null 2>&1
+	endscript
+}
+";
+
 async fn nginx() -> Result<(), String> {
 	for dir in [
 		"/etc/nginx/genco",
@@ -455,6 +472,9 @@ server {
 include /etc/nginx/genco/*.conf;
 ",
 	)?;
+
+	// Debian's rule only rotates /var/log/nginx/*.log
+	write("/etc/logrotate.d/genco", NGINX_LOGROTATE)?;
 
 	// the debian default site and the panel site of earlier installs
 	sh(
@@ -622,4 +642,22 @@ WantedBy=multi-user.target
 	)?;
 	sh("systemctl daemon-reload && systemctl enable -q genco").await?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn nginx_logs_of_the_domains_are_rotated() {
+		let conf = NGINX_LOGROTATE;
+		assert!(
+			conf.starts_with(
+				"# written by genco\n/var/log/nginx/genco/*.log {"
+			)
+		);
+		assert!(conf.contains("rotate 14"));
+		assert!(conf.contains("create 0640 www-data adm"));
+		assert!(conf.contains("invoke-rc.d nginx rotate"));
+	}
 }

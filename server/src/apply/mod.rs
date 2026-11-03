@@ -369,6 +369,7 @@ async fn remove_stale(r: &mut Report, keep: &HashSet<&Path>) -> Vec<String> {
 		("/etc/genco/workers", "", ".sh"),
 		("/etc/genco/schedules", "", ".sh"),
 		("/etc/genco/smtp", "g-", ""),
+		("/etc/logrotate.d", "genco-", ""),
 		("/etc/systemd/system", "genco-", ".service"),
 		("/etc/systemd/system", "genco-", ".slice"),
 		("/etc/systemd/system", "genco-", ".timer"),

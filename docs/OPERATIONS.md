@@ -350,7 +350,7 @@ You need:
 | PHP pools / app scripts | `/etc/genco/php/`, `/etc/genco/apps/` |
 | Server inventory before genco | `/var/lib/genco/inventory.txt`, old firewall `/etc/nftables.conf.before-genco` |
 | Deleted via the panel (30 days) | `/var/backups/genco/trash` |
-| Logs | `journalctl -u genco`, `journalctl -u genco-backup`, `/srv/genco/<group>/logs` |
+| Logs | `journalctl -u genco`, `journalctl -u genco-backup`, `/srv/genco/<group>/logs`, per domain `/var/log/nginx/genco/<domain>.access.log` and `.error.log`; logrotate keeps 14 days (`/etc/logrotate.d/genco`, `genco-<group>`) |
 
 ## 6. Notifications and the agent's model
 

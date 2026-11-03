@@ -348,7 +348,35 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 		});
 	}
 
+	files.push(File {
+		path: PathBuf::from(format!("/etc/logrotate.d/genco-{g}")),
+		content: logrotate(g),
+		private_to: None,
+	});
+
 	files
+}
+
+/// The group's own logs (php-fpm, PHP errors). As the group's user: the
+/// directory is theirs. php-fpm and PHP append, so a copy and truncate
+/// needs no reopen.
+fn logrotate(g: &str) -> String {
+	format!(
+		"{HEADER}
+{dir}/logs/*.log {{
+	su {user} {user}
+	daily
+	missingok
+	rotate 14
+	compress
+	delaycompress
+	notifempty
+	copytruncate
+}}
+",
+		dir = group_dir(g).display(),
+		user = group_user(g),
+	)
 }
 
 /// The panel itself, proxied to genco's listen address.
@@ -993,6 +1021,18 @@ mod tests {
 		assert!(unit.contains("SocketBindDeny=any"));
 		assert!(!unit.contains("SocketBindAllow"));
 		assert!(site.contains("disable_symlinks if_not_owner;"));
+	}
+
+	#[test]
+	fn group_logs_are_rotated_as_the_group() {
+		let g = group(vec![domain(1, "shop.ch", Kind::Php)]);
+		let files = group_files(&g, &HashSet::new());
+
+		let conf = find(&files, "/etc/logrotate.d/genco-shop");
+		assert!(conf.contains("/srv/genco/shop/logs/*.log {"));
+		assert!(conf.contains("su g-shop g-shop"));
+		assert!(conf.contains("rotate 14"));
+		assert!(conf.contains("copytruncate"));
 	}
 
 	#[test]
