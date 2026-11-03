@@ -82,7 +82,9 @@
 				'Can’t Open',
 				e.broken
 					? `${e.name}: its target is missing`
-					: `${e.name} leads out of ${group.dir}`,
+					: e.unresolved
+						? `${e.name}: can’t resolve where it leads`
+						: `${e.name} leads out of ${group.dir}`,
 			);
 		const p = e.real ?? join(e.name);
 		if (e.dir) return go(urlFor(p));

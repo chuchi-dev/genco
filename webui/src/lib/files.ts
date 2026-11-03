@@ -13,6 +13,8 @@ export type FileEntry = {
 	broken: boolean;
 	/** where a link leads in the group, null for one out of it */
 	real: string | null;
+	/** a link that couldn't be resolved, real says nothing then */
+	unresolved: boolean;
 	/** the file manager doesn't change where the link leads */
 	realReadOnly: boolean;
 	/// deploys or tools write it, see READ_ONLY on the server

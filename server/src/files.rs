@@ -117,6 +117,8 @@ pub struct Entry {
 	/// where a link leads inside the group's directory, opening the link
 	/// goes there; `None` for a link out of the group
 	pub real: Option<String>,
+	/// a link that couldn't be resolved, so `real` says nothing
+	pub unresolved: bool,
 	/// the file manager doesn't change where the link leads
 	pub real_read_only: bool,
 	/// the file manager doesn't change it, see `READ_ONLY`
@@ -156,6 +158,7 @@ fn parse_entry(line: &str) -> Option<Entry> {
 		target: (!link.is_empty()).then(|| link.to_string()),
 		broken: y == "l" && matches!(target_y, "N" | "L"),
 		real: None,
+		unresolved: false,
 		real_read_only: false,
 		read_only: false,
 	})
@@ -173,32 +176,47 @@ fn real_path(group: &Group, real: &str) -> Option<String> {
 	Some(rel.to_str()?.to_string())
 }
 
+/// Splits the NUL separated output of `realpath -z`, one entry per link
+/// and an empty one where resolving failed; `None` for a link that
+/// couldn't be resolved, also when the output ends early.
+fn parse_reals(out: &[u8], n: usize) -> Vec<Option<String>> {
+	let mut reals = out.split(|b| *b == 0);
+	(0..n)
+		.map(|_| {
+			reals
+				.next()
+				.filter(|r| !r.is_empty())
+				.map(|r| String::from_utf8_lossy(r).into_owned())
+		})
+		.collect()
+}
+
 /// Resolves the links of a listing as the group's user, so a link only
 /// leads where the group could go itself.
 async fn resolve_links(g: &Group, dir: &Path, entries: &mut [Entry]) {
-	let links: Vec<PathBuf> = entries
-		.iter()
+	let mut links: Vec<&mut Entry> = entries
+		.iter_mut()
 		.filter(|e| e.kind == "link" && !e.broken)
-		.map(|e| dir.join(&e.name))
 		.collect();
 	if links.is_empty() {
 		return;
 	}
-	let args: Vec<&Path> = links.iter().map(PathBuf::as_path).collect();
-	let Ok(out) = output(as_user(
+	let paths: Vec<PathBuf> = links.iter().map(|e| dir.join(&e.name)).collect();
+	let args: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+	let out = output(as_user(
 		g,
-		r#"for f; do printf '%s\0' "$(realpath -e -- "$f" 2>/dev/null)"; done"#,
+		r#"for f; do realpath -ez -- "$f" 2>/dev/null || printf '\0'; done"#,
 		&args,
 	))
 	.await
-	else {
-		return;
-	};
+	.unwrap_or_default();
 
-	let out = String::from_utf8_lossy(&out);
-	let mut reals = out.split('\0');
-	for e in entries.iter_mut().filter(|e| e.kind == "link" && !e.broken) {
-		e.real = reals.next().and_then(|r| real_path(g, r));
+	let reals = parse_reals(&out, links.len());
+	for (e, real) in links.iter_mut().zip(reals) {
+		match real {
+			Some(r) => e.real = real_path(g, &r),
+			None => e.unresolved = true,
+		}
 		e.real_read_only =
 			e.real.as_deref().is_some_and(|r| read_only(r).is_some());
 	}
@@ -688,5 +706,15 @@ mod tests {
 		assert!(real_path(&g, "/srv/genco/other/shared/.env").is_none());
 		assert!(real_path(&g, "/etc/passwd").is_none());
 		assert!(real_path(&g, "").is_none());
+	}
+
+	#[test]
+	fn parses_resolved_links() {
+		let reals = parse_reals(b"/srv/a\0\0/srv/b\n\0", 4);
+		assert_eq!(
+			reals,
+			[Some("/srv/a".into()), None, Some("/srv/b\n".into()), None]
+		);
+		assert_eq!(parse_reals(b"", 2), [None, None]);
 	}
 }
