@@ -56,9 +56,12 @@ pub(super) async fn deploy(ctx: &Ctx, id: i64, log: &mut Log) -> Res<()> {
 			group
 		}
 	};
+	after = after
+		.map_err(|e| format!("{e}, the new release is live, check the site"));
+	// a failed restart says itself what runs
 	after = after.and(restart(ctx, log, &group).await);
 	prune(&shell, log, &base).await;
-	after.map_err(|e| format!("{e}, the new release is live, check the site"))
+	after
 }
 
 /// A new release of a deploy, from its upload or the repository.

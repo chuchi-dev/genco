@@ -14,6 +14,10 @@ const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// nginx's old workers send what they started to the old process, they
 /// had a moment to finish before it stops.
 const DRAIN: Duration = Duration::from_secs(5);
+/// What a failed switch leaves: `current` already points to the new
+/// release, the next restart or boot would start it.
+const KEEPS: &str = "the old process keeps serving, but current points to \
+	the new release: roll back in the Deploy tab or deploy a fix";
 
 pub(super) struct Switch<'a> {
 	pub(super) domain: &'a Domain,
@@ -24,7 +28,8 @@ pub(super) struct Switch<'a> {
 }
 
 impl Switch<'_> {
-	/// Fails when the new process doesn't come up, the old one stays live.
+	/// Fails when the new process doesn't come up, the old one keeps
+	/// serving.
 	pub(super) async fn run(&self, ctx: &Ctx, log: &mut Log) -> Res<()> {
 		let name = &self.domain.name;
 		// apply writes nginx and the units from the database, it waits
@@ -35,8 +40,7 @@ impl Switch<'_> {
 		systemctl(log, "stop", self.start).await;
 		if listening(self.port).await {
 			return Err(format!(
-				"{name}: port {} is taken by another process, the app \
-				keeps running as it was",
+				"{name}: port {} is taken by another process; {KEEPS}",
 				self.port
 			));
 		}
@@ -44,8 +48,8 @@ impl Switch<'_> {
 		if !self.started().await {
 			self.abort(log).await;
 			return Err(format!(
-				"{name}: the new process didn't listen on port {} within \
-				{} s (journalctl -u {}), the old one stays live",
+				"{name}: the new release didn't listen on port {} within \
+				{} s (journalctl -u {}); {KEEPS}",
 				self.port,
 				START_TIMEOUT.as_secs(),
 				self.start
@@ -56,7 +60,7 @@ impl Switch<'_> {
 		if let Err(e) = point_nginx(ctx, self.domain).await {
 			let _ = set_slot(ctx, self.domain.id, self.to.other());
 			self.abort(log).await;
-			return Err(format!("{name}: {e}, the old process stays live"));
+			return Err(format!("{name}: {e}; {KEEPS}"));
 		}
 		log.line(&format!("nginx sends {name} to port {}", self.port))
 			.await;
@@ -85,6 +89,9 @@ impl Switch<'_> {
 		systemctl(log, "stop", self.start).await;
 		let _ = Command::new("systemctl")
 			.args(["reset-failed", self.start])
+			// mostly the unit isn't failed or loaded, systemctl says so
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
 			.status()
 			.await;
 	}
