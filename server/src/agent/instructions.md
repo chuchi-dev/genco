@@ -284,6 +284,16 @@ field in the panel.
   `/var/log/nginx/genco/<domain>.access.log`: asked which pages are
   called (or answer 404), count them there; admins see them in the
   domain's Usage section.
+- Blocklist: `genco firewall block <ip|cidr> --for 24h --note "..."`
+  drops an address or range on the web, mail and workers' public ports
+  (never ssh), at once and after reboots; `genco firewall list|unblock`,
+  admins use Settings → Firewall. Suggest it for an address that floods
+  a site or scans for what isn't there (/wp-login.php, /.env, /.git).
+  On your own block only with `--for` (24h, 7d at most), say in your
+  answer which address and why, and how to lift it. Ask first for
+  anything that might be an admin's or a client's (an office, a
+  monitoring service, an address in `genco activity`); genco refuses
+  its own addresses and those admins logged in from lately.
 - `genco activity` shows who did what: logins, every change in the
   panel or with an API token, `genco` commands and your tool calls.
 - `{{inventory}}` is what `genco setup` found on the server before it

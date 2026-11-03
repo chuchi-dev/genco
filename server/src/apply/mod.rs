@@ -148,6 +148,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 	let Some((_lock, mut groups)) = locked(&mut r, cfg, db).await else {
 		return r;
 	};
+	let blocked = blocked(&mut r, db);
 
 	for g in &groups {
 		ensure_user(&mut r, g).await;
@@ -156,7 +157,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 			deploy_key(&mut r, g).await;
 		}
 	}
-	sync(&mut r, cfg, &groups).await;
+	sync(&mut r, cfg, &groups, &blocked).await;
 	databases(&mut r, &groups).await;
 
 	// with a new certificate the sites get https, the apps the mail host
@@ -165,7 +166,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 		for g in &mut groups {
 			g.mail_host = host.clone();
 		}
-		sync(&mut r, cfg, &groups).await;
+		sync(&mut r, cfg, &groups, &blocked).await;
 	}
 
 	r.info(if r.ok { "done" } else { "done with errors" });
@@ -174,7 +175,12 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 
 /// Writes the files, removes the ones of deleted domains and groups,
 /// (re)starts the units and reloads nginx and the firewall.
-async fn sync(r: &mut Report, cfg: &Config, groups: &[Group]) {
+async fn sync(
+	r: &mut Report,
+	cfg: &Config,
+	groups: &[Group],
+	blocked: &[String],
+) {
 	let certs = host::certs(groups);
 	let mut files: Vec<File> = groups
 		.iter()
@@ -189,7 +195,7 @@ async fn sync(r: &mut Report, cfg: &Config, groups: &[Group]) {
 	}
 	files.push(File {
 		path: render::FIREWALL.into(),
-		content: render::firewall(groups, cfg.panel_port()),
+		content: render::firewall(groups, cfg.panel_port(), blocked),
 		private_to: None,
 	});
 	prepare_mail(r, groups).await;
@@ -272,6 +278,33 @@ fn write_file(f: &File) -> std::io::Result<()> {
 		.mode(0o600)
 		.open(&f.path)?;
 	file.write_all(f.content.as_bytes())
+}
+
+/// The blocklist's addresses that block now.
+fn blocked(r: &mut Report, db: &Db) -> Vec<String> {
+	crate::firewall::active(&db.conn(), crate::db::now()).unwrap_or_else(|e| {
+		r.error(format!("blocklist: {e}"));
+		vec![]
+	})
+}
+
+/// The firewall only, after the blocklist changed.
+pub async fn apply_firewall(cfg: &Config, db: &Db) -> Report {
+	let mut r = Report::new();
+	let Some((_lock, groups)) = locked(&mut r, cfg, db).await else {
+		return r;
+	};
+	let blocked = blocked(&mut r, db);
+	let file = File {
+		path: render::FIREWALL.into(),
+		content: render::firewall(&groups, cfg.panel_port(), &blocked),
+		private_to: None,
+	};
+	if !write_files(&mut r, &[file]).is_empty() {
+		// atomic: rules nft refuses leave the old ones loaded
+		r.run(&["nft", "-f", render::FIREWALL]).await;
+	}
+	r
 }
 
 /// Mail only, after a mailbox or forward changed: the maps, Dovecot,

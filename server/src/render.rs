@@ -822,7 +822,17 @@ WantedBy=timers.target
 /// login limit is in nginx), Redis, Rspamd and postsrsd.
 const PRIVATE_PORTS: &[u16] = &[6379, 10001, 10002, 11332, 11333, 11334];
 
-pub fn firewall(groups: &[Group], panel_port: u16) -> String {
+/// What blocked addresses can't reach besides the workers' public ports:
+/// the sites and the mail. Never ssh, an admin who blocked themselves gets
+/// in to unblock.
+const BLOCKED_PORTS: &[u16] = &[80, 443, 25, 465, 587, 993];
+
+/// `blocked` are the addresses and ranges of the blocklist (firewall.rs).
+pub fn firewall(
+	groups: &[Group],
+	panel_port: u16,
+	blocked: &[String],
+) -> String {
 	// the input chain of `genco setup` accepts the ports in this set
 	let ports = public_ports(groups);
 	let mut public = "add set inet filter genco_public { type inet_service; }
@@ -867,6 +877,35 @@ flush set inet filter genco_public
 		}
 	}
 
+	let mut sets = String::new();
+	for (name, kind, v6) in [
+		("blocked4", "ipv4_addr", false),
+		("blocked6", "ipv6_addr", true),
+	] {
+		let list: Vec<&str> = blocked
+			.iter()
+			.filter(|a| a.contains(':') == v6)
+			.map(String::as_str)
+			.collect();
+		let elements = if list.is_empty() {
+			String::new()
+		} else {
+			format!("\t\telements = {{ {} }}\n", list.join(", "))
+		};
+		sets.push_str(&format!(
+			"\tset {name} {{\n\t\ttype {kind}; flags interval; auto-merge;\n\
+			{elements}\t}}\n"
+		));
+	}
+	// the ports, never all of them: ssh stays open
+	let dports: Vec<String> = BLOCKED_PORTS
+		.iter()
+		.copied()
+		.chain(ports.iter().copied())
+		.map(|p| p.to_string())
+		.collect();
+	let dports = dports.join(", ");
+
 	format!(
 		"{HEADER}
 {public}
@@ -874,6 +913,13 @@ table inet genco
 delete table inet genco
 
 table inet genco {{
+{sets}
+	# before the input chain of `genco setup` accepts them
+	chain input {{
+		type filter hook input priority filter - 1; policy accept;
+		ip saddr @blocked4 tcp dport {{ {dports} }} drop
+		ip6 saddr @blocked6 tcp dport {{ {dports} }} drop
+	}}
 	chain output {{
 		type filter hook output priority filter; policy accept;
 {rules}	}}
@@ -1002,7 +1048,7 @@ mod tests {
 				.contains("node build/index.js")
 		);
 
-		let fw = firewall(&[g], 4100);
+		let fw = firewall(&[g], 4100, &[]);
 		assert!(
 			fw.contains(
 				"tcp dport 20005 meta skuid != { 0, www-data, g-shop }"
@@ -1029,7 +1075,7 @@ mod tests {
 			find(&files, "/etc/systemd/system/genco-shop-shop.ch_b.service");
 		assert!(b.contains("PORT=30005"));
 		assert!(b.contains("SocketBindAllow=tcp:30005\nSocketBindDeny=any"));
-		let fw = firewall(std::slice::from_ref(&g), 4100);
+		let fw = firewall(std::slice::from_ref(&g), 4100, &[]);
 		assert!(fw.contains("tcp dport 20005 meta skuid"));
 		assert!(fw.contains("tcp dport 30005 meta skuid"));
 
@@ -1045,7 +1091,7 @@ mod tests {
 		let site = find(&files, "/etc/nginx/genco/shop.ch.conf");
 		assert!(site.contains("proxy_pass http://127.0.0.1:20005;"));
 		assert!(!files.iter().any(|f| f.path.ends_with("shop.ch_b.service")));
-		assert!(!firewall(&[g], 4100).contains("30005"));
+		assert!(!firewall(&[g], 4100, &[]).contains("30005"));
 	}
 
 	#[test]
@@ -1189,9 +1235,50 @@ mod tests {
 			find(&files, "/etc/systemd/system/genco-shop-cron-statuses.timer");
 		assert!(t.contains("OnCalendar=*:0/5"));
 
-		let fw = firewall(&[g], 4100);
+		let fw = firewall(&[g], 4100, &[]);
 		assert!(fw.contains("add element inet filter genco_public { 5426 }"));
 		assert!(fw.contains("flush set inet filter genco_public"));
+	}
+
+	#[test]
+	fn blocked_addresses_lose_the_web_mail_and_worker_ports_not_ssh() {
+		let mut g = group(vec![]);
+		g.workers = vec![Worker {
+			id: 2,
+			group_id: 1,
+			name: "packages".into(),
+			dir: "current".into(),
+			command: "./packages-server".into(),
+			port: Some(5426),
+			source: "panel".into(),
+		}];
+		let blocked = [
+			"198.51.100.0/24".to_string(),
+			"203.0.113.7".into(),
+			"2001:db8::/48".into(),
+		];
+		let fw = firewall(&[g], 4100, &blocked);
+
+		assert!(fw.contains(
+			"set blocked4 {\n\t\ttype ipv4_addr; flags interval; auto-merge;\n\
+			\t\telements = { 198.51.100.0/24, 203.0.113.7 }\n"
+		));
+		assert!(fw.contains("elements = { 2001:db8::/48 }"));
+		let drops: Vec<&str> =
+			fw.lines().filter(|l| l.ends_with(" drop")).collect();
+		assert_eq!(drops.len(), 2);
+		for rule in drops {
+			assert!(
+				rule.contains("tcp dport { 80, 443, 25, 465, 587, 993, 5426 }"),
+				"{rule}"
+			);
+			assert!(!rule.contains(" 22,") && !rule.contains(" 22 "));
+		}
+
+		// empty sets have no elements, nft refuses `elements = { }`
+		let fw = firewall(&[], 4100, &[]);
+		assert!(fw.contains("set blocked6 {"));
+		assert!(!fw.contains("elements"));
 	}
 
 	#[test]

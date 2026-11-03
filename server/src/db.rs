@@ -392,6 +392,16 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE domains ADD COLUMN zero_downtime INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE domains ADD COLUMN slot_b INTEGER NOT NULL DEFAULT 0;
 "#,
+	r#"
+	CREATE TABLE firewall_blocks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		address TEXT NOT NULL UNIQUE,
+		note TEXT NOT NULL,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		until INTEGER
+	);
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

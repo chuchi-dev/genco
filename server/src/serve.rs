@@ -206,6 +206,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.merge(stats::routes())
 		.merge(status::routes())
 		.merge(secrets::routes())
+		.merge(firewall::routes())
 		.merge(costs::routes())
 		.merge(imports::routes())
 		.merge(notify::routes())

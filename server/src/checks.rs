@@ -389,6 +389,7 @@ pub fn spawn(
 			crate::routines::due(&db, &runner).await;
 			crate::update::due(&db).await;
 			crate::proposals::due_mails(&cfg, &db).await;
+			crate::firewall::due(&cfg, &db).await;
 		}
 	});
 }

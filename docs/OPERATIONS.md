@@ -108,6 +108,7 @@ into the server's config, and the CLI does the same:
 | A PostgreSQL database | `genco database add <name> --group <g> --postgres`, then `genco apply` (installs PostgreSQL the first time) |
 | Environment variables of an app | `genco domain env <name> --set NAME=value --secret NAME=value --unset NAME`, then `genco apply` |
 | A stored password (Start → Passwords) | `genco secret list`, `genco secret show <name>` |
+| Block an address or range from the sites and mail (never ssh) | `genco firewall block 203.0.113.7 [--for 24h] [--note "..."]`, `genco firewall unblock <ip|cidr>`, `genco firewall list`; Settings → Firewall (see below) |
 | Reset an admin's password | `genco user password <email>` (reads the password from stdin) |
 | An admin lost their authenticator | `genco user totp-off <email>` |
 | Who did what (panel, tokens, agent, terminal) | `genco activity [--limit 200]` |
@@ -119,6 +120,16 @@ into the server's config, and the CLI does the same:
 
 Delete commands only send the admins a confirmation mail; the deletion
 happens when someone opens the link.
+
+The blocklist (Settings → Firewall, `genco firewall`) drops IPv4 and
+IPv6 addresses or ranges on ports 80, 443, 25, 465, 587, 993 and the
+workers' public ports, never on ssh. A change loads at once (genco's
+nftables table in `/etc/genco/nftables.conf`, which `/etc/nftables.conf`
+includes at boot); an entry with an end (`--for 24h`, `7d`) is removed
+by the minute check. Ranges broader than /16 (IPv4) or /32 (IPv6),
+loopback, the server's own addresses and those admins logged in from in
+the last 30 days are refused. Locked out of the panel by a block: ssh
+in and run `genco firewall unblock <address>`.
 
 If the panel itself is down:
 

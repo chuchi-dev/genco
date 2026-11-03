@@ -27,7 +27,8 @@ const MAX_BODY: usize = 64 * 1024;
 const MAX_JSON: usize = 2 * 1024 * 1024;
 /// fields of a request body that tell what an action was about, never
 /// passwords or contents
-const FIELDS: &[&str] = &["name", "email", "path", "from", "to", "ref"];
+const FIELDS: &[&str] =
+	&["name", "email", "path", "from", "to", "ref", "address"];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,6 +139,8 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("POST", "/secrets/*", "Change password entry"),
 		("DELETE", "/secrets/*", "Delete password"),
 		("GET", "/secrets/*/value", "Show password"),
+		("POST", "/firewall/blocks", "Block address"),
+		("DELETE", "/firewall/blocks/*", "Unblock address"),
 		("POST", "/tokens", "Create API token"),
 		("DELETE", "/tokens/*", "Delete API token"),
 		("POST", "/settings/mail", "Change mail settings"),
@@ -194,6 +197,11 @@ fn target(conn: &Connection, path: &str) -> String {
 		// names in the path, e.g. a database dump or a routine
 		return match kind {
 			"databases" | "routines" => id.to_string(),
+			"firewall" => segments
+				.next()
+				.and_then(|id| id.parse().ok())
+				.and_then(|id| crate::firewall::address(conn, id))
+				.unwrap_or_default(),
 			_ => String::new(),
 		};
 	};

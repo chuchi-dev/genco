@@ -19,6 +19,7 @@ mod dumps;
 mod error;
 mod events;
 mod files;
+mod firewall;
 mod host;
 mod hosting;
 mod imports;
@@ -149,6 +150,9 @@ pub(crate) enum Cmd {
 	/// Passwords the admins see in the panel (Start → Passwords)
 	#[clap(subcommand)]
 	Secret(secrets::SecretCmd),
+	/// Block addresses from the sites, mail and workers (never ssh)
+	#[clap(subcommand)]
+	Firewall(firewall::FirewallCmd),
 	/// Print the activity log, newest last
 	Activity {
 		#[clap(long, default_value_t = 50)]
@@ -199,6 +203,7 @@ impl Cmd {
 						| mailbox::MailCmd::Dns { .. }
 						| mailbox::MailCmd::Senders
 				) | Cmd::Secret(secrets::SecretCmd::List)
+				| Cmd::Firewall(firewall::FirewallCmd::List)
 				| Cmd::Activity { .. }
 				| Cmd::Update { .. }
 				| Cmd::Runners(RunnersCmd::List)
@@ -397,6 +402,14 @@ async fn run(args: Args) -> Result<(), String> {
 		}
 		Cmd::Secret(cmd) => {
 			edit(cfg, |conn| secrets::cli(conn, cmd, read_password))
+		}
+		Cmd::Firewall(cmd) => {
+			let db = Db::open(&cfg.db_path())?;
+			let msg = firewall::cli(&cfg, &db, cmd)
+				.await
+				.map_err(|e| e.to_string())?;
+			println!("{msg}");
+			Ok(())
 		}
 		Cmd::Mail(cmd) => {
 			let db = Db::open(&cfg.db_path())?;

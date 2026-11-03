@@ -2,6 +2,7 @@
 	import Dialog from '../win/Dialog.svelte';
 	import Tabs from '../win/Tabs.svelte';
 	import AgentSettings from './AgentSettings.svelte';
+	import FirewallSettings from './FirewallSettings.svelte';
 	import MailSettings from './MailSettings.svelte';
 	import NotifySettings from './NotifySettings.svelte';
 	import RunnerSettings from './RunnerSettings.svelte';
@@ -15,6 +16,7 @@
 		{ id: 'agent', label: 'Agent' },
 		{ id: 'update', label: 'Updates' },
 		{ id: 'runners', label: 'Runners' },
+		{ id: 'firewall', label: 'Firewall' },
 	];
 	let tab = $state('mail');
 </script>
@@ -28,6 +30,7 @@
 		<div class="tab" hidden={tab !== 'agent'}><AgentSettings /></div>
 		<div class="tab" hidden={tab !== 'update'}><UpdateSettings /></div>
 		<div class="tab" hidden={tab !== 'runners'}><RunnerSettings /></div>
+		<div class="tab" hidden={tab !== 'firewall'}><FirewallSettings /></div>
 	</Tabs>
 </Dialog>
 
