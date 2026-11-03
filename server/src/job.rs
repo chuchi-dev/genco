@@ -16,13 +16,15 @@ pub struct Log {
 	print: bool,
 	/// false once an error was logged
 	pub ok: bool,
+	/// written as *** wherever they show up (credentials in a repo URL)
+	hidden: Vec<String>,
 }
 
 /// The longest line and the most output a step logs.
 const MAX_LINE: u64 = 8 * 1024;
 const MAX_LOG: usize = 10 * 1024 * 1024;
 
-pub fn path(dir: &str, id: i64) -> PathBuf {
+fn path(dir: &str, id: i64) -> PathBuf {
 	Path::new(dir).join(format!("{id}.log"))
 }
 
@@ -31,6 +33,26 @@ pub async fn read(dir: &str, id: i64) -> String {
 	tokio::fs::read_to_string(path(dir, id))
 		.await
 		.unwrap_or_default()
+}
+
+/// The log of a run from byte `offset` on and where the next read
+/// starts (a CI job following a deploy).
+pub async fn read_from(dir: &str, id: i64, offset: u64) -> (String, u64) {
+	use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+	let Ok(mut file) = tokio::fs::File::open(path(dir, id)).await else {
+		return (String::new(), 0);
+	};
+	let len = file.metadata().await.map_or(0, |m| m.len());
+	// only what is new, a CI job asks every few seconds
+	let start = offset.min(len);
+	let mut new = vec![];
+	if file.seek(std::io::SeekFrom::Start(start)).await.is_ok() {
+		let _ = file.take(MAX_LOG as u64).read_to_end(&mut new).await;
+	}
+	(
+		String::from_utf8_lossy(&new).into_owned(),
+		start + new.len() as u64,
+	)
 }
 
 /// Waits until no other run holds `path`, the lock ends with the file.
@@ -84,10 +106,23 @@ impl Log {
 			file,
 			print,
 			ok: true,
+			hidden: vec![],
 		})
 	}
 
+	/// `secret` never goes into the log, also not in a command's output.
+	pub fn hide(&mut self, secret: &str) {
+		if !secret.is_empty() {
+			self.hidden.push(secret.to_string());
+		}
+	}
+
 	pub async fn line(&mut self, line: &str) {
+		let mut line = line.to_string();
+		for h in &self.hidden {
+			line = line.replace(h.as_str(), "***");
+		}
+		let line = line.as_str();
 		if self.print {
 			println!("{line}");
 		}
@@ -145,6 +180,22 @@ impl Log {
 
 #[cfg(test)]
 mod tests {
+	#[tokio::test]
+	async fn the_log_goes_on_from_the_offset() {
+		let dir = std::env::temp_dir().join("genco-job-test");
+		let dir = dir.to_str().unwrap();
+		let mut log = Log::create(dir, 7, false).await.unwrap();
+		log.hide("oauth2:glpat-secret");
+		log.line("cloning https://oauth2:glpat-secret@git.example/x.git")
+			.await;
+		log.line("line 2").await;
+		let all = "cloning https://***@git.example/x.git\nline 2\n";
+		assert_eq!(read_from(dir, 7, 0).await, (all.into(), 45));
+		assert_eq!(read_from(dir, 7, 38).await, ("line 2\n".into(), 45));
+		assert_eq!(read_from(dir, 7, 99).await, (String::new(), 45));
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
 	use super::*;
 
 	#[tokio::test]

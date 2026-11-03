@@ -142,22 +142,17 @@ pub(super) async fn list_deploys(
 	State(db): State<Db>,
 	UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<Vec<Deploy>>> {
-	let conn = db.conn();
-	let mut deploys = list(&conn, id)?;
-	let name: String = conn.query_row(
-		"SELECT name FROM domain_groups WHERE id = ?1",
-		[id],
-		|r| r.get(0),
-	)?;
-	drop(conn);
-	mark_live(&name, &mut deploys);
+	let mut deploys = list(&db.conn(), id)?;
+	mark_live(&db, id, &mut deploys)?;
 	Ok(Json(deploys))
 }
 
 /// The newest deploy of the release `current` points to is live; a
 /// rollback shares the release with the deploy it goes back to.
-fn mark_live(group: &str, deploys: &mut [Deploy]) {
-	let link = std::fs::read_link(render::group_dir(group).join("current"));
+fn mark_live(db: &Db, group_id: i64, deploys: &mut [Deploy]) -> Result<()> {
+	let group = hosting::find_group(&db.conn(), group_id)?;
+	let link =
+		std::fs::read_link(render::group_dir(&group.name).join("current"));
 	let release = link
 		.ok()
 		.and_then(|l| Some(l.file_name()?.to_string_lossy().to_string()));
@@ -167,62 +162,33 @@ fn mark_live(group: &str, deploys: &mut [Deploy]) {
 	{
 		d.live = true;
 	}
+	Ok(())
 }
 
-/// An admin, or a token that may deploy the deploy's group (a CI job
-/// following the deploy it started).
-pub(super) struct DeployReader(Option<ApiToken>);
-
-impl<S> axum::extract::FromRequestParts<S> for DeployReader
-where
-	S: Send + Sync,
-	Db: axum::extract::FromRef<S>,
-{
-	type Rejection = Error;
-
-	async fn from_request_parts(
-		parts: &mut axum::http::request::Parts,
-		state: &S,
-	) -> Result<Self> {
-		if parts.headers.contains_key("authorization") {
-			return Ok(Self(Some(
-				ApiToken::from_request_parts(parts, state).await?,
-			)));
-		}
-		Authed::from_request_parts(parts, state).await?;
-		Ok(Self(None))
+/// The deploy if the caller may see it: an admin, or a token that may
+/// deploy its group (a CI job following the deploy it started). An
+/// unknown one and another group's answer the same, a token learns
+/// nothing of other groups.
+fn readable(caller: &Caller, db: &Db, id: i64) -> Result<Deploy> {
+	let d = get(&db.conn(), id).map_err(|_| Error::NotFound)?;
+	if let Caller::Token(token) = caller {
+		token
+			.require(&tokens::deploy_scope(d.group_id))
+			.map_err(|_| Error::NotFound)?;
 	}
-}
-
-impl DeployReader {
-	/// The deploy if the reader may see it; an unknown one and another
-	/// group's answer the same, a token learns nothing of other groups.
-	fn deploy(&self, db: &Db, id: i64) -> Result<Deploy> {
-		let d = get(&db.conn(), id).map_err(|_| Error::NotFound)?;
-		if let Some(token) = &self.0 {
-			token
-				.require(&tokens::deploy_scope(d.group_id))
-				.map_err(|_| Error::NotFound)?;
-		}
-		Ok(d)
-	}
+	Ok(d)
 }
 
 /// One deploy: its status and the commit it deployed (a CI job compares
 /// it with its own, a queued deploy takes the newest request's ref).
 pub(super) async fn get_deploy(
-	reader: DeployReader,
+	caller: Caller,
 	State(db): State<Db>,
 	UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<Deploy>> {
-	let mut d = reader.deploy(&db, id)?;
-	let name: String = db.conn().query_row(
-		"SELECT name FROM domain_groups WHERE id = ?1",
-		[d.group_id],
-		|r| r.get(0),
-	)?;
+	let mut d = readable(&caller, &db, id)?;
 	let mut newest = list(&db.conn(), d.group_id)?;
-	mark_live(&name, &mut newest);
+	mark_live(&db, d.group_id, &mut newest)?;
 	d.live = newest.iter().any(|n| n.id == d.id && n.live);
 	Ok(Json(d))
 }
@@ -236,26 +202,14 @@ pub(super) struct LogQuery {
 }
 
 pub(super) async fn deploy_log(
-	reader: DeployReader,
+	caller: Caller,
 	State(db): State<Db>,
 	UrlPath(id): UrlPath<i64>,
 	axum::extract::Query(q): axum::extract::Query<LogQuery>,
 ) -> Result<([(&'static str, String); 1], String)> {
-	reader.deploy(&db, id)?;
-	let all = tokio::fs::read(job::path(LOG_DIR, id))
-		.await
-		.unwrap_or_default();
-	let (text, next) = log_from(&all, q.offset.unwrap_or(0));
+	readable(&caller, &db, id)?;
+	let (text, next) = job::read_from(LOG_DIR, id, q.offset.unwrap_or(0)).await;
 	Ok(([("x-log-offset", next.to_string())], text))
-}
-
-/// The log from `offset` on and where the next read starts.
-fn log_from(all: &[u8], offset: u64) -> (String, u64) {
-	let start = (offset as usize).min(all.len());
-	(
-		String::from_utf8_lossy(&all[start..]).into_owned(),
-		all.len() as u64,
-	)
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,14 +269,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn the_log_goes_on_from_the_offset() {
-		let all = b"line 1\nline 2\n";
-		assert_eq!(log_from(all, 0), ("line 1\nline 2\n".into(), 14));
-		assert_eq!(log_from(all, 7), ("line 2\n".into(), 14));
-		assert_eq!(log_from(all, 99), (String::new(), 14));
-	}
-
-	#[test]
 	fn a_token_sees_only_its_group_s_deploys() {
 		let db = Db::memory();
 		db.conn()
@@ -335,15 +281,13 @@ mod tests {
 				(2, 'main', 'done', 'x', 0);",
 			)
 			.unwrap();
-		let token = |scope: &str| {
-			DeployReader(Some(ApiToken::for_test(vec![scope.into()])))
-		};
+		let token =
+			|scope: &str| Caller::Token(ApiToken::for_test(vec![scope.into()]));
 		let a = token("deploy:1");
-		assert_eq!(a.deploy(&db, 1).unwrap().group_id, 1);
-		let other = a.deploy(&db, 2).unwrap_err();
-		let unknown = a.deploy(&db, 99).unwrap_err();
+		assert_eq!(readable(&a, &db, 1).unwrap().group_id, 1);
+		let other = readable(&a, &db, 2).unwrap_err();
+		let unknown = readable(&a, &db, 99).unwrap_err();
 		assert_eq!(other.to_string(), unknown.to_string());
-		assert!(DeployReader(None).deploy(&db, 2).is_ok());
-		assert!(token("databases").deploy(&db, 1).is_err());
+		assert!(readable(&token("databases"), &db, 1).is_err());
 	}
 }

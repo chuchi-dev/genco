@@ -18,6 +18,7 @@ use tokio::process::Command;
 use tokio::sync::Semaphore;
 
 use crate::runners::{Job, RunnerInfo};
+use crate::util::sh;
 
 const CONFIG: &str = "/etc/genco/runner.toml";
 const UNIT: &str = "/etc/systemd/system/genco-runner.service";
@@ -458,11 +459,7 @@ async fn image_user(image: &str) -> Result<ImageUser, String> {
 			String::from_utf8_lossy(&out.stderr).trim()
 		));
 	};
-	let runner = format!(
-		"{}:{}",
-		crate::util::sh("id -u").await?,
-		crate::util::sh("id -g").await?
-	);
+	let runner = format!("{}:{}", sh("id -u").await?, sh("id -g").await?);
 	user_flags(&engine, uid, gid, &runner, image)
 }
 
@@ -820,8 +817,7 @@ fn clean(src: &Path) -> Result<(), String> {
 }
 
 async fn install(user: &str) -> Result<(), String> {
-	use crate::util::sh;
-	if sh("id -u").await? != "0" {
+	if !crate::util::is_root().await {
 		return Err("genco runner install needs root".into());
 	}
 	if !user
@@ -930,7 +926,7 @@ WantedBy=timers.target
 /// `genco runner update`: the signed release replaces this binary, the
 /// runner restarts. Not on a genco server, `genco update` keeps that one.
 async fn update(version: Option<&str>) -> Result<(), String> {
-	if crate::util::sh("id -u").await? != "0" {
+	if !crate::util::is_root().await {
 		return Err("genco runner update needs root".into());
 	}
 	if Path::new("/etc/genco/config.toml").exists() {
@@ -946,7 +942,7 @@ async fn update(version: Option<&str>) -> Result<(), String> {
 		.and_then(|_| crate::util::set_mode(&tmp, 0o755))
 		.and_then(|()| std::fs::rename(&tmp, &exe))
 		.map_err(|e| format!("{}: {e}", exe.display()))?;
-	crate::util::sh("systemctl try-restart genco-runner").await?;
+	sh("systemctl try-restart genco-runner").await?;
 	println!("installed {}, the runner restarted", file.display());
 	Ok(())
 }

@@ -36,7 +36,7 @@ pub async fn main(
 	domain: Option<String>,
 	email: Option<String>,
 ) -> Result<(), String> {
-	if sh("id -u").await? != "0" {
+	if !crate::util::is_root().await {
 		return Err("genco setup needs root".into());
 	}
 

@@ -43,8 +43,6 @@ pub(super) fn record(
 	}
 }
 
-/// The records `domain` needs for mail on this server, next to what its
-/// DNS has now.
 /// The SPF records of `name`.
 pub(super) async fn spf(name: &str) -> Vec<String> {
 	crate::dns::dig_txt(name)
@@ -71,6 +69,79 @@ pub(super) fn dkim_key(record: &str) -> Option<String> {
 		.map(|k| k.replace(' ', ""))
 }
 
+/// `name` points to this server.
+async fn a_record(name: &str, ips: &[String], note: &str) -> DnsRecord {
+	let ip = ips.first().cloned().unwrap_or_default();
+	let found = crate::dns::dig("A", name).await;
+	let ok = found.iter().any(|f| ips.contains(f));
+	record(name, "A", ip, found, ok, note)
+}
+
+/// The SPF record of `name`, ok when it has one of `terms`.
+async fn spf_record(
+	name: &str,
+	value: &str,
+	terms: &[String],
+	note: &str,
+) -> DnsRecord {
+	let found = spf(name).await;
+	let ok = spf_has(&found, terms);
+	let note = if found.is_empty() {
+		note.to_string()
+	} else {
+		format!(
+			"{note}: keep what is in there for other senders and add {} \
+			(only one SPF record per name)",
+			terms[0]
+		)
+	};
+	record(name, "TXT", value.into(), found, ok, &note)
+}
+
+/// A DKIM key at `name`, compared by the key alone.
+async fn dkim_txt(name: &str, value: String, note: &str) -> DnsRecord {
+	let found = crate::dns::dig_txt(name).await;
+	let ok = found.iter().any(|f| dkim_key(f) == dkim_key(&value));
+	record(name, "TXT", value, found, ok, note)
+}
+
+/// Any DMARC record of `domain` will do.
+async fn dmarc_record(domain: &str, value: String) -> DnsRecord {
+	let name = format!("_dmarc.{domain}");
+	let found: Vec<String> = crate::dns::dig_txt(&name)
+		.await
+		.into_iter()
+		.filter(|t| t.starts_with("v=DMARC1"))
+		.collect();
+	let ok = !found.is_empty();
+	record(
+		&name,
+		"TXT",
+		value,
+		found,
+		ok,
+		"what receivers do with mail that fails SPF and DKIM",
+	)
+}
+
+/// The reverse DNS of the server's address says `name`, the one postfix
+/// greets with.
+async fn ptr_record(ip: &str, name: &str) -> DnsRecord {
+	let found = crate::dns::dig("-x", ip).await;
+	let ok = found.iter().any(|f| f == name);
+	record(
+		ip,
+		"PTR",
+		name.into(),
+		found,
+		ok,
+		"the reverse DNS of the server's IP, only the hoster can set it; \
+		without it many receivers take mail for spam",
+	)
+}
+
+/// The records `domain` needs for mail on this server, next to what its
+/// DNS has now.
 pub(super) async fn dns_check(
 	cfg: &Config,
 	domain: &str,
@@ -79,30 +150,22 @@ pub(super) async fn dns_check(
 		host(cfg).ok_or(Error::Invalid("the panel has no domain".into()))?;
 	let ips = crate::dns::own_ipv4().await;
 	let ip = ips.first().cloned().unwrap_or_default();
-	let mut records = vec![];
-
-	let found = crate::dns::dig("A", &host).await;
-	let ok = found.iter().any(|f| ips.contains(f));
-	records.push(record(
-		&host,
-		"A",
-		ip.clone(),
-		found,
-		ok,
-		"the mail server itself, once for all mail domains",
-	));
-
-	let found = spf(&host).await;
-	let ok = spf_has(&found, &["a".into(), format!("ip4:{ip}")]);
-	records.push(record(
-		&host,
-		"TXT",
-		"v=spf1 a ~all".into(),
-		found,
-		ok,
-		"the mail host sends as itself (forwarded mail, bounces), once for \
-		all mail domains",
-	));
+	let mut records = vec![
+		a_record(
+			&host,
+			&ips,
+			"the mail server itself, once for all mail domains",
+		)
+		.await,
+		spf_record(
+			&host,
+			"v=spf1 a ~all",
+			&["a".into(), format!("ip4:{ip}")],
+			"the mail host sends as itself (forwarded mail, bounces), once \
+			for all mail domains",
+		)
+		.await,
+	];
 
 	let found = crate::dns::dig("MX", domain).await;
 	let ok = found.iter().any(|f| f.ends_with(&host));
@@ -114,57 +177,34 @@ pub(super) async fn dns_check(
 		ok,
 		"where other servers deliver mail for the domain",
 	));
-
-	let found = spf(domain).await;
-	let ok = spf_has(
-		&found,
-		&["mx".into(), format!("a:{host}"), format!("ip4:{ip}")],
+	records.push(
+		spf_record(
+			domain,
+			"v=spf1 mx ~all",
+			&["mx".into(), format!("a:{host}"), format!("ip4:{ip}")],
+			"who may send mail as the domain",
+		)
+		.await,
 	);
-	let note = if found.is_empty() {
-		"who may send mail as the domain"
-	} else {
-		"who may send mail as the domain: keep what is in there for other \
-		senders and add mx (only one SPF record per domain)"
-	};
-	records.push(record(
-		domain,
-		"TXT",
-		"v=spf1 mx ~all".into(),
-		found,
-		ok,
-		note,
-	));
-
 	if let Some(value) = crate::mailfilter::dkim_record(domain).await {
 		let name =
 			format!("{}._domainkey.{domain}", crate::mailfilter::SELECTOR);
-		let found = crate::dns::dig_txt(&name).await;
-		let ok = found.iter().any(|f| dkim_key(f) == dkim_key(&value));
-		records.push(record(
-			&name,
-			"TXT",
-			value,
-			found,
-			ok,
-			"the key receivers check the signature of the mail with",
-		));
+		records.push(
+			dkim_txt(
+				&name,
+				value,
+				"the key receivers check the signature of the mail with",
+			)
+			.await,
+		);
 	}
-
-	let dmarc = format!("_dmarc.{domain}");
-	let found: Vec<String> = crate::dns::dig_txt(&dmarc)
-		.await
-		.into_iter()
-		.filter(|t| t.starts_with("v=DMARC1"))
-		.collect();
-	let ok = !found.is_empty();
-	records.push(record(
-		&dmarc,
-		"TXT",
-		format!("v=DMARC1; p=quarantine; rua=mailto:postmaster@{domain}"),
-		found,
-		ok,
-		"what receivers do with mail that fails SPF and DKIM",
-	));
+	records.push(
+		dmarc_record(
+			domain,
+			format!("v=DMARC1; p=quarantine; rua=mailto:postmaster@{domain}"),
+		)
+		.await,
+	);
 
 	for (service, port, note) in [
 		(
@@ -195,18 +235,7 @@ pub(super) async fn dns_check(
 		records.push(r);
 	}
 
-	let found = crate::dns::dig("-x", &ip).await;
-	let ok = found.iter().any(|f| f == &host);
-	records.push(record(
-		&ip,
-		"PTR",
-		host.clone(),
-		found,
-		ok,
-		"the reverse DNS of the server's IP, only the hoster can set it; \
-		without it many receivers take mail for spam",
-	));
-
+	records.push(ptr_record(&ip, &host).await);
 	Ok(records)
 }
 
@@ -222,61 +251,29 @@ pub async fn panel_dns(
 		.ok_or(Error::Invalid("the panel has no domain".into()))?;
 	let ips = crate::dns::own_ipv4().await;
 	let ip = ips.first().cloned().unwrap_or_default();
-	let mut records = vec![];
-
-	let found = crate::dns::dig("A", &panel).await;
-	let ok = found.iter().any(|f| ips.contains(f));
-	records.push(record(
-		&panel,
-		"A",
-		ip.clone(),
-		found,
-		ok,
-		"the panel, genco sends its mails as genco@ this name",
-	));
-
-	let found = spf(&panel).await;
-	let ok = spf_has(&found, &["a".into(), format!("ip4:{ip}")]);
-	records.push(record(
-		&panel,
-		"TXT",
-		"v=spf1 a ~all".into(),
-		found,
-		ok,
-		"this server may send as the panel's name (only one SPF record per \
-		name, keep what is there and add a)",
-	));
-
+	let mut records = vec![
+		a_record(
+			&panel,
+			&ips,
+			"the panel, genco sends its mails as genco@ this name",
+		)
+		.await,
+		spf_record(
+			&panel,
+			"v=spf1 a ~all",
+			&["a".into(), format!("ip4:{ip}")],
+			"this server may send as the panel's name",
+		)
+		.await,
+	];
 	if let Some(value) = crate::mail::panel_dkim_record().await {
 		let name =
 			format!("{}._domainkey.{panel}", crate::mail::PANEL_SELECTOR);
-		let found = crate::dns::dig_txt(&name).await;
-		let ok = found.iter().any(|f| dkim_key(f) == dkim_key(&value));
-		records.push(record(
-			&name,
-			"TXT",
-			value,
-			found,
-			ok,
-			"the key genco signs its mails with",
-		));
+		records.push(
+			dkim_txt(&name, value, "the key genco signs its mails with").await,
+		);
 	}
-
-	let dmarc = format!("_dmarc.{panel}");
-	let found: Vec<String> = crate::dns::dig_txt(&dmarc)
-		.await
-		.into_iter()
-		.filter(|t| t.starts_with("v=DMARC1"))
-		.collect();
-	let ok = !found.is_empty();
-	records.push(record(
-		&dmarc,
-		"TXT",
-		"v=DMARC1; p=quarantine".into(),
-		found,
-		ok,
-		"what receivers do with mail that fails SPF and DKIM",
-	));
+	records.push(dmarc_record(&panel, "v=DMARC1; p=quarantine".into()).await);
 
 	// postfix greets with this name, the PTR should say the same
 	let helo = if enabled(groups) {
@@ -284,17 +281,7 @@ pub async fn panel_dns(
 	} else {
 		panel.clone()
 	};
-	let found = crate::dns::dig("-x", &ip).await;
-	let ok = found.iter().any(|f| f == &helo);
-	records.push(record(
-		&ip,
-		"PTR",
-		helo,
-		found,
-		ok,
-		"the reverse DNS of the server's IP, only the hoster can set it; \
-		without it many receivers take mail for spam",
-	));
+	records.push(ptr_record(&ip, &helo).await);
 	Ok(records)
 }
 

@@ -143,7 +143,6 @@ CHROOT=/var/lib/postsrsd
 /// 3.10 (Debian 13) refuses an empty one and its cleanup dies on every
 /// mail.
 pub fn postfix_settings(on: bool) -> Vec<(&'static str, String)> {
-	let v = |s: &str| if on { s.to_string() } else { String::new() };
 	let or = |s: &str, default: &str| {
 		if on {
 			s.to_string()
@@ -152,16 +151,16 @@ pub fn postfix_settings(on: bool) -> Vec<(&'static str, String)> {
 		}
 	};
 	vec![
-		("smtpd_milters", v("inet:127.0.0.1:11332")),
-		("non_smtpd_milters", v("inet:127.0.0.1:11332")),
+		("smtpd_milters", or("inet:127.0.0.1:11332", "")),
+		("non_smtpd_milters", or("inet:127.0.0.1:11332", "")),
 		("milter_default_action", "accept".into()),
 		("milter_protocol", "6".into()),
-		("sender_canonical_maps", v("tcp:127.0.0.1:10001")),
+		("sender_canonical_maps", or("tcp:127.0.0.1:10001", "")),
 		(
 			"sender_canonical_classes",
 			or("envelope_sender", "envelope_sender, header_sender"),
 		),
-		("recipient_canonical_maps", v("tcp:127.0.0.1:10002")),
+		("recipient_canonical_maps", or("tcp:127.0.0.1:10002", "")),
 		(
 			"recipient_canonical_classes",
 			or(
@@ -210,16 +209,27 @@ pub async fn ensure_keys(groups: &[Group]) -> Result<Vec<String>, String> {
 		if path.exists() {
 			continue;
 		}
-		let p = path.display();
-		sh(&format!(
-			"umask 077 && openssl genrsa -out {p}.new 2048 2>/dev/null \
-			&& chown root:{RSPAMD_USER} {p}.new && chmod 640 {p}.new \
-			&& mv {p}.new {p}"
-		))
-		.await?;
+		make_key(&path, Some(RSPAMD_USER)).await?;
 		made.push(d.name.clone());
 	}
 	Ok(made)
+}
+
+/// A 2048 bit RSA key in PKCS#1 (lettre reads only that, Rspamd both),
+/// only root reads it, and `group` if given.
+pub async fn make_key(path: &Path, group: Option<&str>) -> Result<(), String> {
+	let p = path.display();
+	let share = match group {
+		Some(g) => format!("&& chown root:{g} {p}.new && chmod 640 {p}.new"),
+		None => String::new(),
+	};
+	sh(&format!(
+		"mkdir -p {DKIM_DIR} && umask 077 \
+		&& openssl genrsa -traditional -out {p}.new 2048 2>/dev/null \
+		{share} && mv {p}.new {p}"
+	))
+	.await
+	.map(|_| ())
 }
 
 /// The DKIM record's value of a domain, from its key.

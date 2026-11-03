@@ -129,6 +129,10 @@ pub(super) async fn fetch(
 	git_ref: &str,
 ) -> Res<String> {
 	let mirror = base.join("repo.git");
+	// a token in the URL stays out of the log, a CI job shows it
+	if let Some(user) = url_credentials(repo) {
+		log.hide(user);
+	}
 	if mirror.exists() {
 		log.line(&format!("fetching {repo}")).await;
 		shell.run(log, &mirror, "git remote update --prune").await?;
@@ -408,8 +412,15 @@ async fn sync_procs(
 	}
 	log.line("the workers or schedules changed, applying").await;
 	let report = crate::apply::apply(&ctx.cfg, &ctx.db).await;
-	for line in report.log.iter().filter(|l| l.starts_with("error")) {
-		log.line(line).await;
+	// its errors may be about other groups, the CI job of this one shows
+	// the log: only that there were some
+	let errors = report.log.iter().filter(|l| l.starts_with("error")).count();
+	if errors > 0 {
+		log.line(&format!(
+			"the apply had {errors} error(s), an admin sees them in the panel \
+			(Server → Apply Changes)"
+		))
+		.await;
 	}
 	ctx.events.send(crate::events::Event::Tree);
 	hosting::find_group(&ctx.db.conn(), group.id).map_err(|e| e.to_string())
@@ -455,4 +466,24 @@ pub(super) async fn prune(shell: &GroupShell, log: &mut Log, base: &Path) {
 		KEEP_RELEASES + 1
 	);
 	let _ = shell.run(log, base, &script).await;
+}
+/// The user (and password) of `scheme://user:pass@host/…`, e.g. a
+/// GitLab token; `git@host:path` has no secret.
+fn url_credentials(url: &str) -> Option<&str> {
+	let (_, rest) = url.split_once("://")?;
+	let host_part = rest.split('/').next()?;
+	host_part.rsplit_once('@').map(|(user, _)| user)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn credentials_in_repo_urls() {
+		let url = "https://oauth2:glpat-x@git.example/a/b.git";
+		assert_eq!(url_credentials(url), Some("oauth2:glpat-x"));
+		assert_eq!(url_credentials("git@git.example:a/b.git"), None);
+		assert_eq!(url_credentials("https://git.example/a@b.git"), None);
+	}
 }

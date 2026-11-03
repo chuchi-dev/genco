@@ -1,7 +1,7 @@
 <script lang="ts">
 	import OneTimeSecret from '../OneTimeSecret.svelte';
 	import { onDestroy } from 'svelte';
-	import { formatTime, get, post } from '@/lib/api';
+	import { formatTime, get, newest, post } from '@/lib/api';
 	import { message, confirmDelete } from '@/lib/dialogs.svelte';
 	import Button from '../win/Button.svelte';
 	import Form from '../win/Form.svelte';
@@ -40,16 +40,19 @@
 	let created = $state<string | null>(null);
 	let error = $state<string | null>(null);
 
-	async function load() {
-		try {
-			const r = await get('/runners');
-			runners = r.runners;
-			target = r.target;
-			version = r.version;
-			error = null;
-		} catch (e: any) {
-			error = e.message;
-		}
+	// polled: an older answer mustn't overwrite a newer one
+	const fetchRunners = newest();
+	function load() {
+		fetchRunners(
+			get('/runners'),
+			r => {
+				runners = r.runners;
+				target = r.target;
+				version = r.version;
+				error = null;
+			},
+			e => (error = e.message),
+		);
 	}
 	load();
 	const outdated = $derived(

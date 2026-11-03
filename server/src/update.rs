@@ -460,8 +460,8 @@ async fn record(
 	Ok(())
 }
 
-/// The update's lines, in `DIR/update.log` and on the terminal.
-/// update.log, or only the terminal (a runner has no genco data).
+/// The update's lines on the terminal and in `DIR/update.log`, not for a
+/// runner (it has no genco data).
 struct UpdateLog(Option<std::fs::File>);
 
 impl UpdateLog {

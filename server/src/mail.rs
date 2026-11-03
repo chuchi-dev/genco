@@ -115,12 +115,7 @@ pub async fn ensure_panel_key() -> std::result::Result<bool, String> {
 	if std::path::Path::new(PANEL_KEY).exists() {
 		return Ok(false);
 	}
-	crate::util::sh(&format!(
-		"mkdir -p /etc/genco/dkim && umask 077 \
-		&& openssl genrsa -traditional -out {PANEL_KEY}.new 2048 2>/dev/null \
-		&& mv {PANEL_KEY}.new {PANEL_KEY}"
-	))
-	.await?;
+	crate::mailfilter::make_key(std::path::Path::new(PANEL_KEY), None).await?;
 	Ok(true)
 }
 

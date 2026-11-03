@@ -148,6 +148,31 @@ impl ApiToken {
 	}
 }
 
+/// An admin in the panel, or a bearer token (an API token or an AI
+/// agent's key) whose scope the handler checks. With an Authorization
+/// header it is always the token, never the session.
+pub enum Caller {
+	Admin(Authed),
+	Token(ApiToken),
+}
+
+impl<S> FromRequestParts<S> for Caller
+where
+	S: Send + Sync,
+	Db: FromRef<S>,
+{
+	type Rejection = Error;
+
+	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
+		if parts.headers.contains_key("authorization") {
+			return Ok(Self::Token(
+				ApiToken::from_request_parts(parts, state).await?,
+			));
+		}
+		Ok(Self::Admin(Authed::from_request_parts(parts, state).await?))
+	}
+}
+
 /// An admin in the panel or a token with `scope`: who it is, for logs.
 pub async fn admin_or_token<S>(
 	parts: &mut Parts,
@@ -158,13 +183,13 @@ where
 	S: Send + Sync,
 	Db: FromRef<S>,
 {
-	if parts.headers.contains_key("authorization") {
-		let token = ApiToken::from_request_parts(parts, state).await?;
-		token.require(scope)?;
-		return Ok(format!("token {}", token.name));
+	match Caller::from_request_parts(parts, state).await? {
+		Caller::Admin(authed) => Ok(authed.user.name),
+		Caller::Token(token) => {
+			token.require(scope)?;
+			Ok(format!("token {}", token.name))
+		}
 	}
-	let authed = Authed::from_request_parts(parts, state).await?;
-	Ok(authed.user.name)
 }
 
 /// An admin or an AI agent's key.
@@ -182,9 +207,12 @@ where
 	type Rejection = Error;
 
 	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
-		let who = admin_or_token(parts, state, READ).await?;
+		let caller = Caller::from_request_parts(parts, state).await?;
+		if let Caller::Token(token) = &caller {
+			token.require(READ)?;
+		}
 		Ok(Self {
-			token: who.starts_with("token "),
+			token: matches!(caller, Caller::Token(_)),
 		})
 	}
 }

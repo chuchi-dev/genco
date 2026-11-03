@@ -115,6 +115,11 @@ pub fn first_line(text: &str, max: usize) -> String {
 	}
 }
 
+/// Whether genco runs as root, some commands need it.
+pub async fn is_root() -> bool {
+	sh("id -u").await.is_ok_and(|u| u == "0")
+}
+
 /// `n` random bytes as hex, for tokens.
 pub fn random_hex(n: usize) -> String {
 	(0..n)

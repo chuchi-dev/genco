@@ -7,8 +7,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{FromRef, FromRequestParts, Path, State};
-use axum::http::request::Parts;
+use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -23,7 +22,7 @@ use crate::error::{Error, Result};
 use crate::events::{Event, Events};
 use crate::notify::Notice;
 use crate::peers;
-use crate::tokens::{self, ApiToken};
+use crate::tokens::{self, ApiToken, Caller};
 use crate::users::Authed;
 
 /// The longest delay of the mail, in minutes.
@@ -42,7 +41,7 @@ pub struct Proposal {
 	/// the agent's name
 	pub from: String,
 	pub text: String,
-	/// the name of the admin who decides, `None` for any
+	/// the admin who got the mail, `None` for every admin
 	pub approver: Option<String>,
 	pub approver_email: Option<String>,
 	/// pending, approved (the agent works on it), answered, rejected,
@@ -54,13 +53,10 @@ pub struct Proposal {
 	pub created_at: i64,
 	#[serde(skip)]
 	peer_id: i64,
-	#[serde(skip)]
-	approver_id: Option<i64>,
 }
 
 const SELECT: &str = "SELECT r.id, p.name, r.text, r.status, r.decided_by,
-	r.conversation_id, r.answer, r.created_at, r.peer_id, u.name, u.email,
-	r.approver_id
+	r.conversation_id, r.answer, r.created_at, r.peer_id, u.name, u.email
 	FROM proposals r JOIN peers p ON p.id = r.peer_id
 	LEFT JOIN users u ON u.id = r.approver_id";
 
@@ -80,7 +76,6 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Proposal> {
 		peer_id: row.get(8)?,
 		approver: row.get(9)?,
 		approver_email: row.get(10)?,
-		approver_id: row.get(11)?,
 	})
 }
 
@@ -377,34 +372,16 @@ async fn propose(
 	}))
 }
 
-/// An admin in the panel, or `Some(agent)` for an agent's key.
-struct Viewer(Option<i64>);
-
-impl<S> FromRequestParts<S> for Viewer
-where
-	S: Send + Sync,
-	Db: FromRef<S>,
-{
-	type Rejection = Error;
-
-	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
-		if parts.headers.contains_key("authorization") {
-			let token = ApiToken::from_request_parts(parts, state).await?;
-			return Ok(Self(Some(token.peer.ok_or(Error::Forbidden)?)));
-		}
-		Authed::from_request_parts(parts, state).await?;
-		Ok(Self(None))
-	}
-}
-
 /// An admin or the agent that proposed it.
 async fn get_route(
-	viewer: Viewer,
+	caller: Caller,
 	State(db): State<Db>,
 	Path(id): Path<i64>,
 ) -> Result<Json<Proposal>> {
 	let p = get_one(&db.conn(), id)?;
-	if viewer.0.is_some_and(|peer| peer != p.peer_id) {
+	if let Caller::Token(token) = caller
+		&& token.peer.ok_or(Error::Forbidden)? != p.peer_id
+	{
 		return Err(Error::NotFound);
 	}
 	Ok(Json(p))
