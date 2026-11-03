@@ -268,6 +268,10 @@ pub fn postfix_settings(
 			format!("texthash:{MAPS}/senders"),
 		),
 		("disable_vrfy_command", "yes".into()),
+		// logins only on the submission ports (they turn it on for
+		// themselves); an adopted server's old main.cf may ask Dovecot,
+		// which may be off, and break port 25
+		("smtpd_sasl_auth_enable", "no".into()),
 		("smtpd_helo_required", "yes".into()),
 		("message_size_limit", "52428800".into()),
 	];
