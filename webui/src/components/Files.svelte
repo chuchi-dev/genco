@@ -75,11 +75,21 @@
 	}
 
 	async function open(e: Entry) {
-		if (e.dir) return go(urlFor(join(e.name)));
-		const p = join(e.name);
+		// a link opens where it leads, e.g. from a release to shared/,
+		// whose rights apply then; never out of the group
+		if (e.kind === 'link' && e.real === null)
+			return message.show(
+				'Can’t Open',
+				e.broken
+					? `${e.name}: its target is missing`
+					: `${e.name} leads out of ${group.dir}`,
+			);
+		const p = e.real ?? join(e.name);
+		if (e.dir) return go(urlFor(p));
 		try {
 			const text = await files.read(p);
-			editing = { path: p, name: e.name, text, readOnly: e.readOnly };
+			const readOnly = e.real === null ? e.readOnly : e.realReadOnly;
+			editing = { path: p, name: e.name, text, readOnly };
 		} catch (err: any) {
 			message.show('Can’t Open', `${e.name}: ${err.message}`);
 		}
@@ -400,7 +410,12 @@
 				<tr
 					class:selected={selected === e.name}
 					class:ro={e.readOnly}
-					title={e.readOnly ? 'read only' : undefined}
+					class:broken={e.broken}
+					title={e.broken
+						? 'broken link, its target is missing'
+						: e.readOnly
+							? 'read only'
+							: undefined}
 					role="option"
 					aria-selected={selected === e.name}
 					onclick={() => (selected = e.name)}
@@ -409,11 +424,8 @@
 				>
 					<td class="name">
 						<Icon
-							name={e.kind === 'link'
-								? 'link'
-								: e.dir
-									? 'folder'
-									: 'file'}
+							name={e.dir ? 'folder' : 'file'}
+							link={e.kind === 'link'}
 						/>
 						<span>{e.name}</span>
 						{#if e.target}<span class="target">
@@ -514,12 +526,15 @@
 		color: $light;
 	}
 
-	// deploys or tools write these, the file manager only reads them
-	tr.ro td {
+	// deploys or tools write these, the file manager only reads them; a
+	// broken link leads nowhere
+	tr.ro td,
+	tr.broken td {
 		opacity: 0.55;
 	}
 
-	.list-view tbody tr.ro.selected td {
+	.list-view tbody tr.ro.selected td,
+	.list-view tbody tr.broken.selected td {
 		opacity: 0.8;
 	}
 

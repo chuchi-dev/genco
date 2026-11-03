@@ -340,7 +340,8 @@ pub(super) async fn check_binaries(
 
 /// Links `p` in the release to `shared/p`. The first deploy brings it if
 /// shared/ has none yet, then it stays; a missing file like .env stops the
-/// deploy. As the group's user, like everything in its directory.
+/// deploy, its folder in shared/ is there to create it in. As the group's
+/// user, like everything in its directory.
 pub(super) async fn link_shared(
 	shell: &GroupShell,
 	log: &mut Log,
@@ -352,7 +353,7 @@ pub(super) async fn link_shared(
 		r#"s={shared}; t={target}
 		if [ ! -e "$s" ]; then
 			if [ -e "$t" ]; then mkdir -p "$(dirname "$s")" && mv "$t" "$s"
-			elif [ {file} = 1 ]; then echo "$s is missing, create it and deploy again"; exit 3
+			elif [ {file} = 1 ]; then mkdir -p "$(dirname "$s")"; echo "$s is missing, create it and deploy again"; exit 3
 			else mkdir -p "$s"
 			fi
 		fi

@@ -9,6 +9,12 @@ export type FileEntry = {
 	size: number;
 	modified: number;
 	target: string | null;
+	/** a link whose target is missing */
+	broken: boolean;
+	/** where a link leads in the group, null for one out of it */
+	real: string | null;
+	/** the file manager doesn't change where the link leads */
+	realReadOnly: boolean;
 	/// deploys or tools write it, see READ_ONLY on the server
 	readOnly: boolean;
 };

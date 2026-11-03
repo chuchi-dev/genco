@@ -12,13 +12,17 @@
 		| 'gear'
 		| 'file'
 		| 'folder'
-		| 'link'
 		| 'mail'
 		| 'logo';
 </script>
 
 <script lang="ts">
-	let { name, size = 16 }: { name: IconName; size?: number } = $props();
+	// `link` draws the arrow of a shortcut over the icon
+	let {
+		name,
+		size = 16,
+		link = false,
+	}: { name: IconName; size?: number; link?: boolean } = $props();
 </script>
 
 <svg
@@ -114,15 +118,6 @@
 		<rect x="1" y="13" width="14" height="1" fill="#806000" />
 		<rect x="14" y="4" width="1" height="10" fill="#806000" />
 		<rect x="1" y="6" width="14" height="1" fill="#fff080" />
-	{:else if name === 'link'}
-		<rect x="1" y="3" width="6" height="2" fill="#c0a000" />
-		<rect x="1" y="4" width="14" height="10" fill="#ffd800" />
-		<rect x="1" y="13" width="14" height="1" fill="#806000" />
-		<rect x="1" y="9" width="7" height="6" fill="#fff" />
-		<rect x="1" y="9" width="7" height="1" fill="#000" />
-		<rect x="1" y="14" width="7" height="1" fill="#000" />
-		<rect x="3" y="11" width="3" height="1" fill="#000" />
-		<rect x="5" y="10" width="1" height="3" fill="#000" />
 	{:else if name === 'logo'}
 		<rect x="4" y="1" width="8" height="14" fill="#c0c0c0" />
 		<rect x="4" y="1" width="8" height="1" fill="#fff" />
@@ -131,5 +126,12 @@
 		<rect x="5" y="5" width="5" height="1" fill="#000080" />
 		<rect x="5" y="7" width="5" height="1" fill="#000080" />
 		<rect x="8" y="11" width="2" height="2" fill="#00c000" />
+	{/if}
+	{#if link}
+		<rect x="1" y="9" width="7" height="6" fill="#fff" />
+		<rect x="1" y="9" width="7" height="1" fill="#000" />
+		<rect x="1" y="14" width="7" height="1" fill="#000" />
+		<rect x="3" y="11" width="3" height="1" fill="#000" />
+		<rect x="5" y="10" width="1" height="3" fill="#000" />
 	{/if}
 </svg>

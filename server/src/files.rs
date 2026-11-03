@@ -112,6 +112,13 @@ pub struct Entry {
 	pub modified: i64,
 	/// where a link points
 	pub target: Option<String>,
+	/// a link whose target is missing (or a loop)
+	pub broken: bool,
+	/// where a link leads inside the group's directory, opening the link
+	/// goes there; `None` for a link out of the group
+	pub real: Option<String>,
+	/// the file manager doesn't change where the link leads
+	pub real_read_only: bool,
 	/// the file manager doesn't change it, see `READ_ONLY`
 	pub read_only: bool,
 }
@@ -147,8 +154,54 @@ fn parse_entry(line: &str) -> Option<Entry> {
 		size: size.parse().unwrap_or(0),
 		modified: (time.parse::<f64>().unwrap_or(0.0) * 1000.0) as i64,
 		target: (!link.is_empty()).then(|| link.to_string()),
+		broken: y == "l" && matches!(target_y, "N" | "L"),
+		real: None,
+		real_read_only: false,
 		read_only: false,
 	})
+}
+
+/// The path of `real` (absolute, resolved) relative to the group's
+/// directory, if it is inside.
+fn real_path(group: &Group, real: &str) -> Option<String> {
+	if real.is_empty() {
+		return None;
+	}
+	let rel = Path::new(real)
+		.strip_prefix(render::group_dir(&group.name))
+		.ok()?;
+	Some(rel.to_str()?.to_string())
+}
+
+/// Resolves the links of a listing as the group's user, so a link only
+/// leads where the group could go itself.
+async fn resolve_links(g: &Group, dir: &Path, entries: &mut [Entry]) {
+	let links: Vec<PathBuf> = entries
+		.iter()
+		.filter(|e| e.kind == "link" && !e.broken)
+		.map(|e| dir.join(&e.name))
+		.collect();
+	if links.is_empty() {
+		return;
+	}
+	let args: Vec<&Path> = links.iter().map(PathBuf::as_path).collect();
+	let Ok(out) = output(as_user(
+		g,
+		r#"for f; do printf '%s\0' "$(realpath -e -- "$f" 2>/dev/null)"; done"#,
+		&args,
+	))
+	.await
+	else {
+		return;
+	};
+
+	let out = String::from_utf8_lossy(&out);
+	let mut reals = out.split('\0');
+	for e in entries.iter_mut().filter(|e| e.kind == "link" && !e.broken) {
+		e.real = reals.next().and_then(|r| real_path(g, r));
+		e.real_read_only =
+			e.real.as_deref().is_some_and(|r| read_only(r).is_some());
+	}
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +238,7 @@ async fn list(
 	for e in &mut entries {
 		e.read_only = read_only(&format!("{}/{}", q.path, e.name)).is_some();
 	}
+	resolve_links(&g, &dir, &mut entries).await;
 	Ok(Json(Listing {
 		read_only: read_only(&q.path),
 		entries,
@@ -592,5 +646,47 @@ mod tests {
 		let e = parse_entry("f\tf\t10\t1.0\t\tname\twith tab").unwrap();
 		assert_eq!(e.name, "name\twith tab");
 		assert!(!e.dir);
+	}
+
+	#[test]
+	fn links_show_their_target() {
+		let env = "/srv/genco/shop/shared/craft/.env";
+		let e = parse_entry(&format!("l\tf\t33\t1.0\t{env}\t.env")).unwrap();
+		assert_eq!(e.kind, "link");
+		assert!(!e.dir);
+		assert!(!e.broken);
+		assert_eq!(e.target.as_deref(), Some(env));
+
+		let e = parse_entry("l\td\t9\t1.0\t../x\tassets").unwrap();
+		assert!(e.dir);
+		assert!(!e.broken);
+
+		for y in ["N", "L"] {
+			let e = parse_entry(&format!("l\t{y}\t9\t1.0\tgone\tx")).unwrap();
+			assert!(e.broken);
+			assert!(!e.dir);
+		}
+	}
+
+	#[test]
+	fn links_lead_into_the_group_only() {
+		let g = group();
+		assert_eq!(
+			real_path(&g, "/srv/genco/shop/shared/craft/web/assets").as_deref(),
+			Some("shared/craft/web/assets")
+		);
+		assert_eq!(
+			real_path(&g, "/srv/genco/shop/shared/craft/.env").as_deref(),
+			Some("shared/craft/.env")
+		);
+		assert_eq!(
+			real_path(&g, "/srv/genco/shop/releases/1").as_deref(),
+			Some("releases/1")
+		);
+		assert_eq!(real_path(&g, "/srv/genco/shop").as_deref(), Some(""));
+		assert!(real_path(&g, "/srv/genco/shopping/x").is_none());
+		assert!(real_path(&g, "/srv/genco/other/shared/.env").is_none());
+		assert!(real_path(&g, "/etc/passwd").is_none());
+		assert!(real_path(&g, "").is_none());
 	}
 }
