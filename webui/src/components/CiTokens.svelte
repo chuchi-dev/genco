@@ -130,7 +130,7 @@
 	<div class="row-buttons">
 		<Button onclick={addToken}>New Token…</Button>
 	</div>
-	<p>
+	<p class="ci-example">
 		For GitLab, in <code>.gitlab-ci.yml</code>:
 	</p>
 	<pre class="code selectable">{ciExample}</pre>
@@ -139,5 +139,9 @@
 <style lang="scss">
 	:global(.list-view.ci-tokens) {
 		margin-bottom: 6px;
+	}
+
+	.ci-example {
+		margin-top: 10px;
 	}
 </style>
