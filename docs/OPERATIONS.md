@@ -97,6 +97,7 @@ into the server's config, and the CLI does the same:
 | Deploy a release built elsewhere | `genco deploy <group> --artifact release.tar.gz --ref v1.2` |
 | Build runners for `on = "runner"` steps | `genco runners list`, `genco runners add <name>` (prints the token), `genco runners remove <name>` |
 | Make a box a runner | on it: `genco runner install`, `genco runner register https://<panel> <token>`, `systemctl restart genco-runner` |
+| Update a runner | on it: `genco runner update` (a daily timer of `genco runner install` does it; Settings → Runners warns when a runner runs another version) |
 | Back up now | `genco backup` |
 | Add a client, group, domain or database | `genco client add`, `genco group add`, `genco domain add`, `genco database add` (see `--help`) |
 | Change a domain | `genco domain set <name> --php 8.4` |

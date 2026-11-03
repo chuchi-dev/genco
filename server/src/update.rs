@@ -459,20 +459,43 @@ async fn record(
 }
 
 /// The update's lines, in `DIR/update.log` and on the terminal.
-struct UpdateLog(std::fs::File);
+/// update.log, or only the terminal (a runner has no genco data).
+struct UpdateLog(Option<std::fs::File>);
 
 impl UpdateLog {
 	fn create() -> std::result::Result<Self, String> {
 		std::fs::File::create(Path::new(DIR).join("update.log"))
-			.map(Self)
+			.map(|f| Self(Some(f)))
 			.map_err(|e| format!("update.log: {e}"))
 	}
 
 	fn line(&mut self, text: &str) {
 		use std::io::Write as _;
 		println!("{text}");
-		let _ = writeln!(self.0, "{text}");
+		if let Some(f) = &mut self.0 {
+			let _ = writeln!(f, "{text}");
+		}
 	}
+}
+
+/// The signed release `version` (the newest without one) for this
+/// machine, downloaded and checked; `None` if it is the one running. For
+/// `genco runner update`.
+pub async fn fetch_signed(
+	version: Option<&str>,
+) -> std::result::Result<Option<PathBuf>, String> {
+	let version = match version {
+		Some(v) => Version::parse(v).ok_or(format!("odd version {v}"))?,
+		None => latest().await?,
+	};
+	if version == current() {
+		return Ok(None);
+	}
+	let dir = std::env::temp_dir().join(format!("genco-{version}"));
+	std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+	let name = format!("genco-{}-linux", std::env::consts::ARCH);
+	download(&dir, &name, version, &mut UpdateLog(None)).await?;
+	Ok(Some(dir.join(name)))
 }
 
 async fn run(log: &mut UpdateLog, what: &str, cmd: &mut Command) -> bool {

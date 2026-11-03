@@ -21,6 +21,8 @@ use crate::runners::{Job, RunnerInfo};
 
 const CONFIG: &str = "/etc/genco/runner.toml";
 const UNIT: &str = "/etc/systemd/system/genco-runner.service";
+const UPDATE_UNIT: &str = "/etc/systemd/system/genco-runner-update.service";
+const UPDATE_TIMER: &str = "/etc/systemd/system/genco-runner-update.timer";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct RunnerConfig {
@@ -61,10 +63,16 @@ pub enum RunnerCmd {
 		config: PathBuf,
 	},
 	/// Set up this box as a runner: podman, the user it builds as, the
-	/// systemd service
+	/// systemd service and a daily update
 	Install {
 		#[clap(long, default_value = "genco-runner")]
 		user: String,
+	},
+	/// Install the newest signed release (or --version) and restart the
+	/// runner; the daily timer of `install` runs it
+	Update {
+		#[clap(long)]
+		version: Option<String>,
 	},
 }
 
@@ -75,6 +83,7 @@ pub async fn main(cmd: RunnerCmd) -> Result<(), String> {
 		}
 		RunnerCmd::Run { config } => run(&config).await,
 		RunnerCmd::Install { user } => install(&user).await,
+		RunnerCmd::Update { version } => update(version.as_deref()).await,
 	}
 }
 
@@ -243,13 +252,32 @@ async fn serve(
 	{
 		let (http, server) = (http.clone(), server.clone());
 		tokio::spawn(async move {
+			let mut warned = false;
 			loop {
-				let _ = http
+				let hello = http
 					.get(api(&server, "/hello"))
 					.bearer_auth(&server.token)
 					.timeout(Duration::from_secs(20))
 					.send()
 					.await;
+				// a different genco may build differently
+				let version = match hello {
+					Ok(r) => r.json::<serde_json::Value>().await.ok(),
+					Err(_) => None,
+				}
+				.and_then(|v| Some(v.get("version")?.as_str()?.to_string()));
+				if let Some(v) = version
+					&& v != crate::update::VERSION
+					&& !warned
+				{
+					warned = true;
+					eprintln!(
+						"{}: the server runs genco {v}, this runner {}; \
+						update it with genco runner update",
+						server.url,
+						crate::update::VERSION
+					);
+				}
 				tokio::time::sleep(Duration::from_secs(30)).await;
 			}
 		});
@@ -343,8 +371,13 @@ struct Build<'a> {
 	job: &'a Job,
 }
 
-/// The step's container, after ENGINE and IMAGE_USER. Arguments: image,
-/// name, source, cache, command, seconds.
+/// `$U` and `$H` of the scripts.
+fn with_user(c: &mut Command, u: &ImageUser) {
+	c.env("U", &u.user).env("H", &u.home);
+}
+
+/// The step's container, after ENGINE; `$U` and `$H` from `ImageUser`.
+/// Arguments: image, name, source, cache, command, seconds.
 const CONTAINER: &str = r#"set -o pipefail; exec 2>&1
 timeout "$6" $E run --rm --name "$2" $U \
 	--cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 \
@@ -363,24 +396,109 @@ const ENGINE: &str = r#"if command -v podman >/dev/null; then E=podman
 elif command -v docker >/dev/null; then E=docker
 else echo "neither podman nor docker on the runner"; exit 3; fi"#;
 
-/// Who runs in a container of the image `$1`, after ENGINE: rootless
-/// podman maps the runner's user onto the image's own (a build image with
-/// a USER keeps its home and tools, e.g. rustup in a private home), so
-/// what the build writes belongs to the runner; docker runs as the
-/// runner's user. Root images get their HOME in the cache.
-const IMAGE_USER: &str = r#"H="-e HOME=/cache/home"
-if [ $E = podman ]; then
-	IU=$($E run --rm --network none --entrypoint id "$1" -u 2>/dev/null) || IU=0
-	IG=$($E run --rm --network none --entrypoint id "$1" -g 2>/dev/null) || IG=0
-	U="--userns=keep-id:uid=$IU,gid=$IG --user $IU:$IG"
-	[ "$IU" = 0 ] || H=
-else U="--user $(id -u):$(id -g)"; fi"#;
+/// The USER of image `$1` (empty for root), after ENGINE; a name, not a
+/// number, gets resolved in one container that prints uid and gid.
+const IMAGE_USER: &str = r#"u=$($E image inspect --format '{{.Config.User}}' "$1") || exit 1
+case "$u" in
+	''|root|0|0:0|root:root) echo "0 0" ;;
+	[0-9]*:[0-9]*) echo "${u%%:*} ${u##*:}" ;;
+	*) $E run --rm --network none --entrypoint sh "$1" -c 'echo $(id -u) $(id -g)' ;;
+esac"#;
+
+/// Who runs in the job's containers. Rootless podman maps the runner's
+/// user onto the image's own: a build image with a USER keeps its HOME
+/// and tools (rustup in a private home) and what the build writes belongs
+/// to the runner; root images get HOME in the cache. docker can't map
+/// users: root images run as the runner's user, others are refused.
+struct ImageUser {
+	/// `--user` and the user namespace
+	user: String,
+	/// `-e HOME=...`, empty to keep the image's
+	home: String,
+	/// the image's uid, for errors
+	uid: u32,
+}
+
+/// The engine's name and the job image's user, once per job.
+async fn image_user(image: &str) -> Result<ImageUser, String> {
+	let out = Command::new("bash")
+		.args([
+			"-c",
+			&format!("{ENGINE}\necho $E\n{IMAGE_USER}"),
+			"bash",
+			image,
+		])
+		.output()
+		.await
+		.map_err(|e| e.to_string())?;
+	let text = String::from_utf8_lossy(&out.stdout);
+	let mut lines = text.lines();
+	let engine = lines.next().unwrap_or_default().to_string();
+	let ids: Vec<u32> = lines
+		.next()
+		.unwrap_or_default()
+		.split_whitespace()
+		.filter_map(|n| n.parse().ok())
+		.collect();
+	let (Some(&uid), Some(&gid), true) =
+		(ids.first(), ids.get(1), out.status.success())
+	else {
+		return Err(format!(
+			"the user of {image}: {}",
+			String::from_utf8_lossy(&out.stderr).trim()
+		));
+	};
+	let runner = format!(
+		"{}:{}",
+		crate::util::sh("id -u").await?,
+		crate::util::sh("id -g").await?
+	);
+	user_flags(&engine, uid, gid, &runner, image)
+}
+
+fn user_flags(
+	engine: &str,
+	uid: u32,
+	gid: u32,
+	runner: &str,
+	image: &str,
+) -> Result<ImageUser, String> {
+	// root images get their HOME in the cache, the others keep their own
+	let home = if uid == 0 {
+		"-e HOME=/cache/home".to_string()
+	} else {
+		String::new()
+	};
+	// what the build writes belongs to the runner's user: podman maps it
+	// onto the image's (root too), docker runs as it
+	if engine == "podman" {
+		return Ok(ImageUser {
+			user: format!(
+				"--userns=keep-id:uid={uid},gid={gid} --user {uid}:{gid}"
+			),
+			home,
+			uid,
+		});
+	}
+	if uid != 0 {
+		return Err(format!(
+			"{image} runs as its own user (uid {uid}), which only podman \
+			maps onto the runner's; install podman on the runner (genco \
+			runner install does) or use an image that runs as root"
+		));
+	}
+	Ok(ImageUser {
+		user: format!("--user {runner}"),
+		home,
+		uid,
+	})
+}
 
 /// `tar` in a container of the job's image on the source folder, no
 /// network: the source goes in and the artifacts come out there, so a
 /// link the build planted resolves inside the container, never on the
-/// runner's own disk. After ENGINE and IMAGE_USER. Arguments: image,
-/// source, tar's arguments.
+/// runner's own disk. After ENGINE, `$U` from `ImageUser`. Arguments:
+/// image, source, tar's arguments.
 const TAR: &str = r#"exec $E run --rm -i --network none --cap-drop ALL \
 	--security-opt no-new-privileges $U -v "$2:/src" -w /src "$1" tar "${@:3}""#;
 
@@ -425,10 +543,11 @@ impl Build<'_> {
 		};
 		let res = async {
 			self.pull().await?;
+			let user = image_user(&job.image).await?;
 			clean(&src)?;
-			self.source(&src).await?;
-			self.build(&src, &cache).await?;
-			self.artifacts(&src).await
+			self.source(&src, &user).await?;
+			self.build(&src, &cache, &user).await?;
+			self.artifacts(&src, &user).await
 		}
 		.await;
 		alive.abort();
@@ -460,22 +579,18 @@ impl Build<'_> {
 	}
 
 	/// `tar` in a container, see TAR.
-	fn tar(&self, src: &Path, args: &[&str]) -> Command {
+	fn tar(&self, src: &Path, user: &ImageUser, args: &[&str]) -> Command {
 		let mut c = Command::new("bash");
-		c.args([
-			"-c",
-			&format!("{ENGINE}\n{IMAGE_USER}\n{TAR}"),
-			"bash",
-			&self.job.image,
-		])
-		.arg(src)
-		.args(args)
-		.kill_on_drop(true);
+		c.args(["-c", &format!("{ENGINE}\n{TAR}"), "bash", &self.job.image])
+			.arg(src)
+			.args(args)
+			.kill_on_drop(true);
+		with_user(&mut c, user);
 		c
 	}
 
 	/// The step's folder from the server into `src`.
-	async fn source(&self, src: &Path) -> Result<(), String> {
+	async fn source(&self, src: &Path, user: &ImageUser) -> Result<(), String> {
 		let mut res = self
 			.http
 			.get(self.url("source"))
@@ -485,7 +600,7 @@ impl Build<'_> {
 			.and_then(|r| r.error_for_status())
 			.map_err(|e| format!("the source: {e}"))?;
 		let mut tar = self
-			.tar(src, &["-xf", "-", "--no-same-owner"])
+			.tar(src, user, &["-xf", "-", "--no-same-owner"])
 			.stdin(Stdio::piped())
 			.stdout(Stdio::null())
 			.stderr(Stdio::piped())
@@ -498,9 +613,9 @@ impl Build<'_> {
 		drop(stdin);
 		let out = tar.wait_with_output().await.map_err(|e| e.to_string())?;
 		if !out.status.success() {
-			return Err(format!(
-				"unpacking the source failed: {}",
-				String::from_utf8_lossy(&out.stderr).trim()
+			return Err(unpack_error(
+				&String::from_utf8_lossy(&out.stderr),
+				user.uid,
 			));
 		}
 		Ok(())
@@ -508,15 +623,22 @@ impl Build<'_> {
 
 	/// Runs the step, its output goes to the server every second; a 410
 	/// there means the deploy gave up, the container stops.
-	async fn build(&self, src: &Path, cache: &Path) -> Result<(), String> {
+	async fn build(
+		&self,
+		src: &Path,
+		cache: &Path,
+		user: &ImageUser,
+	) -> Result<(), String> {
 		let job = self.job;
 		let name =
 			format!("genco-job-{}-{}", host_dir(&self.server.url), job.id);
 		let secs = u64::from(job.minutes.max(1)) * 60;
-		let mut child = Command::new("bash")
+		let mut cmd = Command::new("bash");
+		with_user(&mut cmd, user);
+		let mut child = cmd
 			.args([
 				"-c",
-				&format!("{ENGINE}\n{IMAGE_USER}\n{CONTAINER}"),
+				&format!("{ENGINE}\n{CONTAINER}"),
 				"bash",
 				&job.image,
 				&name,
@@ -598,7 +720,11 @@ impl Build<'_> {
 
 	/// The artifacts as a tarball to the server, packed in a container
 	/// (see TAR): a link in `src` can't point the runner at its own files.
-	async fn artifacts(&self, src: &Path) -> Result<(), String> {
+	async fn artifacts(
+		&self,
+		src: &Path,
+		user: &ImageUser,
+	) -> Result<(), String> {
 		let list = &self.job.artifacts;
 		if list.is_empty() {
 			return Ok(());
@@ -606,7 +732,7 @@ impl Build<'_> {
 		let mut args = vec!["-cf", "-", "--"];
 		args.extend(list.iter().map(String::as_str));
 		let mut tar = self
-			.tar(src, &args)
+			.tar(src, user, &args)
 			.stdin(Stdio::null())
 			.stdout(Stdio::piped())
 			.stderr(Stdio::piped())
@@ -634,6 +760,25 @@ impl Build<'_> {
 		res.map_err(|e| format!("sending the artifacts: {e}"))?;
 		Ok(())
 	}
+}
+
+/// tar's errors in one line: "Permission denied" for every file means
+/// the image's user can't write the source folder.
+fn unpack_error(stderr: &str, uid: u32) -> String {
+	let denied = stderr
+		.lines()
+		.filter(|l| l.contains("Permission denied"))
+		.count();
+	if denied > 0 {
+		return format!(
+			"the build image's user (uid {uid}) can't write the source \
+			folder of the runner's user ({denied} files: Permission \
+			denied); the image needs podman's user mapping or to run as \
+			root"
+		);
+	}
+	let first = stderr.lines().next().unwrap_or("").trim();
+	format!("unpacking the source failed: {first}")
 }
 
 /// The next line, at most 8 KiB of it; what was read stays in `raw` when
@@ -728,11 +873,70 @@ WantedBy=multi-user.target
 		exe.display()
 	);
 	std::fs::write(UNIT, unit).map_err(|e| format!("{UNIT}: {e}"))?;
-	sh("systemctl daemon-reload && systemctl enable -q genco-runner").await?;
+
+	println!("==> genco-runner-update.timer");
+	let update = format!(
+		"# written by genco runner install
+[Unit]
+Description=genco runner update (signed releases)
+
+[Service]
+Type=oneshot
+ExecStart={} runner update
+",
+		exe.display()
+	);
+	std::fs::write(UPDATE_UNIT, update)
+		.map_err(|e| format!("{UPDATE_UNIT}: {e}"))?;
+	std::fs::write(
+		UPDATE_TIMER,
+		"# written by genco runner install
+[Unit]
+Description=genco runner update, daily
+
+[Timer]
+OnCalendar=*-*-* 04:30
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+",
+	)
+	.map_err(|e| format!("{UPDATE_TIMER}: {e}"))?;
+	sh(
+		"systemctl daemon-reload && systemctl enable -q genco-runner \
+		&& systemctl enable -q --now genco-runner-update.timer",
+	)
+	.await?;
 	println!(
 		"done; add servers with genco runner register <url> <token>, then \
 		systemctl restart genco-runner"
 	);
+	Ok(())
+}
+
+/// `genco runner update`: the signed release replaces this binary, the
+/// runner restarts. Not on a genco server, `genco update` keeps that one.
+async fn update(version: Option<&str>) -> Result<(), String> {
+	if crate::util::sh("id -u").await? != "0" {
+		return Err("genco runner update needs root".into());
+	}
+	if Path::new("/etc/genco/config.toml").exists() {
+		return Err("this box is a genco server, use genco update".into());
+	}
+	let Some(file) = crate::update::fetch_signed(version).await? else {
+		println!("genco {} is the newest", crate::update::VERSION);
+		return Ok(());
+	};
+	let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+	let tmp = exe.with_extension("new");
+	std::fs::copy(&file, &tmp)
+		.and_then(|_| crate::util::set_mode(&tmp, 0o755))
+		.and_then(|()| std::fs::rename(&tmp, &exe))
+		.map_err(|e| format!("{}: {e}", exe.display()))?;
+	crate::util::sh("systemctl try-restart genco-runner").await?;
+	println!("installed {}, the runner restarted", file.display());
 	Ok(())
 }
 
@@ -749,6 +953,36 @@ mod tests {
 		assert!(!plain("a//b"));
 		assert!(!plain("a/./b"));
 		assert!(!plain("a b"));
+	}
+
+	#[test]
+	fn image_users() {
+		let root = user_flags("docker", 0, 0, "1001:1001", "debian").unwrap();
+		assert_eq!(root.user, "--user 1001:1001");
+		assert_eq!(root.home, "-e HOME=/cache/home");
+		let root = user_flags("podman", 0, 0, "1001:1001", "debian").unwrap();
+		assert_eq!(root.user, "--userns=keep-id:uid=0,gid=0 --user 0:0");
+		assert_eq!(root.home, "-e HOME=/cache/home");
+
+		let own = user_flags("podman", 1000, 1000, "1001:1001", "b").unwrap();
+		assert_eq!(
+			own.user,
+			"--userns=keep-id:uid=1000,gid=1000 --user 1000:1000"
+		);
+		assert!(own.home.is_empty());
+		assert!(user_flags("docker", 1000, 1000, "1001:1001", "b").is_err());
+	}
+
+	#[test]
+	fn permission_errors_in_one_line() {
+		let e = unpack_error(
+			"tar: ./a: Cannot open: Permission denied\n\
+			tar: ./b: Cannot open: Permission denied\n",
+			1000,
+		);
+		assert!(e.contains("uid 1000"));
+		assert!(e.contains("2 files"));
+		assert!(!e.contains('\n'));
 	}
 
 	#[test]

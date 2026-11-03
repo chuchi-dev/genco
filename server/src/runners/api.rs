@@ -60,6 +60,8 @@ pub(super) async fn hello(
 	Json(serde_json::json!({
 		"runner": me.name,
 		"server": cfg.domain,
+		// the runner warns when it runs another one
+		"version": crate::update::VERSION,
 		"target": target().await,
 	}))
 }

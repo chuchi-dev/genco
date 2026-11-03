@@ -15,7 +15,12 @@
 		lastSeen: number | null;
 		online: boolean;
 		job: number | null;
-		info: { host?: string; engine?: string; cpus?: number };
+		info: {
+			host?: string;
+			engine?: string;
+			cpus?: number;
+			version?: string;
+		};
 	};
 	type Target = {
 		os: string;
@@ -27,6 +32,8 @@
 
 	let runners = $state<Runner[]>([]);
 	let target = $state<Target | null>(null);
+	// genco's own, a runner should run the same
+	let version = $state('');
 	let selected = $state<string | null>(null);
 	let adding = $state(false);
 	let name = $state('');
@@ -38,12 +45,16 @@
 			const r = await get('/runners');
 			runners = r.runners;
 			target = r.target;
+			version = r.version;
 			error = null;
 		} catch (e: any) {
 			error = e.message;
 		}
 	}
 	load();
+	const outdated = $derived(
+		runners.filter(r => r.info.version && r.info.version !== version),
+	);
 	// online changes while the dialog is open
 	const poll = setInterval(load, 10000);
 	onDestroy(() => clearInterval(poll));
@@ -104,6 +115,7 @@
 			{ label: 'Name' },
 			{ label: 'State' },
 			{ label: 'Machine' },
+			{ label: 'Version' },
 			{ label: 'Last seen' },
 		]}
 		empty="No runners yet."
@@ -116,10 +128,18 @@
 			<td>
 				{r.info.host ?? ''}{r.info.cpus ? `, ${r.info.cpus} CPUs` : ''}
 			</td>
+			<td class:off={outdated.includes(r)}>{r.info.version ?? ''}</td>
 			<td>{r.lastSeen ? formatTime(r.lastSeen) : 'never'}</td>
 		{/snippet}
 	</ListView>
 	{#if error}<p class="error">{error}</p>{/if}
+	{#if outdated.length}
+		<p class="error">
+			{outdated.map(r => r.name).join(', ')} run another genco than this server
+			({version}); on the build box: <code>genco runner update</code> (a
+			daily timer does it after <code>genco runner install</code>).
+		</p>
+	{/if}
 	{#if created}
 		<OneTimeSecret
 			label="On the build box, copy it now (the token is shown only once):"

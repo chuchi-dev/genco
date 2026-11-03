@@ -273,6 +273,7 @@ async fn list_route(
 	Ok(Json(serde_json::json!({
 		"runners": runners,
 		"target": target().await,
+		"version": crate::update::VERSION,
 	})))
 }
 

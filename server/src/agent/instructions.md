@@ -188,8 +188,23 @@ field in the panel.
   server and take the `on = "runner"` steps (Settings → Runners, `genco
   runners list|add <name>|remove <name>`; on the box `genco runner
   install` and `genco runner register <url> <token>`). No runner online,
-  or none takes the job within 5 minutes: the step runs here. Rust
-  builds belong on a runner, not onto this server.
+  or none takes the job within 5 minutes: the step runs here. Only Rust
+  builds go on a runner (operator), composer and npm stay here, as
+  detection does. `image` may be any build image: one that runs as root
+  gets HOME=/cache/home; one with its own USER keeps its HOME and tools
+  (rustup in a private home) and needs podman on the runner. Cargo and
+  npm caches are in /cache either way. A Rust+wasm+npm project in one
+  runner step:
+  ```toml
+  [[build]]
+  on = "runner"
+  image = "docker.io/soerenmeier/chuchi-build"
+  run = "./wasm/build.sh && cd webui && npm ci && npm run build && cd .. && cargo build --release --locked -p app && cp target/release/app ."
+  artifacts = ["app", "webui/dist"]
+  ```
+  `genco runners list` shows each runner's genco version; an older one
+  gets `genco runner update` on the box (daily by itself after `genco
+  runner install`).
 - A group with mail domains has an SMTP login for its sites: user
   `g-<group>`, password in `/etc/genco/smtp/g-<group>` (the group can
   read it, apps get `GENCO_SMTP_HOST/PORT/USER/PASSWORD`), 127.0.0.1:587

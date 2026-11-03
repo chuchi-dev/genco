@@ -114,7 +114,17 @@ pub(crate) async fn runners_cmd(
 				};
 				let state = if r.online { "online" } else { "offline" };
 				let host = r.info["host"].as_str().unwrap_or("");
-				println!("{}  {state}  last seen {seen}  {host}", r.name);
+				let version = match r.info["version"].as_str() {
+					Some(v) if v != crate::update::VERSION => {
+						format!("genco {v}, not {}!", crate::update::VERSION)
+					}
+					Some(v) => format!("genco {v}"),
+					None => String::new(),
+				};
+				println!(
+					"{}  {state}  last seen {seen}  {host}  {version}",
+					r.name
+				);
 			}
 			if list.is_empty() {
 				println!(
