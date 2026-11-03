@@ -1,8 +1,11 @@
 <script lang="ts" module>
+	import { GoneError, leaveGone } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
+	const GONE = 'This domain is gone.';
+
 	export function loadProps({ id }: { id: string }) {
-		if (!tree.domain(Number(id))) throw new Error('This domain is gone.');
+		if (!tree.domain(Number(id))) throw new GoneError(GONE);
 	}
 </script>
 
@@ -22,6 +25,11 @@
 	// svelte-ignore state_referenced_locally
 	const start = tree.domain(Number(id))!;
 	const domain = $derived(tree.domain(Number(id)) ?? start);
+
+	// deleted elsewhere: the server's page instead
+	$effect(() => {
+		if (!tree.domain(Number(id))) leaveGone(GONE);
+	});
 	const group = $derived(tree.group(domain.groupId)!);
 	const app = $derived(domain.kind === 'node' || domain.kind === 'rust');
 

@@ -1,8 +1,11 @@
 <script lang="ts" module>
+	import { GoneError, leaveGone } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
+	const GONE = 'This group is gone.';
+
 	export function loadProps({ id }: { id: string }) {
-		if (!tree.group(Number(id))) throw new Error('This group is gone.');
+		if (!tree.group(Number(id))) throw new GoneError(GONE);
 	}
 </script>
 
@@ -62,6 +65,11 @@
 	// svelte-ignore state_referenced_locally
 	const start = tree.group(Number(id))!;
 	const group = $derived(tree.group(Number(id)) ?? start);
+
+	// deleted elsewhere: the server's page instead
+	$effect(() => {
+		if (!tree.group(Number(id))) leaveGone(GONE);
+	});
 
 	let clientId = $state(start.clientId);
 	let notes = $state(start.notes);

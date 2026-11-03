@@ -1,5 +1,6 @@
 import { Router, type Request, type Route } from 'chuchi';
 import type { Component } from 'svelte';
+import { message } from './dialogs.svelte';
 import { session } from './session.svelte';
 
 /**
@@ -55,6 +56,18 @@ export const current = new Current();
 /** Opens a page, the agent's conversation stays. */
 export function go(path: string, replace = false) {
 	router.open(path, {}, { history: replace ? 'replace' : 'push' });
+}
+
+/**
+ * The object of a page doesn't exist (anymore): trying again can't help,
+ * the error page goes back to the server's page.
+ */
+export class GoneError extends Error {}
+
+/** Leaves a page whose object was deleted elsewhere for the server's page. */
+export function leaveGone(text: string) {
+	go('/', true);
+	message.show('Gone', text);
 }
 
 /** Shows another conversation in the agent's window, the page stays. */

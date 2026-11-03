@@ -1,9 +1,11 @@
 <script lang="ts" module>
+	import { GoneError, leaveGone } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
+	const GONE = 'This database is gone.';
+
 	export function loadProps({ id }: { id: string }) {
-		if (!tree.database(Number(id)))
-			throw new Error('This database is gone.');
+		if (!tree.database(Number(id))) throw new GoneError(GONE);
 	}
 </script>
 
@@ -34,6 +36,12 @@
 	// svelte-ignore state_referenced_locally
 	const start = tree.database(Number(id))!;
 	const database = $derived(tree.database(Number(id)) ?? start);
+
+	// deleted elsewhere: the server's page instead
+	$effect(() => {
+		if (!tree.database(Number(id))) leaveGone(GONE);
+	});
+
 	// svelte-ignore state_referenced_locally
 	const startGroup = tree.group(start.groupId)!;
 	const group = $derived(tree.group(database.groupId) ?? startGroup);

@@ -1,8 +1,11 @@
 <script lang="ts" module>
+	import { GoneError, leaveGone } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
+	const GONE = 'This client is gone.';
+
 	export function loadProps({ id }: { id: string }) {
-		if (!tree.client(Number(id))) throw new Error('This client is gone.');
+		if (!tree.client(Number(id))) throw new GoneError(GONE);
 	}
 </script>
 
@@ -18,6 +21,13 @@
 	// svelte-ignore state_referenced_locally
 	const start = tree.client(Number(id))!;
 	const client = $derived(tree.client(Number(id)) ?? start);
+
+	// deleted elsewhere: the server's page instead; this page's own
+	// deletion goes there by itself
+	let deleting = false;
+	$effect(() => {
+		if (!tree.client(Number(id)) && !deleting) leaveGone(GONE);
+	});
 
 	let name = $state(start.name);
 	let contact = $state(start.contact);
@@ -35,10 +45,12 @@
 			))
 		)
 			return;
+		deleting = true;
 		try {
 			await del('/clients/' + client.id);
 			go('/');
 		} catch (e: any) {
+			deleting = false;
 			message.show('Not Deleted', e.message);
 		}
 	}

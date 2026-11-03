@@ -1,9 +1,11 @@
 <script lang="ts" module>
+	import { GoneError, leaveGone } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
+	const GONE = 'This mail domain is gone.';
+
 	export function loadProps({ id }: { id: string }) {
-		if (!tree.mailDomain(Number(id)))
-			throw new Error('This mail domain is gone.');
+		if (!tree.mailDomain(Number(id))) throw new GoneError(GONE);
 	}
 </script>
 
@@ -27,6 +29,12 @@
 	// svelte-ignore state_referenced_locally
 	const start = tree.mailDomain(Number(id))!;
 	const domain = $derived(tree.mailDomain(Number(id)) ?? start);
+
+	// deleted elsewhere: the server's page instead
+	$effect(() => {
+		if (!tree.mailDomain(Number(id))) leaveGone(GONE);
+	});
+
 	const group = $derived(tree.group(domain.groupId));
 
 	let selectedBox = $state<number | null>(null);
