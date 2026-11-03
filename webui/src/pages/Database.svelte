@@ -1,12 +1,9 @@
 <script lang="ts" module>
-	import { GoneError, leaveGone } from '@/lib/router.svelte';
+	import { objectPage } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
-	const GONE = 'This database is gone.';
-
-	export function loadProps({ id }: { id: string }) {
-		if (!tree.database(Number(id))) throw new GoneError(GONE);
-	}
+	const page = objectPage(id => tree.database(id), 'This database is gone.');
+	export const loadProps = page.loadProps;
 </script>
 
 <script lang="ts">
@@ -31,19 +28,11 @@
 
 	let { id }: { id: string } = $props();
 
-	// what it was when the page opened, a confirmed deletion removes it
-	// from the tree while the page still shows
-	// svelte-ignore state_referenced_locally
-	const start = tree.database(Number(id))!;
-	const database = $derived(tree.database(Number(id)) ?? start);
-
-	// deleted elsewhere: the server's page instead
-	$effect(() => {
-		if (!tree.database(Number(id))) leaveGone(GONE);
-	});
+	const live = page.live(() => id);
+	const database = $derived(live.current);
 
 	// svelte-ignore state_referenced_locally
-	const startGroup = tree.group(start.groupId)!;
+	const startGroup = tree.group(live.current.groupId)!;
 	const group = $derived(tree.group(database.groupId) ?? startGroup);
 
 	// an import: its upload, then the job on the server

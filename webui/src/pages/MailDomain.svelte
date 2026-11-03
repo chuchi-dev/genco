@@ -1,12 +1,12 @@
 <script lang="ts" module>
-	import { GoneError, leaveGone } from '@/lib/router.svelte';
+	import { objectPage } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
-	const GONE = 'This mail domain is gone.';
-
-	export function loadProps({ id }: { id: string }) {
-		if (!tree.mailDomain(Number(id))) throw new GoneError(GONE);
-	}
+	const page = objectPage(
+		id => tree.mailDomain(id),
+		'This mail domain is gone.',
+	);
+	export const loadProps = page.loadProps;
 </script>
 
 <script lang="ts">
@@ -24,16 +24,8 @@
 
 	let { id }: { id: string } = $props();
 
-	// what it was when the page opened, a confirmed deletion removes it
-	// from the tree while the page still shows
-	// svelte-ignore state_referenced_locally
-	const start = tree.mailDomain(Number(id))!;
-	const domain = $derived(tree.mailDomain(Number(id)) ?? start);
-
-	// deleted elsewhere: the server's page instead
-	$effect(() => {
-		if (!tree.mailDomain(Number(id))) leaveGone(GONE);
-	});
+	const live = page.live(() => id);
+	const domain = $derived(live.current);
 
 	const group = $derived(tree.group(domain.groupId));
 

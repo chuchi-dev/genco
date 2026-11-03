@@ -1,12 +1,9 @@
 <script lang="ts" module>
-	import { GoneError, leaveGone } from '@/lib/router.svelte';
+	import { objectPage } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
-	const GONE = 'This domain is gone.';
-
-	export function loadProps({ id }: { id: string }) {
-		if (!tree.domain(Number(id))) throw new GoneError(GONE);
-	}
+	const page = objectPage(id => tree.domain(id), 'This domain is gone.');
+	export const loadProps = page.loadProps;
 </script>
 
 <script lang="ts">
@@ -22,26 +19,20 @@
 
 	let { id }: { id: string } = $props();
 
-	// svelte-ignore state_referenced_locally
-	const start = tree.domain(Number(id))!;
-	const domain = $derived(tree.domain(Number(id)) ?? start);
-
-	// deleted elsewhere: the server's page instead
-	$effect(() => {
-		if (!tree.domain(Number(id))) leaveGone(GONE);
-	});
+	const live = page.live(() => id);
+	const domain = $derived(live.current);
 	const group = $derived(tree.group(domain.groupId)!);
 	const app = $derived(domain.kind === 'node' || domain.kind === 'rust');
 
-	let kind = $state(start.kind);
-	let phpVersion = $state(start.phpVersion);
-	let root = $state(start.root);
-	let command = $state(start.command);
-	let publicDir = $state(start.publicDir);
-	let upstream = $state(start.upstream);
-	let www = $state(start.www);
-	let zeroDowntime = $state(start.zeroDowntime);
-	let nginxExtra = $state(start.nginxExtra);
+	let kind = $state(live.current.kind);
+	let phpVersion = $state(live.current.phpVersion);
+	let root = $state(live.current.root);
+	let command = $state(live.current.command);
+	let publicDir = $state(live.current.publicDir);
+	let upstream = $state(live.current.upstream);
+	let www = $state(live.current.www);
+	let zeroDowntime = $state(live.current.zeroDowntime);
+	let nginxExtra = $state(live.current.nginxExtra);
 	let files = $state<ConfigFile[] | null>(null);
 
 	// the domain's files, again when the tree changes (e.g. after an apply)

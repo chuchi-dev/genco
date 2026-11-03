@@ -1,12 +1,9 @@
 <script lang="ts" module>
-	import { GoneError, leaveGone } from '@/lib/router.svelte';
+	import { objectPage } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
-	const GONE = 'This client is gone.';
-
-	export function loadProps({ id }: { id: string }) {
-		if (!tree.client(Number(id))) throw new GoneError(GONE);
-	}
+	const page = objectPage(id => tree.client(id), 'This client is gone.');
+	export const loadProps = page.loadProps;
 </script>
 
 <script lang="ts">
@@ -18,20 +15,12 @@
 
 	let { id }: { id: string } = $props();
 
-	// svelte-ignore state_referenced_locally
-	const start = tree.client(Number(id))!;
-	const client = $derived(tree.client(Number(id)) ?? start);
+	const live = page.live(() => id);
+	const client = $derived(live.current);
 
-	// deleted elsewhere: the server's page instead; this page's own
-	// deletion goes there by itself
-	let deleting = false;
-	$effect(() => {
-		if (!tree.client(Number(id)) && !deleting) leaveGone(GONE);
-	});
-
-	let name = $state(start.name);
-	let contact = $state(start.contact);
-	let notes = $state(start.notes);
+	let name = $state(live.current.name);
+	let contact = $state(live.current.contact);
+	let notes = $state(live.current.notes);
 
 	async function save() {
 		await post('/clients/' + client.id, { name, contact, notes });
@@ -45,12 +34,12 @@
 			))
 		)
 			return;
-		deleting = true;
+		live.deleting = true;
 		try {
 			await del('/clients/' + client.id);
 			go('/');
 		} catch (e: any) {
-			deleting = false;
+			live.deleting = false;
 			message.show('Not Deleted', e.message);
 		}
 	}

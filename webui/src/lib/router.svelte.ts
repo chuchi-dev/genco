@@ -1,7 +1,8 @@
 import { Router, type Request, type Route } from 'chuchi';
-import type { Component } from 'svelte';
+import { untrack, type Component } from 'svelte';
 import { message } from './dialogs.svelte';
 import { session } from './session.svelte';
+import { tree } from './tree.svelte';
 
 /**
  * The pages of the panel with chuchi's router:
@@ -64,10 +65,48 @@ export function go(path: string, replace = false) {
  */
 export class GoneError extends Error {}
 
-/** Leaves a page whose object was deleted elsewhere for the server's page. */
-export function leaveGone(text: string) {
-	go('/', true);
-	message.show('Gone', text);
+/**
+ * A page of one object of the tree (`find` by the route's id): its
+ * `loadProps` throws `GoneError` with `text` when the object isn't there,
+ * `live` keeps it in the component.
+ */
+export function objectPage<T>(
+	find: (id: number) => T | undefined,
+	text: string,
+) {
+	return {
+		loadProps({ id }: { id: string }) {
+			if (find(Number(id))) return;
+			// without a tree nothing can be told gone, trying again can help
+			if (tree.error) throw new Error(tree.error);
+			throw new GoneError(text);
+		},
+
+		/**
+		 * The object, the last one seen while it vanishes from the tree. Is
+		 * it deleted elsewhere, the server's page shows instead; a page that
+		 * deletes it itself sets `deleting` and goes on by itself.
+		 */
+		live(id: () => string) {
+			const start = find(Number(id()))!;
+			const current = $derived(find(Number(id())) ?? start);
+			const page = {
+				get current() {
+					return current;
+				},
+				deleting: false,
+			};
+			$effect(() => {
+				if (find(Number(id())) || page.deleting) return;
+				// the message box reads its state, the effect must not
+				untrack(() => {
+					go('/', true);
+					message.show('Gone', text);
+				});
+			});
+			return page;
+		},
+	};
 }
 
 /** Shows another conversation in the agent's window, the page stays. */

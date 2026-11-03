@@ -1,12 +1,9 @@
 <script lang="ts" module>
-	import { GoneError, leaveGone } from '@/lib/router.svelte';
+	import { objectPage } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
-	const GONE = 'This group is gone.';
-
-	export function loadProps({ id }: { id: string }) {
-		if (!tree.group(Number(id))) throw new GoneError(GONE);
-	}
+	const page = objectPage(id => tree.group(id), 'This group is gone.');
+	export const loadProps = page.loadProps;
 </script>
 
 <script lang="ts">
@@ -62,23 +59,17 @@
 			.join('/'),
 	);
 
-	// svelte-ignore state_referenced_locally
-	const start = tree.group(Number(id))!;
-	const group = $derived(tree.group(Number(id)) ?? start);
+	const live = page.live(() => id);
+	const group = $derived(live.current);
 
-	// deleted elsewhere: the server's page instead
-	$effect(() => {
-		if (!tree.group(Number(id))) leaveGone(GONE);
-	});
-
-	let clientId = $state(start.clientId);
-	let notes = $state(start.notes);
+	let clientId = $state(live.current.clientId);
+	let notes = $state(live.current.notes);
 	// as text in the fields, numbers when saved
 	let php = $state({
-		uploadMb: String(start.php.uploadMb),
-		memoryMb: String(start.php.memoryMb),
-		maxExecutionS: String(start.php.maxExecutionS),
-		maxInputVars: String(start.php.maxInputVars),
+		uploadMb: String(live.current.php.uploadMb),
+		memoryMb: String(live.current.php.memoryMb),
+		maxExecutionS: String(live.current.php.maxExecutionS),
+		maxInputVars: String(live.current.php.maxInputVars),
 	});
 	const hasPhp = $derived(group.domains.some(d => d.kind === 'php'));
 
