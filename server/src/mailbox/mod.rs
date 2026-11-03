@@ -30,7 +30,9 @@ use crate::users::Authed;
 use crate::util;
 
 pub use cli::{MailCmd, cli};
-pub use conf::{SUBMISSION, SUBMISSION_OPTIONS, files, postfix_settings};
+pub use conf::{
+	SUBMISSION, SUBMISSION_OPTIONS, docker_bridges, files, postfix_settings,
+};
 use dns::*;
 pub use dns::{DnsRecord, panel_dns};
 pub use routes::routes;

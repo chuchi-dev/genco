@@ -341,11 +341,13 @@ Still open:
   installs and starts them unconditionally; on a 3.8 GB server without
   mail domains rspamd took 5 processes and ~600 MB. Start them (and the
   milter settings) with the first mail domain, stop them without one.
+  Done (2026-11-03), postsrsd too.
 - postfix inet_interfaces: setup and every apply set loopback-only
   without mail domains; Docker containers sending through
   host.docker.internal:25 (172.17.0.1) lose their mail, and a manual
   change is reset by the next apply. Allow the docker bridge (listen on
   it, mynetworks) while containers need it, or keep a manual setting.
+  Done (2026-11-03): docker0's address and the bridges' networks.
 - DNS checks: dns::dig takes the first name server's answer with
   +norecurse, also an empty one from a lame server (a delegated server
   that doesn't serve the zone): a domain got "no DNS record" and no

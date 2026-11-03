@@ -89,7 +89,7 @@ pub async fn main(
 	step("Dovecot for mailboxes");
 	dovecot().await?;
 	step("spam filter and DKIM (Rspamd, Redis), SRS for forwards");
-	apt(&["dovecot-sieve", "rspamd", "redis-server", "postsrsd"]).await?;
+	mail_filter().await?;
 
 	step("webmail: SnappyMail, checked against its release key");
 	let version = crate::webmail::install().await?;
@@ -522,14 +522,30 @@ async fn dovecot() -> Result<(), String> {
 	if Path::new("/usr/sbin/dovecot").exists() {
 		return Ok(());
 	}
-	write("/usr/sbin/policy-rc.d", "#!/bin/sh\nexit 101\n")?;
-	sh("chmod 755 /usr/sbin/policy-rc.d").await?;
-	let installed =
-		apt(&["dovecot-imapd", "dovecot-lmtpd", "bind9-dnsutils"]).await;
-	let _ = std::fs::remove_file("/usr/sbin/policy-rc.d");
-	installed?;
+	apt_stopped(&["dovecot-imapd", "dovecot-lmtpd", "bind9-dnsutils"]).await?;
 	sh("systemctl disable -q --now dovecot").await?;
 	Ok(())
+}
+
+/// Rspamd, Redis and postsrsd installed without starting, they take
+/// about 600 MB: `apply` runs them only while there are mail domains.
+async fn mail_filter() -> Result<(), String> {
+	let packages = ["dovecot-sieve", "rspamd", "redis-server", "postsrsd"];
+	if crate::mailfilter::installed() {
+		return apt(&packages).await;
+	}
+	apt_stopped(&packages).await?;
+	sh("systemctl disable -q --now rspamd redis-server postsrsd").await?;
+	Ok(())
+}
+
+/// Installs packages without starting their services.
+async fn apt_stopped(packages: &[&str]) -> Result<(), String> {
+	write("/usr/sbin/policy-rc.d", "#!/bin/sh\nexit 101\n")?;
+	sh("chmod 755 /usr/sbin/policy-rc.d").await?;
+	let installed = apt(packages).await;
+	let _ = std::fs::remove_file("/usr/sbin/policy-rc.d");
+	installed
 }
 
 /// restic, the repository's password and a timer at night. Without the

@@ -19,8 +19,9 @@ pub(super) fn mail_files(
 	mailbox::files(cfg, groups, cert)
 }
 
-/// Postfix and Dovecot after their files were written. Dovecot runs only
-/// while there are mail domains.
+/// Postfix and Dovecot after their files were written. Dovecot and the
+/// spam filter run only while there are mail domains: Rspamd starts
+/// before Postfix uses it and stops after Postfix no longer does.
 pub(super) async fn mail_services(
 	r: &mut Report,
 	cfg: &Config,
@@ -42,6 +43,9 @@ pub(super) async fn mail_services(
 		filter_services(r, changed).await;
 	}
 	postfix(r, cfg, groups, on && cert, changed).await;
+	if !on && mailfilter::installed() {
+		stop_filter(r).await;
+	}
 	if on && webmail::installed() {
 		webmail_service(r, changed).await;
 	}
@@ -83,7 +87,8 @@ pub(super) async fn postfix(
 	let cert = mailbox::host(cfg).is_some_and(|h| host::has_cert(&h));
 	let mut restart = false;
 	let mut reload = changed.iter().any(|p| p.starts_with("/etc/genco/mail"));
-	let settings = mailbox::postfix_settings(cfg, groups, cert);
+	let bridges = mailbox::docker_bridges().await;
+	let settings = mailbox::postfix_settings(cfg, groups, cert, &bridges);
 	let names: Vec<&str> = settings.iter().map(|(n, _)| *n).collect();
 	let current = postconf(&names).await;
 	for ((name, value), now) in settings.iter().zip(&current) {
@@ -200,6 +205,21 @@ pub(super) async fn filter_services(
 		&& Path::new("/usr/bin/sievec").exists()
 	{
 		r.run(&["sievec", mailfilter::SPAM_SIEVE]).await;
+	}
+}
+
+/// Rspamd, postsrsd and Redis off without mail domains, Postfix no
+/// longer uses them.
+async fn stop_filter(r: &mut Report) {
+	for unit in ["rspamd", "postsrsd", "redis-server"] {
+		let enabled = Command::new("systemctl")
+			.args(["is-enabled", "-q", unit])
+			.status()
+			.await
+			.is_ok_and(|s| s.success());
+		if enabled || is_active(unit).await {
+			r.run(&["systemctl", "disable", "--now", "-q", unit]).await;
+		}
 	}
 }
 

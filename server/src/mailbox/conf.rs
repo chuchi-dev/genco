@@ -126,7 +126,76 @@ pub fn files(cfg: &Config, groups: &[Group], cert: bool) -> Vec<File> {
 		files.extend(crate::webmail::files(host, cert));
 	}
 	files.extend(crate::mailfilter::files(cfg, groups));
+	// Postfix may listen on docker0, which Docker makes at boot
+	files.push(File {
+		path: POSTFIX_AFTER_DOCKER.into(),
+		content: "# written by genco, changes here are overwritten
+[Unit]
+After=docker.service
+"
+		.into(),
+		private_to: None,
+	});
 	files
+}
+
+const POSTFIX_AFTER_DOCKER: &str =
+	"/etc/systemd/system/postfix.service.d/genco-docker.conf";
+
+/// A Docker bridge on this server: docker0 (host.docker.internal) or a
+/// compose network's br-*.
+pub struct Bridge {
+	pub name: String,
+	pub addr: std::net::Ipv4Addr,
+	pub prefix: u8,
+}
+
+impl Bridge {
+	/// Its network, e.g. 172.17.0.0/16.
+	fn network(&self) -> String {
+		let mask = u32::MAX.checked_shl(32 - self.prefix as u32).unwrap_or(0);
+		let net = std::net::Ipv4Addr::from(u32::from(self.addr) & mask);
+		format!("{net}/{}", self.prefix)
+	}
+}
+
+/// The Docker bridges of `ip -4 -o addr show`.
+fn parse_bridges(out: &str) -> Vec<Bridge> {
+	let mut bridges = vec![];
+	for line in out.lines() {
+		let mut words = line.split_whitespace().skip(1);
+		let (Some(name), Some("inet"), Some(cidr)) =
+			(words.next(), words.next(), words.next())
+		else {
+			continue;
+		};
+		if name != "docker0" && !name.starts_with("br-") {
+			continue;
+		}
+		let Some((addr, prefix)) = cidr.split_once('/') else {
+			continue;
+		};
+		if let (Ok(addr), Ok(prefix)) = (addr.parse(), prefix.parse())
+			&& prefix <= 32
+		{
+			bridges.push(Bridge {
+				name: name.into(),
+				addr,
+				prefix,
+			});
+		}
+	}
+	bridges
+}
+
+/// The Docker bridges that exist now, none without Docker.
+pub async fn docker_bridges() -> Vec<Bridge> {
+	let out = tokio::process::Command::new("ip")
+		.args(["-4", "-o", "addr", "show"])
+		.output()
+		.await;
+	let out = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+	parse_bridges(&out.unwrap_or_default())
 }
 
 /// Dovecot's whole config: only genco's mailboxes log in, never the
@@ -237,21 +306,34 @@ service auth {{
 	)
 }
 
-/// Postfix's main.cf values for mail, and whether a change needs a
-/// restart instead of a reload.
+/// Postfix's main.cf values for mail. Without mail domains it listens
+/// only on localhost and docker0, where containers send through
+/// host.docker.internal; the Docker bridges' networks may relay.
 pub fn postfix_settings(
 	cfg: &Config,
 	groups: &[Group],
 	cert: bool,
+	bridges: &[Bridge],
 ) -> Vec<(&'static str, String)> {
 	let on = enabled(groups);
 	let host = host(cfg).unwrap_or_else(|| "localhost".into());
 	let panel = cfg.domain.clone().unwrap_or_else(|| "localhost".into());
+	let docker0 = bridges.iter().find(|b| b.name == "docker0");
+	let interfaces = match docker0 {
+		_ if on => "all".to_string(),
+		// loopback-only can't be combined, localhost is 127.0.0.1 and ::1
+		Some(b) => format!("localhost, {}", b.addr),
+		None => "loopback-only".to_string(),
+	};
+	let mut networks =
+		"127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128".to_string();
+	for b in bridges {
+		networks.push(' ');
+		networks.push_str(&b.network());
+	}
 	let mut s = vec![
-		(
-			"inet_interfaces",
-			if on { "all" } else { "loopback-only" }.to_string(),
-		),
+		("inet_interfaces", interfaces),
+		("mynetworks", networks),
 		("myhostname", if on { host.clone() } else { panel }),
 		(
 			"virtual_mailbox_domains",
@@ -318,6 +400,77 @@ pub const SUBMISSION_OPTIONS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	const IP: &str = "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever
+2: eth0    inet 203.0.113.7/24 brd 203.0.113.255 scope global eth0\\       valid_lft forever
+3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever
+4: br-879bce4e5a38    inet 192.168.96.1/20 brd 192.168.111.255 scope global br-879bce4e5a38\\       valid_lft forever
+";
+
+	fn setting(s: &[(&str, String)], name: &str) -> String {
+		s.iter().find(|(k, _)| *k == name).unwrap().1.clone()
+	}
+
+	fn groups(mail: bool) -> Vec<Group> {
+		let domain = MailDomain {
+			id: 1,
+			group_id: 1,
+			name: "example.com".into(),
+			mailboxes: vec![],
+			forwards: vec![],
+		};
+		let mail_domains = if mail { vec![domain] } else { vec![] };
+		vec![Group {
+			mail_domains,
+			..Default::default()
+		}]
+	}
+
+	#[test]
+	fn docker_bridges_are_parsed() {
+		let b = parse_bridges(IP);
+		let names: Vec<&str> = b.iter().map(|b| b.name.as_str()).collect();
+		assert_eq!(names, ["docker0", "br-879bce4e5a38"]);
+		assert_eq!(b[0].network(), "172.17.0.0/16");
+		assert_eq!(b[1].network(), "192.168.96.0/20");
+		assert!(parse_bridges("").is_empty());
+	}
+
+	#[test]
+	fn postfix_listens_on_docker0_without_mail_domains() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.com\"").unwrap();
+		let bridges = parse_bridges(IP);
+
+		let s = postfix_settings(&cfg, &groups(false), false, &[]);
+		assert_eq!(setting(&s, "inet_interfaces"), "loopback-only");
+		assert_eq!(
+			setting(&s, "mynetworks"),
+			"127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128"
+		);
+
+		let s = postfix_settings(&cfg, &groups(false), false, &bridges);
+		assert_eq!(setting(&s, "inet_interfaces"), "localhost, 172.17.0.1");
+		let nets = setting(&s, "mynetworks");
+		assert!(nets.ends_with(" 172.17.0.0/16 192.168.96.0/20"), "{nets}");
+
+		// a compose network alone: nothing listens on it
+		let s = postfix_settings(&cfg, &groups(false), false, &bridges[1..]);
+		assert_eq!(setting(&s, "inet_interfaces"), "loopback-only");
+	}
+
+	#[test]
+	fn postfix_listens_everywhere_with_mail_domains() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.com\"").unwrap();
+		let bridges = parse_bridges(IP);
+		for b in [&bridges[..], &[]] {
+			let s = postfix_settings(&cfg, &groups(true), true, b);
+			assert_eq!(setting(&s, "inet_interfaces"), "all");
+			// never the public network
+			assert!(!setting(&s, "mynetworks").contains("203.0.113"));
+		}
+	}
 
 	#[test]
 	fn dovecot_without_certificate_only_delivers() {
