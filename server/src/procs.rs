@@ -42,8 +42,16 @@ pub struct Worker {
 	pub command: String,
 	/// open to the internet, the worker gets it as PORT
 	pub port: Option<u16>,
+	/// a note where clients reach it, `packages.example.com:5426`; the
+	/// panel's also for the repository's workers, kept over deploys
+	#[serde(default)]
+	pub address: String,
 	#[serde(default)]
 	pub source: String,
+	/// its unit's ActiveState (active, failed, inactive, …), only in the
+	/// tree the panel loads
+	#[serde(default, skip_deserializing)]
+	pub state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,8 +76,8 @@ pub fn load(
 	conn: &Connection,
 ) -> rusqlite::Result<(Vec<Worker>, Vec<Schedule>)> {
 	let mut stmt = conn.prepare(
-		"SELECT id, group_id, name, dir, command, port, source FROM workers
-		ORDER BY name",
+		"SELECT id, group_id, name, dir, command, port, address, source
+		FROM workers ORDER BY name",
 	)?;
 	let workers = stmt
 		.query_map([], |r| {
@@ -80,7 +88,9 @@ pub fn load(
 				dir: r.get(3)?,
 				command: r.get(4)?,
 				port: r.get(5)?,
-				source: r.get(6)?,
+				address: r.get(6)?,
+				source: r.get(7)?,
+				state: None,
 			})
 		})?
 		.collect::<rusqlite::Result<_>>()?;
@@ -210,6 +220,16 @@ pub async fn check_every(every: &str) -> Result<()> {
 	Ok(())
 }
 
+/// A short line of text, it shows in the panel only.
+fn check_address(address: &str) -> Result<()> {
+	if address.len() > 200 || address.chars().any(|c| c.is_control()) {
+		return Err(Error::Invalid(
+			"the address is one line of up to 200 characters".into(),
+		));
+	}
+	Ok(())
+}
+
 impl Worker {
 	pub fn check(&self) -> Result<()> {
 		check_name(&self.name)?;
@@ -218,7 +238,7 @@ impl Worker {
 		if let Some(p) = self.port {
 			check_port(p, &ssh_ports())?;
 		}
-		Ok(())
+		check_address(&self.address)
 	}
 }
 
@@ -258,21 +278,44 @@ pub fn save_worker(conn: &Connection, w: &Worker) -> Result<i64> {
 	}
 	if w.id == 0 {
 		conn.execute(
-			"INSERT INTO workers (group_id, name, dir, command, port, source,
-			created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-			params![w.group_id, w.name, w.dir, w.command, w.port, PANEL, now()],
+			"INSERT INTO workers (group_id, name, dir, command, port, address,
+			source, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+			params![
+				w.group_id,
+				w.name,
+				w.dir,
+				w.command,
+				w.port,
+				w.address.trim(),
+				PANEL,
+				now()
+			],
 		)
 		.map_err(|e| taken(e, &w.name))?;
 		return Ok(conn.last_insert_rowid());
 	}
 	panel_only(conn, "workers", w.id)?;
 	conn.execute(
-		"UPDATE workers SET name = ?1, dir = ?2, command = ?3, port = ?4
-		WHERE id = ?5",
-		params![w.name, w.dir, w.command, w.port, w.id],
+		"UPDATE workers SET name = ?1, dir = ?2, command = ?3, port = ?4,
+		address = ?5 WHERE id = ?6",
+		params![w.name, w.dir, w.command, w.port, w.address.trim(), w.id],
 	)
 	.map_err(|e| taken(e, &w.name))?;
 	Ok(w.id)
+}
+
+/// Only the address, of any worker: where clients reach one of the
+/// repository is known on the server, not in genco.toml.
+pub fn set_address(conn: &Connection, id: i64, address: &str) -> Result<()> {
+	check_address(address)?;
+	let n = conn.execute(
+		"UPDATE workers SET address = ?1 WHERE id = ?2",
+		params![address.trim(), id],
+	)?;
+	if n == 0 {
+		return Err(Error::NotFound);
+	}
+	Ok(())
 }
 
 pub fn save_schedule(conn: &Connection, s: &Schedule) -> Result<i64> {
@@ -366,12 +409,21 @@ pub fn sync_repo(
 		.filter(|s| s.group_id == group_id && s.source == PANEL)
 		.map(|s| s.name.as_str())
 		.collect();
+	// the panel's address of one stays
+	let address = |name: &str| {
+		old_w
+			.iter()
+			.find(|w| mine(&w.source, w.group_id) && w.name == name)
+			.map(|w| w.address.clone())
+			.unwrap_or_default()
+	};
 	let new_w: Vec<Worker> = workers
 		.iter()
 		.filter(|w| !panel_w.contains(&w.name.as_str()))
 		.map(|w| Worker {
 			id: 0,
 			group_id,
+			address: address(&w.name),
 			source: REPO.into(),
 			..w.clone()
 		})
@@ -429,13 +481,15 @@ pub fn sync_repo(
 				}
 				conn.execute(
 					"INSERT INTO workers (group_id, name, dir, command, port,
-				source, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+				address, source, created_at)
+				VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
 					params![
 						group_id,
 						w.name,
 						w.dir,
 						w.command,
 						w.port,
+						w.address,
 						REPO,
 						now()
 					],
@@ -494,6 +548,23 @@ async fn update_worker(
 	save_worker(&db.conn(), &w)?;
 	events.send(Event::Tree);
 	Ok(Json(id))
+}
+
+#[derive(Deserialize)]
+struct AddressReq {
+	address: String,
+}
+
+async fn update_address(
+	_authed: Authed,
+	State(db): State<Db>,
+	State(events): State<Events>,
+	Path(id): Path<i64>,
+	Json(req): Json<AddressReq>,
+) -> Result<Json<()>> {
+	set_address(&db.conn(), id, &req.address)?;
+	events.send(Event::Tree);
+	Ok(Json(()))
 }
 
 async fn delete_worker(
@@ -592,6 +663,7 @@ pub fn routes() -> Router<AppState> {
 	Router::new()
 		.route("/groups/{id}/workers", post(create_worker))
 		.route("/workers/{id}", post(update_worker).delete(delete_worker))
+		.route("/workers/{id}/address", post(update_address))
 		.route("/groups/{id}/schedules", post(create_schedule))
 		.route(
 			"/schedules/{id}",
@@ -624,7 +696,9 @@ mod tests {
 			dir: "current/craft".into(),
 			command: "php craft queue/listen --verbose".into(),
 			port,
+			address: String::new(),
 			source: String::new(),
+			state: None,
 		}
 	}
 
@@ -673,6 +747,25 @@ mod tests {
 		save_worker(&conn, &worker("packages", Some(5426))).unwrap();
 		assert!(save_worker(&conn, &worker("other", Some(5426))).is_err());
 		assert!(save_worker(&conn, &worker("packages", None)).is_err());
+	}
+
+	#[test]
+	fn the_address_stays_over_deploys() {
+		let db = setup();
+		let conn = db.conn();
+		sync_repo(&conn, 1, &[worker("packages", Some(5426))], &[]).unwrap();
+		let (w, _) = load(&conn).unwrap();
+		set_address(&conn, w[0].id, " packages.p2.goodserver.ch:5426 ")
+			.unwrap();
+		assert!(set_address(&conn, w[0].id, "a\nb").is_err());
+
+		// the same genco.toml again: nothing changed
+		let again = [worker("packages", Some(5426))];
+		assert!(!sync_repo(&conn, 1, &again, &[]).unwrap());
+		let other = [worker("packages", Some(5427))];
+		assert!(sync_repo(&conn, 1, &other, &[]).unwrap());
+		let (w, _) = load(&conn).unwrap();
+		assert_eq!(w[0].address, "packages.p2.goodserver.ch:5426");
 	}
 
 	#[test]

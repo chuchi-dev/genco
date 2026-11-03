@@ -7,10 +7,18 @@
 	import ScheduleDialog from '@/components/dialogs/ScheduleDialog.svelte';
 
 	// the group's workers (always running) and schedules (at times); the
-	// ones of genco.toml change only with the repository
-	let { group }: { group: Group } = $props();
+	// ones of genco.toml change only with the repository (but their address)
+	let {
+		group,
+		worker: initial = null,
+	}: {
+		group: Group;
+		/** selected first, e.g. from the tree */
+		worker?: number | null;
+	} = $props();
 
-	let selWorker = $state<number | null>(null);
+	// svelte-ignore state_referenced_locally
+	let selWorker = $state<number | null>(initial);
 	let selSchedule = $state<number | null>(null);
 	const worker = $derived(group.workers.find(w => w.id === selWorker));
 	const schedule = $derived(group.schedules.find(s => s.id === selSchedule));
@@ -47,10 +55,10 @@
 		{ label: 'Command' },
 		{ label: 'Directory' },
 		{ label: 'Port', num: true },
+		{ label: 'Address' },
 	]}
 	empty="No workers. Craft's queue gets one with the next deploy."
-	ondblclick={w =>
-		w.source === 'panel' && (editing = { kind: 'worker', item: w })}
+	ondblclick={w => (editing = { kind: 'worker', item: w })}
 	maxHeight={200}
 >
 	{#snippet row(w)}
@@ -60,6 +68,7 @@
 		<td class="mono">{w.command}</td>
 		<td><code>{w.dir}</code></td>
 		<td class="num">{w.port ?? ''}</td>
+		<td>{w.address}</td>
 	{/snippet}
 </ListView>
 <div class="row-buttons">
@@ -67,7 +76,7 @@
 		New Worker…
 	</Button>
 	<Button
-		disabled={!worker || worker.source !== 'panel'}
+		disabled={!worker}
 		onclick={() => worker && (editing = { kind: 'worker', item: worker })}
 	>
 		Change…

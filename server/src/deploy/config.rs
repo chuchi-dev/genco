@@ -81,7 +81,9 @@ impl DeployConfig {
 				dir: in_current(&w.dir),
 				command: w.run.clone(),
 				port: w.port,
+				address: String::new(),
 				source: String::new(),
+				state: None,
 			})
 			.collect();
 		let schedules: Vec<Schedule> = self

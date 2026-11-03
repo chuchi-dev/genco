@@ -5,6 +5,10 @@
 		key: string;
 		label: string;
 		icon: IconName;
+		/** shown on hover */
+		title?: string;
+		/** a dot after the label: running, failed or stopped */
+		state?: 'ok' | 'bad' | 'off';
 		children?: TreeItem[];
 	};
 </script>
@@ -56,6 +60,7 @@
 				<button
 					class="label"
 					class:selected={selected === item.key}
+					title={item.title}
 					onclick={() => onselect(item.key)}
 					ondblclick={() => toggle(item.key)}
 					oncontextmenu={e => {
@@ -68,6 +73,9 @@
 				>
 					<Icon name={item.icon} />
 					<span>{item.label}</span>
+					{#if item.state}
+						<i class="dot {item.state}"></i>
+					{/if}
 				</button>
 			</div>
 			{#if item.children?.length && open}
@@ -138,6 +146,22 @@
 			background: $select;
 			color: $white;
 			outline: 1px dotted #ff0;
+		}
+	}
+
+	.dot {
+		width: 6px;
+		height: 6px;
+		flex-shrink: 0;
+		border-radius: 50%;
+		background: $shadow;
+
+		&.ok {
+			background: $ok;
+		}
+
+		&.bad {
+			background: $error;
 		}
 	}
 </style>

@@ -187,14 +187,14 @@
 							});
 				}
 				for (const w of g.workers)
-					if (has(w.name, w.command))
+					if (has(w.name, w.command, w.address))
 						out.push({
 							key: 'w' + w.id,
 							icon: 'gear',
 							name: w.name,
 							kind: 'Worker',
 							where,
-							open: page(`/groups/${g.id}/services`),
+							open: page(`/groups/${g.id}/services/${w.id}`),
 						});
 				for (const s of g.schedules)
 					if (has(s.name, s.command))

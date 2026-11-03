@@ -19,6 +19,11 @@ export function registerRoutes() {
 				/^\/groups\/(?<id>\d+)\/files(?<path>(\/.*)?)$/,
 				() => import('./Group.svelte'),
 			],
+			// a worker of the tree, selected in the services tab
+			[
+				/^\/groups\/(?<id>\d+)\/(?<tab>services)\/(?<worker>\d+)$/,
+				() => import('./Group.svelte'),
+			],
 			[
 				/^\/groups\/(?<id>\d+)(\/(?<tab>[a-z]+))?$/,
 				() => import('./Group.svelte'),

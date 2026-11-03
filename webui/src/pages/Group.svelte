@@ -34,7 +34,14 @@
 		id,
 		tab: tabProp,
 		path,
-	}: { id: string; tab?: string; path?: string } = $props();
+		worker,
+	}: {
+		id: string;
+		tab?: string;
+		path?: string;
+		/** a worker of the tree, selected in the services tab */
+		worker?: string;
+	} = $props();
 
 	const TABS = GROUP_TABS;
 	// /groups/1/files/shared/craft opens the files tab in that folder
@@ -233,7 +240,7 @@
 			</Button>
 		</div>
 	{:else if tab === 'services'}
-		<GroupProcs {group} />
+		<GroupProcs {group} worker={worker ? Number(worker) : null} />
 		<GroupServices {group} />
 	{:else if tab === 'config'}
 		{#if files}

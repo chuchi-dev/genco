@@ -125,7 +125,9 @@ field in the panel.
   5426]`. With `--port` the port is open to the internet (not 20000 to
   39999, nor genco's own) and the worker gets `PORT`; without, it may
   not listen at all. They restart when they stop and after every
-  deploy. `genco worker list|set|delete`.
+  deploy. `genco worker list|set|delete`. `--address
+  packages.example.com:5426` notes where clients reach one (shown in
+  the panel's tree), also on genco.toml's workers.
 - Schedules run a command at times like cron, as
   `genco-<group>-cron-<name>.timer` with its `.service`: `genco schedule
   add <name> --group <g> --dir current/craft --command "php craft gc"

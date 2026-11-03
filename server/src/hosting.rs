@@ -564,7 +564,24 @@ async fn get_tree(
 	_authed: Authed,
 	State(db): State<Db>,
 ) -> Result<Json<Vec<Client>>> {
-	Ok(Json(tree(&db.conn())?))
+	let mut clients = tree(&db.conn())?;
+	// without systemctl the tree still shows, only without states
+	let units = host::worker_units().await.unwrap_or_default();
+	set_worker_states(&mut clients, &units);
+	Ok(Json(clients))
+}
+
+/// Each worker's ActiveState, from the units systemd knows.
+fn set_worker_states(clients: &mut [Client], units: &[host::Unit]) {
+	for g in clients.iter_mut().flat_map(|c| &mut c.groups) {
+		for w in &mut g.workers {
+			let unit = render::worker_unit(&g.name, &w.name);
+			w.state = units
+				.iter()
+				.find(|u| u.unit == unit)
+				.map(|u| u.active.clone());
+		}
+	}
 }
 
 #[derive(Debug, Deserialize)]
@@ -1221,5 +1238,43 @@ mod tests {
 		assert_eq!(group.user, "g-shop");
 		assert_eq!(group.domains[0].kind, Kind::Node);
 		assert_eq!(group.databases[0].name, "shop");
+	}
+
+	#[test]
+	fn tree_has_workers_with_port_address_and_state() {
+		let db = Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('acme', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+				VALUES ('packages', 1, 0);
+			INSERT INTO workers (group_id, name, dir, command, port, address,
+				source, created_at)
+				VALUES (1, 'server', 'current', './packages-server', 5426,
+				'packages.p2.goodserver.ch:5426', 'panel', 0),
+				(1, 'other', 'current', './other', NULL, '', 'repo', 0);",
+		)
+		.unwrap();
+
+		let mut clients = tree(&conn).unwrap();
+		let unit = |name: &str, active: &str| host::Unit {
+			unit: name.into(),
+			load: "loaded".into(),
+			active: active.into(),
+			sub: "running".into(),
+			description: String::new(),
+		};
+		set_worker_states(
+			&mut clients,
+			&[unit("genco-packages-worker-server.service", "failed")],
+		);
+
+		let json = serde_json::to_value(&clients).unwrap();
+		let workers = &json[0]["groups"][0]["workers"];
+		assert_eq!(workers[0]["name"], "other");
+		assert_eq!(workers[0]["state"], serde_json::Value::Null);
+		assert_eq!(workers[1]["port"], 5426);
+		assert_eq!(workers[1]["address"], "packages.p2.goodserver.ch:5426");
+		assert_eq!(workers[1]["state"], "failed");
 	}
 }

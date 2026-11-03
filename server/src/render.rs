@@ -1324,7 +1324,9 @@ mod tests {
 				dir: "current/craft".into(),
 				command: "php craft queue/listen --verbose".into(),
 				port: None,
+				address: String::new(),
 				source: "repo".into(),
+				state: None,
 			},
 			Worker {
 				id: 2,
@@ -1333,7 +1335,9 @@ mod tests {
 				dir: "current".into(),
 				command: "./packages-server".into(),
 				port: Some(5426),
+				address: String::new(),
 				source: "panel".into(),
+				state: None,
 			},
 		];
 		g.schedules = vec![Schedule {
@@ -1394,7 +1398,9 @@ mod tests {
 			dir: "current".into(),
 			command: "./packages-server".into(),
 			port: Some(5426),
+			address: String::new(),
 			source: "panel".into(),
+			state: None,
 		}];
 		let blocked = [
 			"198.51.100.0/24".to_string(),

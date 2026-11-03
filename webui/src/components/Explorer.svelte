@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { current, go } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
+	import type { Worker } from '@/lib/api';
 	import Menu, { type MenuDef, type MenuEntry } from './win/Menu.svelte';
 	import ContextMenu from './win/ContextMenu.svelte';
 	import Tree, { type TreeItem } from './win/Tree.svelte';
@@ -53,15 +54,40 @@
 							label: d.name,
 							icon: 'mail' as const,
 						})),
+						...g.workers.map(w => ({
+							key: `/groups/${g.id}/services/${w.id}`,
+							label: w.name + (w.port ? ` :${w.port}` : ''),
+							icon: 'gear' as const,
+							...workerState(w),
+						})),
 					],
 				})),
 			})),
 		},
 	]);
 
-	// a group's tab is part of its path
+	// the dot and tooltip of a worker by its unit's state
+	function workerState(w: Worker): {
+		state: 'ok' | 'bad' | 'off';
+		title: string;
+	} {
+		const [state, text] =
+			w.state === 'active'
+				? (['ok', 'running'] as const)
+				: w.state === 'failed'
+					? (['bad', 'failed'] as const)
+					: w.state
+						? (['off', 'stopped'] as const)
+						: (['off', 'not set up yet, Apply Changes'] as const);
+		const title = `Worker ${w.name}: ${text}`;
+		return { state, title: w.address ? `${title}\n${w.address}` : title };
+	}
+
+	// a group's tab is part of its path, a worker's is its own
 	const selected = $derived(
-		current.path.split('/').slice(0, 3).join('/') || '/',
+		/^\/groups\/\d+\/services\/\d+$/.test(current.path)
+			? current.path
+			: current.path.split('/').slice(0, 3).join('/') || '/',
 	);
 
 	const title = $derived.by(() => {
@@ -139,6 +165,9 @@
 			disabled: groupId === undefined,
 		});
 		const sep = { separator: true as const };
+		// a worker: /groups/<id>/services/<worker>
+		if (key.split('/').length > 3)
+			return [open, sep, toGroup(Number(idStr))];
 		switch (kind) {
 			case undefined:
 			case '':

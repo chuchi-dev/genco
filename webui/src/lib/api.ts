@@ -126,7 +126,11 @@ export type Worker = {
 	command: string;
 	/** open to the internet, the worker gets it as PORT */
 	port: number | null;
+	/** where clients reach it, a note: packages.example.com:5426 */
+	address: string;
 	source: Source;
+	/** its unit's ActiveState (active, failed, …), only from /tree */
+	state: string | null;
 };
 
 /** a command of a group that runs at times */

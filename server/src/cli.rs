@@ -142,8 +142,12 @@ pub enum WorkerCmd {
 		/// a port of its own, open to the internet; it gets it as PORT
 		#[clap(long)]
 		port: Option<u16>,
+		/// where clients reach it, a note: packages.example.com:5426
+		#[clap(long, default_value = "")]
+		address: String,
 	},
-	/// Change a worker, unset options stay
+	/// Change a worker, unset options stay; of genco.toml's only the
+	/// address
 	Set {
 		name: String,
 		#[clap(long)]
@@ -157,6 +161,9 @@ pub enum WorkerCmd {
 		/// close its public port
 		#[clap(long)]
 		no_port: bool,
+		/// where clients reach it, "" removes it
+		#[clap(long)]
+		address: Option<String>,
 	},
 	/// Remove a worker (not one of genco.toml)
 	Delete {
@@ -470,8 +477,13 @@ pub fn worker(conn: &Connection, cmd: WorkerCmd) -> Result<String> {
 							.port
 							.map(|p| format!(" :{p}"))
 							.unwrap_or_default();
+						let address = if w.address.is_empty() {
+							String::new()
+						} else {
+							format!(" ({})", w.address)
+						};
 						format!(
-							"{}/{}{port}  in {}: {}{}",
+							"{}/{}{port}{address}  in {}: {}{}",
 							g.name,
 							w.name,
 							w.dir,
@@ -489,6 +501,7 @@ pub fn worker(conn: &Connection, cmd: WorkerCmd) -> Result<String> {
 			dir,
 			command,
 			port,
+			address,
 		} => {
 			let w = procs::Worker {
 				id: 0,
@@ -497,7 +510,9 @@ pub fn worker(conn: &Connection, cmd: WorkerCmd) -> Result<String> {
 				dir,
 				command,
 				port,
+				address,
 				source: String::new(),
+				state: None,
 			};
 			procs::save_worker(conn, &w)?;
 			Ok("added, run genco apply".into())
@@ -509,16 +524,29 @@ pub fn worker(conn: &Connection, cmd: WorkerCmd) -> Result<String> {
 			command,
 			port,
 			no_port,
+			address,
 		} => {
 			let g = group_of(conn, &group)?;
 			let w =
 				g.workers.into_iter().find(|w| w.name == name).ok_or_else(
 					|| Error::Invalid(format!("no worker {name}")),
 				)?;
+
+			// the address alone also of genco.toml's, it needs no apply
+			let only_address = dir.is_none()
+				&& command.is_none()
+				&& port.is_none()
+				&& !no_port;
+			if let (true, Some(address)) = (only_address, &address) {
+				procs::set_address(conn, w.id, address)?;
+				return Ok("changed".into());
+			}
+
 			let w = procs::Worker {
 				dir: dir.unwrap_or(w.dir),
 				command: command.unwrap_or(w.command),
 				port: if no_port { None } else { port.or(w.port) },
+				address: address.unwrap_or(w.address),
 				..w
 			};
 			procs::save_worker(conn, &w)?;

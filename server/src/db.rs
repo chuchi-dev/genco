@@ -411,6 +411,10 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE users ADD COLUMN new_email_hash TEXT;
 	ALTER TABLE users ADD COLUMN new_email_expires INTEGER;
 "#,
+	// where clients reach a worker, a note for the panel (procs.rs)
+	r#"
+	ALTER TABLE workers ADD COLUMN address TEXT NOT NULL DEFAULT '';
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

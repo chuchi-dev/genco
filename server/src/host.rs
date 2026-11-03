@@ -20,10 +20,20 @@ pub struct Unit {
 }
 
 pub async fn units(group: &str) -> Result<Vec<Unit>> {
+	// not `genco-{group}*`: group shop would list shop2's units
+	list_units(&[format!("genco-{group}-*"), format!("genco-{group}.slice")])
+		.await
+}
+
+/// The workers' units of all groups, for the tree.
+pub async fn worker_units() -> Result<Vec<Unit>> {
+	list_units(&["genco-*-worker-*.service".into()]).await
+}
+
+async fn list_units(patterns: &[String]) -> Result<Vec<Unit>> {
 	let out = Command::new("systemctl")
 		.args(["list-units", "--all", "--output=json", "--no-pager"])
-		// not `genco-{group}*`: group shop would list shop2's units
-		.args([format!("genco-{group}-*"), format!("genco-{group}.slice")])
+		.args(patterns)
 		.output()
 		.await
 		.map_err(|e| Error::Internal(format!("systemctl failed: {e}")))?;
