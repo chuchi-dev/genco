@@ -56,16 +56,48 @@
 		if (deleted) await load();
 	}
 
+	// starts the deploy, prints its log while it runs and fails the job
+	// when the deploy fails or a newer request took it over
 	const ciExample = $derived(
-		`deploy:\n  stage: deploy\n  script:\n    - >\n      curl -fsS -X POST ${location.origin}/api/deploy\n      -H "Authorization: Bearer $GENCO_TOKEN"\n      -H "content-type: application/json"\n      -d "{\\"group\\": \\"${group.name}\\", \\"ref\\": \\"$CI_COMMIT_SHA\\"}"\n  rules:\n    - if: $CI_COMMIT_BRANCH == "${branch}"`,
+		[
+			'deploy:',
+			'  stage: deploy',
+			'  image: alpine:3',
+			'  rules:',
+			`    - if: $CI_COMMIT_BRANCH == "${branch}"`,
+			'      # when: manual',
+			'  script:',
+			'    - apk add --no-cache curl jq >/dev/null',
+			'    - |',
+			'      set -e',
+			`      genco=${location.origin}`,
+			'      auth="Authorization: Bearer $GENCO_TOKEN"',
+			'      id=$(curl -fsS -X POST "$genco/api/deploy" -H "$auth" \\',
+			'        -H "content-type: application/json" \\',
+			`        -d "{\\"group\\": \\"${group.name}\\", \\"ref\\": \\"$CI_COMMIT_SHA\\"}")`,
+			'      off=0',
+			'      while :; do',
+			'        d=$(curl -fsS "$genco/api/deploys/$id" -H "$auth")',
+			'        curl -fsS -D h "$genco/api/deploys/$id/log?offset=$off" -H "$auth"',
+			"        off=$(sed -n 's/^x-log-offset: *\\([0-9]*\\).*/\\1/ip' h)",
+			'        case $(echo "$d" | jq -r .status) in',
+			'          done) [ "$(echo "$d" | jq -r .commitId)" = "$CI_COMMIT_SHA" ] && exit 0',
+			'            echo "superseded by $(echo "$d" | jq -r .ref)"; exit 1 ;;',
+			'          failed) exit 1 ;;',
+			'        esac',
+			'        sleep 3',
+			'      done',
+		].join('\n'),
 	);
 </script>
 
 <fieldset>
 	<legend>Deploy from CI</legend>
 	<p>
-		A CI job deploys with a token that may only deploy this group. Store it
-		as the masked variable <code>GENCO_TOKEN</code>.
+		A CI job deploys with a token that may only deploy this group and follow
+		its deploys. Store it as the masked variable <code>GENCO_TOKEN</code>.
+		The job's log shows the deploy's, so everyone who sees the job sees it
+		too.
 	</p>
 	<ListView
 		items={groupTokens}

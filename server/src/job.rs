@@ -22,7 +22,7 @@ pub struct Log {
 const MAX_LINE: u64 = 8 * 1024;
 const MAX_LOG: usize = 10 * 1024 * 1024;
 
-fn path(dir: &str, id: i64) -> PathBuf {
+pub fn path(dir: &str, id: i64) -> PathBuf {
 	Path::new(dir).join(format!("{id}.log"))
 }
 

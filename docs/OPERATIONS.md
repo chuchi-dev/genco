@@ -95,6 +95,7 @@ into the server's config, and the CLI does the same:
 | Write all config, start services, get certificates | `genco apply` |
 | Deploy a group from git | `genco deploy <group> [--ref v1.2]` |
 | Deploy a release built elsewhere | `genco deploy <group> --artifact release.tar.gz --ref v1.2` |
+| Deploy from CI and follow it | a deploy token (group → Deploy tab): `POST /api/deploy {group, ref}` gives the id, `GET /api/deploys/<id>` its `status` and `commitId`, `GET /api/deploys/<id>/log?offset=<n>` the log from byte n on (header `x-log-offset` says where to go on); the Deploy tab has a GitLab job that does all this. The log lands in the CI job's log, readable by everyone who sees the job. |
 | Build runners for `on = "runner"` steps | `genco runners list`, `genco runners add <name>` (prints the token), `genco runners remove <name>` |
 | Make a box a runner | on it: `genco runner install`, `genco runner register https://<panel> <token>`, `systemctl restart genco-runner` |
 | Update a runner | on it: `genco runner update` (a daily timer of `genco runner install` does it; Settings → Runners warns when a runner runs another version) |

@@ -130,6 +130,15 @@ pub struct ApiToken {
 }
 
 impl ApiToken {
+	#[cfg(test)]
+	pub fn for_test(scopes: Vec<String>) -> Self {
+		Self {
+			name: "test".into(),
+			scopes,
+			peer: None,
+		}
+	}
+
 	pub fn require(&self, scope: &str) -> Result<()> {
 		if self.scopes.iter().any(|s| s == scope) {
 			Ok(())
