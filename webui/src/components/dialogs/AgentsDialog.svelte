@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Markdown from '../Markdown.svelte';
 	import OneTimeSecret from '../OneTimeSecret.svelte';
 	import { formatTime, get, post, type Peer, type Proposal } from '@/lib/api';
 	import { message, confirmDelete } from '@/lib/dialogs.svelte';
@@ -311,7 +312,9 @@
 			</ListView>
 			{#if proposal}
 				<p><b>{proposal.from}</b> proposes:</p>
-				<pre class="code selectable grow">{proposal.text}</pre>
+				<div class="text selectable">
+					<Markdown text={proposal.text} />
+				</div>
 				{#if proposal.status === 'pending'}
 					<p class="hint">
 						Waits for an admin to approve or reject it{proposal.approverEmail
@@ -329,7 +332,9 @@
 				{/if}
 				{#if proposal.answer}
 					<p>The answer that went back:</p>
-					<pre class="code selectable grow">{proposal.answer}</pre>
+					<div class="text selectable">
+						<Markdown text={proposal.answer} />
+					</div>
 				{/if}
 			{:else}
 				<p class="hint">
@@ -383,13 +388,17 @@
 		max-height: 140px;
 		overflow: auto;
 		white-space: pre-wrap;
+	}
 
-		// a proposal and its answer take the height of a bigger window
-		&.grow {
-			flex: 1 1 140px;
-			max-height: none;
-			min-height: 80px;
-		}
+	// a proposal and its answer, formatted like the chat, take the height
+	// of a bigger window
+	.text {
+		@include sunken;
+		flex: 1 1 140px;
+		min-height: 80px;
+		overflow: auto;
+		padding: 4px 8px;
+		background: #fff;
 	}
 
 	.task {

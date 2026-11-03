@@ -23,6 +23,15 @@
 		const s = input?.command ?? input?.path ?? JSON.stringify(input ?? {});
 		return String(s).split('\n')[0];
 	}
+
+	// an AI agent's proposal reaches the agent in a tag it can't close
+	// (proposals.rs), here it reads like the agent's own text
+	function proposal(text: string): string | null {
+		const inner = text.match(/^<proposal>\n([\s\S]*)\n<\/proposal>$/);
+		return inner
+			? inner[1].replaceAll('‹', '<').replaceAll('›', '>')
+			: null;
+	}
 </script>
 
 {#if m.kind === 'user' || m.kind === 'assistant'}
@@ -34,6 +43,8 @@
 		<div class="text">
 			{#if m.kind === 'assistant'}<Markdown
 					text={m.text}
+				/>{:else if proposal(m.text) !== null}<Markdown
+					text={proposal(m.text) ?? ''}
 				/>{:else}{m.text}{/if}
 		</div>
 		{#if m.kind === 'user' && m.files?.length}
