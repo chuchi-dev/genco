@@ -371,12 +371,12 @@ agent may:
   without its personal data)
 - propose a task: `POST /api/proposals` with `{"text": "...",
   "approver": "admin@example.ch"}` answers `{"id": 3, "status":
-  "pending"}`. The admin with that email gets a mail and only they may
-  decide; without `approver` every admin gets it and any decides. With
+  "pending"}`. The admin with that email gets the mail, without
+  `approver` every admin does; any admin decides. With
   `"mailDelay": 10` the mail goes only if nobody decided within 10
   minutes (at most 1440), meanwhile the taskbar shows "1 to approve" to
-  the admins who may decide. The task waits in the Proposals tab (it
-  shows the approver) until it is approved or rejected, it expires after
+  every admin. The task waits in the Proposals tab (it shows who got
+  the mail) until it is approved or rejected, it expires after
   7 days. Approved, it becomes a conversation of the
   server agent; when the agent is done, its answer goes to the agent's
   webhook (kind `proposal`) and `GET /api/proposals/<id>` shows the

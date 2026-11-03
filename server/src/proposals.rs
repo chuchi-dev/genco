@@ -1,9 +1,9 @@
 //! Tasks an AI agent (peers.rs) proposes to genco's agent. A proposal waits
 //! until an admin approves it, then it becomes a conversation. The agent
-//! may name the admin who decides (only they get the mail and may decide),
-//! otherwise every admin gets the mail and any decides. With a delay the
-//! mail goes only if nobody decided in the panel meanwhile. When the agent is done, its last answer goes back to the
-//! proposing agent's webhook; the agent can also poll the proposal.
+//! may name the admin who gets the mail, otherwise every admin gets it;
+//! any admin decides. With a delay the mail goes only if nobody decided in
+//! the panel meanwhile. When the agent is done, its last answer goes back
+//! to the proposing agent's webhook; the agent can also poll the proposal.
 
 use std::sync::Arc;
 
@@ -140,8 +140,8 @@ fn insert(
 	Ok(conn.last_insert_rowid())
 }
 
-/// Moves a pending proposal to `status`: its approver decides, or any
-/// admin when it has none; only one decision counts.
+/// Moves a pending proposal to `status`: any admin decides (the approver
+/// only got the mail), only one decision counts.
 fn decide(
 	conn: &Connection,
 	id: i64,
@@ -149,12 +149,6 @@ fn decide(
 	by: &crate::users::User,
 ) -> Result<()> {
 	let p = get_one(conn, id)?;
-	if p.approver_id.is_some_and(|a| a != by.id) {
-		return Err(Error::Invalid(format!(
-			"only {} decides on this proposal",
-			p.approver.unwrap_or_default()
-		)));
-	}
 	if p.status != "pending" {
 		return Err(Error::Invalid(format!(
 			"the proposal is {} already",
@@ -521,7 +515,7 @@ mod tests {
 	}
 
 	#[test]
-	fn only_the_named_approver_decides() {
+	fn the_approver_gets_the_mail_any_admin_decides() {
 		let db = Db::memory();
 		let conn = db.conn();
 		let (a, b) = (admin(&conn, "a"), admin(&conn, "b"));
@@ -534,14 +528,8 @@ mod tests {
 			Some("b@example.ch")
 		);
 
-		assert!(decide(&conn, id, "approved", &a).is_err());
-		decide(&conn, id, "approved", &b).unwrap();
-
-		// a deleted approver leaves it to any admin
-		let id = insert(&conn, 1, "Update PHP", Some(named)).unwrap();
-		conn.execute("DELETE FROM users WHERE id = ?1", [named])
-			.unwrap();
 		decide(&conn, id, "approved", &a).unwrap();
+		assert!(decide(&conn, id, "rejected", &b).is_err());
 	}
 
 	#[test]

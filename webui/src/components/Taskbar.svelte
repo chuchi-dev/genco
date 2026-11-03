@@ -26,7 +26,7 @@
 	} = $props();
 
 	const attention = $derived(conversations.attention);
-	const waiting = $derived(proposals.mine);
+	const waiting = $derived(proposals.waiting);
 
 	let time = $state(formatHour(Date.now()));
 

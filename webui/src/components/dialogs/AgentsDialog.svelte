@@ -47,7 +47,7 @@
 	}
 	// opens on the proposals when one waits (the link of the mail)
 	load().then(() => {
-		if (proposals.mine.length) tab = 'proposals';
+		if (proposals.waiting.length) tab = 'proposals';
 	});
 
 	function edit(p: Peer | null) {
@@ -174,7 +174,7 @@
 			code: `${auth} ${location.origin}/api/databases/<name>/dump -o db.sql.gz`,
 		},
 		{
-			text: 'Propose a task to the server agent: the admin of "approver" decides (left out: any admin), the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
+			text: 'Propose a task to the server agent: the admin of "approver" gets the mail (left out: every admin), any admin decides; the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
 			code: `${auth} -H "Content-Type: application/json" \\\n  -d '{"text": "…", "approver": "admin@example.ch", "mailDelay": 10}' \\\n  ${location.origin}/api/proposals`,
 		},
 		{
@@ -293,7 +293,7 @@
 				columns={[
 					{ label: 'From' },
 					{ label: 'Task' },
-					{ label: 'Approver' },
+					{ label: 'Mailed to' },
 					{ label: 'Status' },
 					{ label: 'Proposed' },
 				]}
@@ -304,7 +304,7 @@
 				{#snippet row(p)}
 					<td>{p.from}</td>
 					<td class="task">{p.text.split('\n')[0]}</td>
-					<td>{p.approver ?? 'any admin'}</td>
+					<td>{p.approver ?? 'all admins'}</td>
 					<td>{STATUS[p.status]}</td>
 					<td>{formatTime(p.createdAt)}</td>
 				{/snippet}
@@ -314,8 +314,9 @@
 				<pre class="code selectable grow">{proposal.text}</pre>
 				{#if proposal.status === 'pending'}
 					<p class="hint">
-						Waits for {proposal.approverEmail ?? 'any admin'} to approve
-						or reject it.
+						Waits for an admin to approve or reject it{proposal.approverEmail
+							? `, the mail went to ${proposal.approverEmail}`
+							: ''}.
 					</p>
 				{/if}
 				{#if proposal.decidedBy}
