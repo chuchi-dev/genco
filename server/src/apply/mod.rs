@@ -223,7 +223,7 @@ async fn sync(
 	// also without a change: a reload that failed before is tried again,
 	// it is graceful
 	if r.run(&["nginx", "-t", "-q"]).await {
-		r.run(&["systemctl", "reload", "nginx"]).await;
+		reload_nginx(r).await;
 	} else {
 		r.error("nginx keeps the old config until the error is fixed");
 	}

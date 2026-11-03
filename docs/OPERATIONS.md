@@ -153,7 +153,8 @@ systemctl restart genco
 The sites don't depend on genco running. nginx, php-fpm, the apps and
 MariaDB are normal systemd services:
 - the apps run as `genco-<group>-<domain>.service`;
-- PHP runs as `genco-<group>-php<version>.service`.
+- PHP runs as `genco-<group>-php<version>.service`; an app starts after
+  its group's PHP units and restarts 3 s after it exits.
 
 - an app with "Restart without downtime" has a second unit
   `genco-<group>-<domain>_b.service` on port 30000 + domain id; the

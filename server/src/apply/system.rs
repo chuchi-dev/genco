@@ -195,6 +195,49 @@ fn cert_hint(domain: &str) -> String {
 	)
 }
 
+/// Reloads nginx and checks that its master took the config: a reload
+/// only signals the master, which keeps the old config when it can't load
+/// the new one, e.g. an older running binary than the one `nginx -t`
+/// tested. Then a restart brings the new one.
+pub(super) async fn reload_nginx(r: &mut Report) {
+	let before = nginx_workers();
+	if !r.run(&["systemctl", "reload", "nginx"]).await {
+		return;
+	}
+	// the master starts new workers for a new config
+	let Some(before) = before else {
+		return;
+	};
+	for _ in 0..50 {
+		if nginx_workers().is_some_and(|after| reloaded(&before, &after)) {
+			return;
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+	}
+	r.info("nginx kept its old config on reload, restarting it");
+	r.run(&["systemctl", "restart", "nginx"]).await;
+}
+
+/// The processes of nginx's master, None without a running master.
+fn nginx_workers() -> Option<Vec<u32>> {
+	let pid = std::fs::read_to_string("/run/nginx.pid").ok()?;
+	let pid = pid.trim();
+	let children =
+		std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+			.ok()?;
+	Some(
+		children
+			.split_whitespace()
+			.filter_map(|p| p.parse().ok())
+			.collect(),
+	)
+}
+
+/// A new process means the master loaded the config again.
+fn reloaded(before: &[u32], after: &[u32]) -> bool {
+	after.iter().any(|p| !before.contains(p))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -222,5 +265,14 @@ mod tests {
 		assert!(sql.contains("GRANT ALL PRIVILEGES ON `shop\\_db`.*"));
 		assert!(sql.contains("SIGNAL SQLSTATE"));
 		assert!(mariadb_sql(&[]).is_empty());
+	}
+
+	#[test]
+	fn a_reload_shows_in_new_nginx_processes() {
+		assert!(reloaded(&[10, 11], &[10, 11, 12]));
+		// old workers still serving their connections
+		assert!(reloaded(&[10, 11], &[11, 13]));
+		assert!(!reloaded(&[10, 11], &[10, 11]));
+		assert!(!reloaded(&[10, 11], &[10]));
 	}
 }

@@ -782,12 +782,20 @@ fn app_service(group: &Group, d: &Domain, slot: Slot) -> String {
 	} else {
 		""
 	};
+	// an app may need the group's PHP (a Craft backend) when it starts
+	let php: Vec<String> =
+		php_versions(group).iter().map(|v| php_unit(g, v)).collect();
+	let php = if php.is_empty() {
+		String::new()
+	} else {
+		format!("Wants={0}\nAfter={0}\n", php.join(" "))
+	};
 	format!(
 		"{HEADER}
 [Unit]
 Description={kind} app {name} of the group {g}
 After=network.target mariadb.service
-
+{php}
 [Service]
 WorkingDirectory={dir}
 EnvironmentFile={env}
@@ -1174,6 +1182,26 @@ mod tests {
 		assert!(fw.contains(
 			"meta skuid { g-shop } ip daddr 127.0.0.0/8 tcp dport { 4100, 6379"
 		));
+	}
+
+	#[test]
+	fn app_starts_after_the_groups_php() {
+		let mut d = domain(5, "shop.ch", Kind::Rust);
+		d.zero_downtime = true;
+		let g = group(vec![d.clone()]);
+		let files = group_files(&g, &HashSet::new());
+		let a = find(&files, "/etc/systemd/system/genco-shop-shop.ch.service");
+		assert!(!a.contains("php"));
+
+		let g = group(vec![d, domain(6, "admin.shop.ch", Kind::Php)]);
+		let files = group_files(&g, &HashSet::new());
+		for unit in ["shop.ch", "shop.ch_b"] {
+			let path = format!("/etc/systemd/system/genco-shop-{unit}.service");
+			let u = find(&files, &path);
+			assert!(u.contains("Wants=genco-shop-php8.4.service\n"));
+			assert!(u.contains("After=genco-shop-php8.4.service\n"));
+			assert!(u.contains("Restart=always\nRestartSec=3\n"));
+		}
 	}
 
 	#[test]
