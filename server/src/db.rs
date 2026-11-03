@@ -421,6 +421,12 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE pending_actions ADD COLUMN by_password INTEGER NOT NULL
 		DEFAULT 0;
 "#,
+	// a small model rewrites a proposal, the agent's text stays beside it
+	// (proposals.rs)
+	r#"
+	ALTER TABLE proposals ADD COLUMN original_text TEXT;
+	ALTER TABLE proposals ADD COLUMN rewritten_by TEXT;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

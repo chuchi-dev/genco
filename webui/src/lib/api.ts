@@ -333,11 +333,20 @@ export type Peer = {
 export type Proposal = {
 	id: number;
 	from: string;
+	/** what the admin approves: the rewrite, else the original */
 	text: string;
-	/** invisible and control characters removed from the text */
+	/** the agent's text, cleaned */
+	originalText: string;
+	/** the model that rewrote the text, null when it wasn't rewritten */
+	rewrittenBy: string | null;
+	/** false for proposals from before the rewrite */
+	rewriteTried: boolean;
+	/** invisible and control characters removed from the original */
 	removedChars: number;
 	/** letters outside the Latin script, look-alikes may hide in it */
 	mixedScripts: boolean;
+	/** the same for the rewrite */
+	rewriteMixedScripts: boolean;
 	/** the admin who decides, null for any */
 	approver: string | null;
 	approverEmail: string | null;

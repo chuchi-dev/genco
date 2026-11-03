@@ -504,13 +504,20 @@ agent may:
   webhook (kind `proposal`) and `GET /api/proposals/<id>` shows the
   status and `answer`.
 
-  `text` is Markdown the admin reads before approving: a short title
-  line, then short sections or lists (what and why, the steps, what
-  changes, risks), not one long paragraph. genco removes invisible
+  `text` says what the agent wants and why, not a long list of steps:
+  genco's agent works out the details itself. Before the admins see
+  it, a small, cheap model (Gemini Flash with an `openrouter-key`,
+  else Claude Haiku) rewrites it into a short Markdown version (a
+  title line, then what and why, the steps at a high level, what
+  changes, risks), so the request may take up to 30 seconds. The admin
+  approves that version and genco's agent gets it; the panel shows the
+  original too. A rewrite that has a name, address or number the
+  original doesn't have is dropped, and without a key, on an error or
+  a timeout the original goes as it is. genco removes invisible
   characters (zero-width, bidi controls) and control characters from
-  it and turns other whitespace into spaces; the panel says how many
-  were removed and warns when the text has non-Latin letters (e.g.
-  Cyrillic look-alikes in a name or address).
+  the text and turns other whitespace into spaces; the panel says how
+  many were removed and warns when the original or the rewrite has
+  non-Latin letters (e.g. Cyrillic look-alikes in a name or address).
 
 An admin's own token that downloads every database is in Start → API
 Tokens; deploy tokens are in a group's Deploy tab.

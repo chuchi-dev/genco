@@ -25,8 +25,9 @@
 	let peers = $state<Peer[]>([]);
 	let selected = $state<number | null>(null);
 	let selectedProposal = $state<number | null>(null);
-	// the text exactly as stored, what the server agent gets
-	let raw = $state(false);
+	// raw: the text exactly as stored, what the server agent gets;
+	// original: what the agent sent, before the rewrite
+	let view = $state<'formatted' | 'raw' | 'original'>('formatted');
 	// the form: null is the list, 0 a new agent
 	let editing = $state<number | null>(null);
 	let form = $state({ name: '', webhookUrl: '', webhookAll: false });
@@ -176,7 +177,7 @@
 			code: `${auth} ${location.origin}/api/databases/<name>/dump -o db.sql.gz`,
 		},
 		{
-			text: 'Propose a task to the server agent: "text" is Markdown, a title line, then sections or lists (what and why, the steps, what changes, risks); the admin of "approver" gets the mail (left out: every admin), any admin decides; the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
+			text: 'Propose a task to the server agent: "text" says what you want and why, not a long list of steps; a small model rewrites it into a short formatted version (the request may take 30 seconds), the admin approves that version and the server agent gets it; the admin of "approver" gets the mail (left out: every admin), any admin decides; the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
 			code: `${auth} -H "Content-Type: application/json" \\\n  -d '{"text": "…", "approver": "admin@example.ch", "mailDelay": 10}' \\\n  ${location.origin}/api/proposals`,
 		},
 		{
@@ -320,6 +321,13 @@
 						names, addresses and commands carefully.
 					</p>
 				{/if}
+				{#if proposal.rewriteMixedScripts}
+					<p class="error">
+						The rewrite contains letters, digits or punctuation
+						outside the usual European ones — compare it with the
+						original.
+					</p>
+				{/if}
 				{#if proposal.removedChars}
 					<p class="hint">
 						{proposal.removedChars} invisible character{proposal.removedChars ===
@@ -328,11 +336,22 @@
 							: 's'} removed.
 					</p>
 				{/if}
-				{#if !proposal.text.includes('\n') && proposal.text.length > 400}
+				{#if !proposal.rewrittenBy && !proposal.text.includes('\n') && proposal.text.length > 400}
 					<p class="hint">The agent sent one long paragraph.</p>
 				{/if}
+				{#if view === 'original'}
+					<p class="hint">The original the agent sent:</p>
+				{:else if proposal.rewrittenBy}
+					<p class="hint">
+						Rewritten for readability by {proposal.rewrittenBy}.
+					</p>
+				{:else if proposal.rewriteTried}
+					<p class="hint">Not rewritten (model unavailable).</p>
+				{/if}
 				<div class="text selectable">
-					{#if raw}
+					{#if view === 'original'}
+						<pre class="raw">{proposal.originalText}</pre>
+					{:else if view === 'raw'}
 						<pre class="raw">{proposal.text}</pre>
 					{:else}
 						<Markdown text={proposal.text} hrefs />
@@ -379,8 +398,19 @@
 				>
 					Reject
 				</Button>
-				<Button onclick={() => (raw = !raw)} disabled={!proposal}>
-					{raw ? 'Show Formatted' : 'Show Raw Text'}
+				<Button
+					onclick={() =>
+						(view = view === 'raw' ? 'formatted' : 'raw')}
+					disabled={!proposal}
+				>
+					{view === 'raw' ? 'Show Formatted' : 'Show Raw Text'}
+				</Button>
+				<Button
+					onclick={() =>
+						(view = view === 'original' ? 'formatted' : 'original')}
+					disabled={!proposal?.rewrittenBy}
+				>
+					{view === 'original' ? 'Show Rewrite' : 'Show Original'}
 				</Button>
 				<Button
 					onclick={() => proposal && setChat(proposal.conversationId)}

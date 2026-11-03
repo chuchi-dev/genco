@@ -295,6 +295,9 @@ terminal.
   tab), then the agent gets them. Routine things go through scoped tokens without the LLM (deploy,
   database download). A cleaning LLM may flag suspicious requests in the
   mail, it is no protection on its own.
+- [x] A small model rewrites a proposal into a short formatted version
+  (operator 2026-11-03): the admin approves that, genco's agent gets it,
+  the panel shows the original too
 
 ### Later
 - GitHub deploys tested, malware scanning (Imunify or CrowdSec,
