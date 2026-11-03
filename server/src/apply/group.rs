@@ -127,9 +127,11 @@ pub(super) async fn add_user(r: &mut Report, user: &str, home: &str) -> bool {
 		&std::fs::read_to_string("/etc/group").unwrap_or_default(),
 	)
 	.to_string();
-	r.run(&["groupadd", "--gid", &id, user]).await
+	// --system: no subordinate ids, the group can't map more users
+	r.run(&["groupadd", "--system", "--gid", &id, user]).await
 		&& r.run(&[
 			"useradd",
+			"--system",
 			"--uid",
 			&id,
 			"--gid",

@@ -424,13 +424,27 @@ pub(super) fn is_file(path: &Path) -> bool {
 }
 
 /// A regular file up to 1 MB, else empty.
+/// Read as root: no link as the file itself, nothing that blocks (a FIFO
+/// the group put in shared/), at most 1 MiB, checked on the open file.
 pub(super) fn read_small(path: &Path) -> String {
-	let small = std::fs::symlink_metadata(path)
+	use std::io::Read as _;
+	use std::os::unix::fs::OpenOptionsExt as _;
+	let Ok(file) = std::fs::OpenOptions::new()
+		.read(true)
+		.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+		.open(path)
+	else {
+		return String::new();
+	};
+	let small = file
+		.metadata()
 		.is_ok_and(|m| m.file_type().is_file() && m.len() <= 1024 * 1024);
 	if !small {
 		return String::new();
 	}
-	std::fs::read_to_string(path).unwrap_or_default()
+	let mut s = String::new();
+	let _ = file.take(1024 * 1024).read_to_string(&mut s);
+	s
 }
 
 /// genco.toml is read as the group's user: a link in the repository to a

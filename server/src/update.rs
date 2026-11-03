@@ -27,6 +27,8 @@ use crate::util::sh;
 
 const REPO: &str = "chuchi-dev/genco";
 const DIR: &str = "/var/lib/genco/updates";
+/// where `genco runner update` downloads, only root writes /var/cache
+const RUNNER_DIR: &str = "/var/cache/genco-runner-update";
 const BIN: &str = "/usr/local/bin/genco";
 const UNIT: &str = "genco-update";
 const SIGNERS: &str = include_str!("update/allowed_signers");
@@ -491,8 +493,13 @@ pub async fn fetch_signed(
 	if version == current() {
 		return Ok(None);
 	}
-	let dir = std::env::temp_dir().join(format!("genco-{version}"));
-	std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+	// root's own folder, made fresh: in /tmp the runner's user could
+	// prepare it and swap the files between the check and the install
+	let dir = PathBuf::from(RUNNER_DIR);
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir(&dir)
+		.and_then(|()| crate::util::set_mode(&dir, 0o700))
+		.map_err(|e| format!("{RUNNER_DIR}: {e}"))?;
 	let name = format!("genco-{}-linux", std::env::consts::ARCH);
 	download(&dir, &name, version, &mut UpdateLog(None)).await?;
 	Ok(Some(dir.join(name)))

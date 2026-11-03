@@ -402,7 +402,11 @@ const IMAGE_USER: &str = r#"u=$($E image inspect --format '{{.Config.User}}' "$1
 case "$u" in
 	''|root|0|0:0|root:root) echo "0 0" ;;
 	[0-9]*:[0-9]*) echo "${u%%:*} ${u##*:}" ;;
-	*) $E run --rm --network none --entrypoint sh "$1" -c 'echo $(id -u) $(id -g)' ;;
+	# docker can't map a named user anyway, the image needn't run
+	*) [ $E = docker ] && { echo named; exit 0; }
+		timeout 60 $E run --rm --network none --cap-drop ALL \
+			--security-opt no-new-privileges --pids-limit 64 \
+			--entrypoint sh "$1" -c 'echo $(id -u) $(id -g)' ;;
 esac"#;
 
 /// Who runs in the job's containers. Rootless podman maps the runner's
@@ -440,6 +444,12 @@ async fn image_user(image: &str) -> Result<ImageUser, String> {
 		.split_whitespace()
 		.filter_map(|n| n.parse().ok())
 		.collect();
+	let ids = if ids.is_empty() && text.contains("named") {
+		// any user, docker refuses it in user_flags
+		vec![u32::MAX, u32::MAX]
+	} else {
+		ids
+	};
 	let (Some(&uid), Some(&gid), true) =
 		(ids.first(), ids.get(1), out.status.success())
 	else {
@@ -482,9 +492,9 @@ fn user_flags(
 	}
 	if uid != 0 {
 		return Err(format!(
-			"{image} runs as its own user (uid {uid}), which only podman \
-			maps onto the runner's; install podman on the runner (genco \
-			runner install does) or use an image that runs as root"
+			"{image} runs as its own user, which only podman maps onto the \
+			runner's; install podman on the runner (genco runner install \
+			does) or use an image that runs as root"
 		));
 	}
 	Ok(ImageUser {
@@ -882,6 +892,7 @@ Description=genco runner update (signed releases)
 
 [Service]
 Type=oneshot
+PrivateTmp=yes
 ExecStart={} runner update
 ",
 		exe.display()
