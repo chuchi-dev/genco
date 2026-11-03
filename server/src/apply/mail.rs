@@ -16,7 +16,7 @@ pub(super) fn mail_files(
 		return vec![];
 	}
 	let cert = mailbox::host(cfg).is_some_and(|h| host::has_cert(&h));
-	mailbox::files(cfg, groups, cert)
+	mailbox::files(cfg, groups, cert, mailbox::docker_installed())
 }
 
 /// Postfix and Dovecot after their files were written. Dovecot and the
@@ -76,7 +76,8 @@ pub(super) async fn ensure_running(
 }
 
 /// main.cf's values and the submission ports; a reload for most changes,
-/// a restart for the interfaces.
+/// a restart for the interfaces. Without Docker its order after Docker
+/// goes, docker0 too.
 pub(super) async fn postfix(
 	r: &mut Report,
 	cfg: &Config,
@@ -87,6 +88,19 @@ pub(super) async fn postfix(
 	let cert = mailbox::host(cfg).is_some_and(|h| host::has_cert(&h));
 	let mut restart = false;
 	let mut reload = changed.iter().any(|p| p.starts_with("/etc/genco/mail"));
+	let after_docker = Path::new(mailbox::POSTFIX_AFTER_DOCKER);
+	if !mailbox::docker_installed() && after_docker.exists() {
+		match std::fs::remove_file(after_docker) {
+			Ok(()) => {
+				r.info(format!("removed {}", after_docker.display()));
+				r.run(&["systemctl", "daemon-reload"]).await;
+			}
+			Err(e) => {
+				r.error(format!("removing {}: {e}", after_docker.display()))
+			}
+		}
+	}
+
 	let bridges = mailbox::docker_bridges().await;
 	let settings = mailbox::postfix_settings(cfg, groups, cert, &bridges);
 	let names: Vec<&str> = settings.iter().map(|(n, _)| *n).collect();

@@ -41,7 +41,13 @@ pub(super) fn senders(groups: &[Group]) -> Vec<String> {
 	lines
 }
 
-pub fn files(cfg: &Config, groups: &[Group], cert: bool) -> Vec<File> {
+/// `docker`: Docker is installed (`docker_installed`).
+pub fn files(
+	cfg: &Config,
+	groups: &[Group],
+	cert: bool,
+	docker: bool,
+) -> Vec<File> {
 	let domains: Vec<&MailDomain> = domains(groups).collect();
 	let boxes = || domains.iter().flat_map(|d| &d.mailboxes);
 
@@ -126,23 +132,41 @@ pub fn files(cfg: &Config, groups: &[Group], cert: bool) -> Vec<File> {
 		files.extend(crate::webmail::files(host, cert));
 	}
 	files.extend(crate::mailfilter::files(cfg, groups));
-	// Postfix may listen on docker0, which Docker makes at boot; Wants
-	// starts Docker first where it is installed, without it is a no-op
-	files.push(File {
-		path: POSTFIX_AFTER_DOCKER.into(),
-		content: "# written by genco, changes here are overwritten
+	// Postfix may listen on docker0, which Docker makes at boot; without
+	// Docker apply removes it again (`postfix`)
+	if docker {
+		files.push(File {
+			path: POSTFIX_AFTER_DOCKER.into(),
+			content: "# written by genco, changes here are overwritten
 [Unit]
 Wants=docker.service
 After=docker.service
 "
-		.into(),
-		private_to: None,
-	});
+			.into(),
+			private_to: None,
+		});
+	}
 	files
 }
 
-const POSTFIX_AFTER_DOCKER: &str =
+pub const POSTFIX_AFTER_DOCKER: &str =
 	"/etc/systemd/system/postfix.service.d/genco-docker.conf";
+
+/// Docker is installed: its unit and dockerd exist. A purge without a
+/// reboot leaves docker0 and the br-* bridges behind.
+fn docker_installed_with(exists: impl Fn(&str) -> bool) -> bool {
+	let unit = [
+		"/etc/systemd/system/docker.service",
+		"/lib/systemd/system/docker.service",
+		"/usr/lib/systemd/system/docker.service",
+	];
+	let dockerd = ["/usr/bin/dockerd", "/usr/sbin/dockerd"];
+	unit.into_iter().any(&exists) && dockerd.into_iter().any(&exists)
+}
+
+pub fn docker_installed() -> bool {
+	docker_installed_with(|p| std::path::Path::new(p).exists())
+}
 
 /// A Docker bridge on this server: docker0 (host.docker.internal) or a
 /// compose network's br-*.
@@ -194,8 +218,12 @@ fn parse_bridges(out: &str) -> Vec<Bridge> {
 	bridges
 }
 
-/// The Docker bridges that exist now, none without Docker.
+/// The Docker bridges that exist now, none without Docker. Podman's
+/// (podman0, cni-podman0) are never Docker's.
 pub async fn docker_bridges() -> Vec<Bridge> {
+	if !docker_installed() {
+		return vec![];
+	}
 	let out = tokio::process::Command::new("ip")
 		.args(["-4", "-o", "addr", "show"])
 		.output()
@@ -440,6 +468,45 @@ mod tests {
 		assert_eq!(b[0].net.to_string(), "172.17.0.0/16");
 		assert_eq!(b[1].net.to_string(), "192.168.96.0/20");
 		assert!(parse_bridges("").is_empty());
+	}
+
+	#[test]
+	fn docker_is_installed_with_its_unit_and_dockerd() {
+		let with =
+			|paths: &[&str]| docker_installed_with(|p| paths.contains(&p));
+		assert!(with(&[
+			"/lib/systemd/system/docker.service",
+			"/usr/bin/dockerd"
+		]));
+		assert!(with(&[
+			"/etc/systemd/system/docker.service",
+			"/usr/sbin/dockerd"
+		]));
+		// purged: the unit's gone, maybe a leftover binary or override
+		assert!(!with(&["/usr/bin/dockerd"]));
+		assert!(!with(&["/etc/systemd/system/docker.service"]));
+		assert!(!with(&[]));
+	}
+
+	#[test]
+	fn podman_bridges_are_not_docker() {
+		let ip = "5: podman0    inet 10.88.0.1/16 scope global podman0
+6: cni-podman0    inet 10.89.0.1/24 scope global cni-podman0
+";
+		assert!(parse_bridges(ip).is_empty());
+	}
+
+	#[test]
+	fn postfix_waits_for_docker_only_where_installed() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.com\"").unwrap();
+		let has = |docker| {
+			files(&cfg, &groups(false), false, docker)
+				.iter()
+				.any(|f| f.path.as_os_str() == POSTFIX_AFTER_DOCKER)
+		};
+		assert!(has(true));
+		assert!(!has(false));
 	}
 
 	#[test]

@@ -31,7 +31,8 @@ use crate::util;
 
 pub use cli::{MailCmd, cli, dns_text, records_text};
 pub use conf::{
-	SUBMISSION, SUBMISSION_OPTIONS, docker_bridges, files, postfix_settings,
+	POSTFIX_AFTER_DOCKER, SUBMISSION, SUBMISSION_OPTIONS, docker_bridges,
+	docker_installed, files, postfix_settings,
 };
 use dns::*;
 pub use dns::{DnsRecord, panel_dns};
