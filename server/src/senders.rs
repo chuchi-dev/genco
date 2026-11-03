@@ -33,22 +33,7 @@ async fn spf_record(domain: &str) -> Option<String> {
 
 /// `ip` in `a.b.c.d` or `a.b.c.d/n`.
 fn in_net(ip: Ipv4Addr, net: &str) -> bool {
-	let (addr, bits) = match net.split_once('/') {
-		Some((a, b)) => (a, b.parse::<u32>().unwrap_or(33)),
-		None => (net, 32),
-	};
-	let Ok(addr) = addr.parse::<Ipv4Addr>() else {
-		return false;
-	};
-	if bits > 32 {
-		return false;
-	}
-	let mask = if bits == 0 {
-		0
-	} else {
-		u32::MAX << (32 - bits)
-	};
-	u32::from(ip) & mask == u32::from(addr) & mask
+	crate::firewall::Net::parse(net).is_ok_and(|n| n.contains(ip.into()))
 }
 
 async fn resolves_to(host: &str, ip: Ipv4Addr) -> bool {

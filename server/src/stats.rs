@@ -124,11 +124,7 @@ impl Collector {
 		if now() - self.disks_at >= DISK_EVERY {
 			self.disks = group_disks(&groups).await;
 			self.disks_at = now();
-			self.own = crate::dns::own_ips()
-				.await
-				.into_iter()
-				.chain(["127.0.0.1".into(), "::1".into()])
-				.collect();
+			self.own = own_addresses().await;
 		}
 
 		let mut rows = vec![("server".to_string(), self.server(at).await)];
@@ -238,7 +234,7 @@ impl Collector {
 	/// Requests, errors and bytes sent since the last minute, from the new
 	/// lines of the domain's access log.
 	async fn log(&mut self, domain: &str) -> Sample {
-		let path = format!("{NGINX_LOGS}/{domain}.access.log");
+		let path = access_log(domain);
 		let Ok(meta) = tokio::fs::metadata(&path).await else {
 			return Sample::default();
 		};
@@ -334,9 +330,22 @@ fn net_bytes(dev: &str) -> (u64, u64) {
 	(rx, tx)
 }
 
-/// Lines in nginx's combined format: `ip - - [time] "request" status
-/// bytes ...`. Requests from the server itself (genco's checks, apps
-/// calling a site) don't count.
+fn access_log(domain: &str) -> String {
+	format!("{NGINX_LOGS}/{domain}.access.log")
+}
+
+/// The server's addresses, its requests don't count in the usage and the
+/// top pages.
+async fn own_addresses() -> Vec<String> {
+	crate::dns::own_ips()
+		.await
+		.into_iter()
+		.chain(["127.0.0.1".into(), "::1".into()])
+		.collect()
+}
+
+/// Lines in nginx's combined format, see `Line`. Requests from the
+/// server itself (genco's checks, apps calling a site) don't count.
 fn count_requests(lines: &str, own: &[String]) -> Sample {
 	let mut s = Sample {
 		requests: Some(0),
@@ -344,26 +353,49 @@ fn count_requests(lines: &str, own: &[String]) -> Sample {
 		tx: Some(0),
 		..Default::default()
 	};
-	for line in lines.lines() {
-		let ip = line.split(' ').next().unwrap_or("");
-		if own.iter().any(|o| o == ip) {
+	for line in lines.lines().filter_map(Line::parse) {
+		if own.iter().any(|o| o == line.ip) {
 			continue;
 		}
-		let Some(after) = line.split('"').nth(2) else {
-			continue;
-		};
-		let mut fields = after.split_whitespace();
-		let status: u16 =
-			fields.next().and_then(|f| f.parse().ok()).unwrap_or(0);
-		let bytes: i64 =
-			fields.next().and_then(|f| f.parse().ok()).unwrap_or(0);
 		*s.requests.as_mut().unwrap() += 1;
-		*s.tx.as_mut().unwrap() += bytes;
-		if status >= 500 {
+		*s.tx.as_mut().unwrap() += line.bytes;
+		if line.status >= 500 {
 			*s.errors.as_mut().unwrap() += 1;
 		}
 	}
 	s
+}
+
+/// The fields of a line in nginx's combined format: `ip - user [time]
+/// "request" status bytes ...`.
+struct Line<'a> {
+	ip: &'a str,
+	time: &'a str,
+	request: &'a str,
+	status: u16,
+	bytes: i64,
+}
+
+impl<'a> Line<'a> {
+	/// Nothing for a cut line or another format.
+	fn parse(line: &'a str) -> Option<Self> {
+		let ip = line.split(' ').next()?;
+		// the visitor picks the user (Basic auth) and nginx keeps its
+		// brackets, but escapes `"`: the time is right before the request
+		let (head, rest) = line.split_once('"')?;
+		let time = head.trim_end().strip_suffix(']')?.rsplit_once('[')?.1;
+		let (request, rest) = rest.split_once('"')?;
+		let mut fields = rest.split_whitespace();
+		let status = fields.next()?.parse().ok()?;
+		let bytes = fields.next()?.parse().unwrap_or(0);
+		Some(Self {
+			ip,
+			time,
+			request,
+			status,
+			bytes,
+		})
+	}
 }
 
 /// A request of an access log line.
@@ -381,16 +413,16 @@ struct Hit<'a> {
 /// Longer paths are cut, they are bots' garbage anyway.
 const MAX_PATH: usize = 200;
 
-/// A line in nginx's combined format, nothing for anything else (a
-/// TLS handshake on the HTTP port, a cut line).
+/// Nothing for a line that isn't a request (a TLS handshake on the HTTP
+/// port, a cut line).
 fn parse_line(line: &str) -> Option<Hit<'_>> {
-	let ip = line.split(' ').next()?;
-	let time = line.split_once('[')?.1.split_once(']')?.0;
-	let mut quoted = line.split('"');
-	let request = quoted.nth(1)?;
-	let mut fields = quoted.next()?.split_whitespace();
-	let status = fields.next()?.parse().ok()?;
-	let bytes = fields.next()?.parse().unwrap_or(0);
+	let Line {
+		ip,
+		time,
+		request,
+		status,
+		bytes,
+	} = Line::parse(line)?;
 
 	// `GET /a b HTTP/1.1`: the path may have spaces
 	let target = request.split_once(' ')?.1;
@@ -423,7 +455,8 @@ fn parse_line(line: &str) -> Option<Hit<'_>> {
 fn log_time(time: &str) -> Option<i64> {
 	let (date, zone) = time.split_once(' ')?;
 	let mut parts = date.split([':', '/']);
-	let day: i64 = parts.next()?.parse().ok()?;
+	// small types: no overflow below, whatever the line says
+	let day: u8 = parts.next()?.parse().ok()?;
 	let month = parts.next()?;
 	let month = [
 		"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
@@ -432,11 +465,12 @@ fn log_time(time: &str) -> Option<i64> {
 	.iter()
 	.position(|m| *m == month)? as i64
 		+ 1;
-	let year: i64 = parts.next()?.parse().ok()?;
+	let year: u16 = parts.next()?.parse().ok()?;
 	let mut clock = [0i64; 3];
 	for c in &mut clock {
-		*c = parts.next()?.parse().ok()?;
+		*c = parts.next()?.parse::<u8>().ok()?.into();
 	}
+	let (day, year) = (i64::from(day), i64::from(year));
 
 	// days since 1970 of a proleptic Gregorian date (Howard Hinnant)
 	let y = if month <= 2 { year - 1 } else { year };
@@ -448,9 +482,8 @@ fn log_time(time: &str) -> Option<i64> {
 	let days = era * 146_097 + doe - 719_468;
 
 	let sign = if zone.starts_with('-') { -1 } else { 1 };
-	let zone = zone.get(1..5)?;
-	let offset = zone[..2].parse::<i64>().ok()? * 3600
-		+ zone[2..].parse::<i64>().ok()? * 60;
+	let offset = zone.get(1..3)?.parse::<u8>().ok()? as i64 * 3600
+		+ zone.get(3..5)?.parse::<u8>().ok()? as i64 * 60;
 	let secs = days * 86_400 + clock[0] * 3600 + clock[1] * 60 + clock[2];
 	Some((secs - sign * offset) * 1000)
 }
@@ -464,6 +497,7 @@ const TOP_LEN: usize = 50;
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Page {
+	/// in `top_pages`' count per address the address
 	path: String,
 	requests: i64,
 	/// answers 400 to 499
@@ -885,13 +919,9 @@ async fn top_route(
 	}
 	let (_, d) = hosting::find_domain(&db.conn(), |d| d.id == id)?;
 
-	let log = format!("{NGINX_LOGS}/{}.access.log", d.name);
+	let log = access_log(&d.name);
 	let files = [PathBuf::from(&log), PathBuf::from(format!("{log}.1"))];
-	let own: Vec<String> = crate::dns::own_ips()
-		.await
-		.into_iter()
-		.chain(["127.0.0.1".into(), "::1".into()])
-		.collect();
+	let own = own_addresses().await;
 	let since = now() - q.hours * HOUR;
 	Ok(Json(top_pages(&files, since, &own).await))
 }
@@ -951,9 +981,17 @@ mod tests {
 			"1.2.3.4 - - [01/Nov/2026:17:37:10 +0100] \"\\x16\\x03\\x01\" 400 157 \"-\" \"-\"",
 			"1.2.3.4 - - [bad time] \"GET / HTTP/1.1\" 200 1 \"-\" \"x\"",
 			"1.2.3.4 - - [01/Nov/2026:17:37:10 +0100] \"GET / HTTP/1.1",
+			"1.2.3.4 - - [01/Nov/99999999999999:17:37:10 +0100] \"GET / HTTP/1.1\" 200 1",
+			"1.2.3.4 - - [01/Nov/2026:17:37:10 +aä00] \"GET / HTTP/1.1\" 200 1",
 		] {
 			assert_eq!(parse_line(garbage), None, "{garbage}");
 		}
+	}
+
+	#[test]
+	fn the_user_cant_forge_the_time() {
+		let line = "1.2.3.4 - [01/Jan/2000:00:00:00 +0000] [01/Nov/2026:17:37:10 +0100] \"GET / HTTP/1.1\" 200 1 \"-\" \"x\"";
+		assert_eq!(parse_line(line).unwrap().at, 1_793_551_030_000);
 	}
 
 	#[tokio::test]

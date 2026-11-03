@@ -117,7 +117,7 @@ impl fmt::Display for Net {
 
 /// The entry as stored, or why it can't be blocked: too broad, loopback,
 /// or one of the `protected` addresses (this server's, the admins').
-pub fn check(
+fn check(
 	input: &str,
 	protected: &[(IpAddr, &str)],
 ) -> std::result::Result<Net, String> {
@@ -148,7 +148,7 @@ pub fn check(
 }
 
 /// `30m`, `24h` or `7d` in milliseconds.
-pub fn parse_duration(s: &str) -> std::result::Result<i64, String> {
+fn parse_duration(s: &str) -> std::result::Result<i64, String> {
 	let s = s.trim();
 	let err = || format!("{s:?} is no duration like 30m, 24h or 7d");
 	let unit = match s.chars().last() {
@@ -403,7 +403,7 @@ struct BlockReq {
 	address: String,
 	#[serde(default)]
 	note: String,
-	/// 1h, 24h, 7d; none blocks until it is removed
+	/// 30m, 24h, 7d; none blocks until it is removed
 	duration: Option<String>,
 }
 

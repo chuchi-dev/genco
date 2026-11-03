@@ -193,11 +193,7 @@ async fn sync(
 			host::has_cert(domain),
 		));
 	}
-	files.push(File {
-		path: render::FIREWALL.into(),
-		content: render::firewall(groups, cfg.panel_port(), blocked),
-		private_to: None,
-	});
+	files.push(firewall_file(cfg, groups, blocked));
 	prepare_mail(r, groups).await;
 	let mail_files = mail_files(r, cfg, groups);
 	files.extend(mail_files.iter().cloned());
@@ -288,6 +284,14 @@ fn blocked(r: &mut Report, db: &Db) -> Vec<String> {
 	})
 }
 
+fn firewall_file(cfg: &Config, groups: &[Group], blocked: &[String]) -> File {
+	File {
+		path: render::FIREWALL.into(),
+		content: render::firewall(groups, cfg.panel_port(), blocked),
+		private_to: None,
+	}
+}
+
 /// The firewall only, after the blocklist changed.
 pub async fn apply_firewall(cfg: &Config, db: &Db) -> Report {
 	let mut r = Report::new();
@@ -295,11 +299,7 @@ pub async fn apply_firewall(cfg: &Config, db: &Db) -> Report {
 		return r;
 	};
 	let blocked = blocked(&mut r, db);
-	let file = File {
-		path: render::FIREWALL.into(),
-		content: render::firewall(&groups, cfg.panel_port(), &blocked),
-		private_to: None,
-	};
+	let file = firewall_file(cfg, &groups, &blocked);
 	if !write_files(&mut r, &[file]).is_empty() {
 		// atomic: rules nft refuses leave the old ones loaded
 		r.run(&["nft", "-f", render::FIREWALL]).await;

@@ -816,7 +816,16 @@ pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 			s.zero_downtime
 		],
 	)?;
-	Ok(conn.last_insert_rowid())
+	let id = conn.last_insert_rowid();
+	if id > render::MAX_DOMAIN_ID {
+		conn.execute("DELETE FROM domains WHERE id = ?1", [id])?;
+		return Err(Error::Invalid(format!(
+			"no more domains: the ids above {} would share their app's \
+			port with another",
+			render::MAX_DOMAIN_ID
+		)));
+	}
+	Ok(id)
 }
 
 async fn create_domain(
@@ -1016,6 +1025,41 @@ mod tests {
 		assert!(check_www(&conn, "blog.ch", true).is_err());
 		assert!(check_www(&conn, "blog.ch", false).is_ok());
 		assert!(check_www(&conn, "other.ch", true).is_ok());
+	}
+
+	#[test]
+	fn domain_ids_stop_before_their_ports_collide() {
+		let db = Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+			VALUES ('g', 1, 0);
+			INSERT INTO domains (id, group_id, name, kind, created_at)
+			VALUES (9998, 1, 'a.ch', 'static', 0);",
+		)
+		.unwrap();
+		let req = |name: &str| DomainReq {
+			group_id: 1,
+			name: name.into(),
+			settings: DomainSettings {
+				kind: Kind::Static,
+				php_version: None,
+				root: "public".into(),
+				command: None,
+				public_dir: None,
+				nginx_extra: String::new(),
+				upstream: None,
+				www: false,
+				zero_downtime: false,
+			},
+		};
+		assert_eq!(insert_domain(&conn, &req("b.ch")).unwrap(), 9999);
+		assert!(insert_domain(&conn, &req("c.ch")).is_err());
+		let n: i64 = conn
+			.query_row("SELECT count(*) FROM domains", [], |r| r.get(0))
+			.unwrap();
+		assert_eq!(n, 2);
 	}
 
 	#[test]

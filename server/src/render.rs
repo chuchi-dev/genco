@@ -207,6 +207,10 @@ pub fn unit_path(unit: &str) -> PathBuf {
 
 pub const FIREWALL: &str = "/etc/genco/nftables.conf";
 
+/// Above it slot A's port would be another domain's slot B, insert_domain
+/// refuses such ids.
+pub const MAX_DOMAIN_ID: i64 = 9999;
+
 /// Node and Rust apps listen on 127.0.0.1 on this port, see `firewall`;
 /// slot B on its own (workers can't take either, see procs).
 pub fn slot_port(domain: &Domain, slot: Slot) -> u16 {

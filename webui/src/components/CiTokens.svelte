@@ -138,7 +138,7 @@
 
 <style lang="scss">
 	:global(.list-view.ci-tokens) {
-		margin-bottom: 6px;
+		margin-bottom: 8px;
 	}
 
 	.ci-example {

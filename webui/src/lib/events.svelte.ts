@@ -1,4 +1,4 @@
-import { post, type Event } from './api';
+import { ticket, type Event } from './api';
 import { session } from './session.svelte';
 
 type Listener = (ev: Event) => void;
@@ -41,9 +41,9 @@ async function connect() {
 
 	opening = true;
 	const gen = generation;
-	let ticket: string;
+	let t: string;
 	try {
-		ticket = await post('/users/tickets', { path: '/api/events' });
+		t = await ticket('/api/events');
 	} catch (_e) {
 		// a refused session logs out (see request), which disconnects
 		opening = false;
@@ -54,9 +54,7 @@ async function connect() {
 	// logged out meanwhile, maybe in again
 	if (gen !== generation) return connect();
 
-	source = new EventSource(
-		'/api/events?ticket=' + encodeURIComponent(ticket),
-	);
+	source = new EventSource('/api/events?ticket=' + encodeURIComponent(t));
 	source.onerror = () => {
 		// the automatic retry would reuse the used ticket
 		source?.close();

@@ -444,8 +444,8 @@ async fn nginx() -> Result<(), String> {
 	write(
 		"/etc/nginx/conf.d/genco.conf",
 		"# written by genco
-# the panel's log leaves out the query, the event stream sends the session
-# token in it
+# the panel's log leaves out the query, the event stream and downloads send
+# a ticket for the session in it
 log_format genco_panel '$remote_addr [$time_local] \"$request_method $uri\" '
 	'$status $body_bytes_sent \"$http_user_agent\"';
 # password guessing: 10 login attempts per minute and client

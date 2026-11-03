@@ -135,14 +135,47 @@ fn check_command(command: &str) -> Result<()> {
 	Ok(())
 }
 
-fn check_port(port: u16) -> Result<()> {
-	if port < 1024 || TAKEN.contains(&port) || APP_PORTS.contains(&port) {
+fn check_port(port: u16, ssh: &[u16]) -> Result<()> {
+	if port < 1024
+		|| TAKEN.contains(&port)
+		|| APP_PORTS.contains(&port)
+		|| ssh.contains(&port)
+	{
 		return Err(Error::Invalid(format!(
 			"port {port} isn't free for a worker: 1024 to 65535, not 20000 \
-			to 39999 (the apps') and not genco's own"
+			to 39999 (the apps') and not genco's own or ssh's"
 		)));
 	}
 	Ok(())
+}
+
+/// sshd's `Port` lines, 22 without one. A worker's port is open to
+/// everyone and closed to blocked addresses, ssh must stay open to them.
+fn ssh_ports() -> Vec<u16> {
+	let mut files = vec![std::path::PathBuf::from("/etc/ssh/sshd_config")];
+	if let Ok(dir) = std::fs::read_dir("/etc/ssh/sshd_config.d") {
+		files.extend(dir.flatten().map(|e| e.path()));
+	}
+	let ports: Vec<u16> = files
+		.iter()
+		.flat_map(|f| {
+			let text = std::fs::read_to_string(f).unwrap_or_default();
+			sshd_ports(&text)
+		})
+		.collect();
+	if ports.is_empty() { vec![22] } else { ports }
+}
+
+fn sshd_ports(config: &str) -> Vec<u16> {
+	config
+		.lines()
+		.filter_map(|l| {
+			let mut words = l.split_whitespace();
+			let key = words.next()?;
+			key.eq_ignore_ascii_case("port")
+				.then(|| words.next()?.parse().ok())?
+		})
+		.collect()
 }
 
 /// OnCalendar, checked for its characters here (it goes into the timer
@@ -183,7 +216,7 @@ impl Worker {
 		crate::hosting::check_root(&self.dir)?;
 		check_command(&self.command)?;
 		if let Some(p) = self.port {
-			check_port(p)?;
+			check_port(p, &ssh_ports())?;
 		}
 		Ok(())
 	}
@@ -615,11 +648,16 @@ mod tests {
 		assert!(check_name("Queue").is_err());
 		assert!(check_name("a.b").is_err());
 		assert!(check_name("2a").is_err());
-		assert!(check_port(5426).is_ok());
-		assert!(check_port(80).is_err());
-		assert!(check_port(20005).is_err());
-		assert!(check_port(30005).is_err());
-		assert!(check_port(3306).is_err());
+		assert!(check_port(5426, &[22]).is_ok());
+		assert!(check_port(80, &[22]).is_err());
+		assert!(check_port(20005, &[22]).is_err());
+		assert!(check_port(30005, &[22]).is_err());
+		assert!(check_port(3306, &[22]).is_err());
+		assert!(check_port(2222, &[22, 2222]).is_err());
+		assert_eq!(
+			sshd_ports("# Port 1\nport 2222\nPort  2223 \nPermitRootLogin no"),
+			[2222, 2223]
+		);
 		assert!(check_command("a\nExecStartPre=x").is_err());
 		assert!(check_every_chars("Mon *-*-* 03:00").is_ok());
 		assert!(check_every_chars("hourly\n[Service]").is_err());

@@ -29,12 +29,10 @@ pub(super) struct Switch<'a> {
 
 impl Switch<'_> {
 	/// Fails when the new process doesn't come up, the old one keeps
-	/// serving.
+	/// serving. The caller holds apply's lock and read the domain under
+	/// it, so `start` is never the unit nginx sends to.
 	pub(super) async fn run(&self, ctx: &Ctx, log: &mut Log) -> Res<()> {
 		let name = &self.domain.name;
-		// apply writes nginx and the units from the database, it waits
-		// until the live slot is settled
-		let _lock = job::lock(crate::apply::LOCK).await?;
 
 		// another process there would pass for the new one
 		systemctl(log, "stop", self.start).await;
@@ -118,6 +116,8 @@ fn set_slot(ctx: &Ctx, domain: i64, slot: Slot) -> Res<()> {
 
 /// Writes the domain's nginx config as the database has it now and
 /// reloads nginx; the old file comes back when nginx rejects the new one.
+/// Not through apply: that would rewrite and reload everything, and the
+/// switch must undo exactly this file when nginx refuses it.
 async fn point_nginx(ctx: &Ctx, d: &Domain) -> Res<()> {
 	let group = hosting::find_group(&ctx.db.conn(), d.group_id)
 		.map_err(|e| e.to_string())?;

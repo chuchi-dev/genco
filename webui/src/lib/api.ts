@@ -449,6 +449,11 @@ export function newest() {
 	};
 }
 
+/** A single-use ticket that lets in the request to `path` (with its query). */
+export function ticket(path: string): Promise<string> {
+	return post('/users/tickets', { path });
+}
+
 /**
  * Downloads what `path` returns. The browser opens it itself (a link
  * would go through the router), with a single-use ticket in the query:
@@ -461,9 +466,9 @@ export async function download(
 	// the ticket is for this path with exactly these parameters
 	const q = new URLSearchParams(params).toString();
 	const target = q ? `/api${path}?${q}` : `/api${path}`;
-	const ticket: string = await post('/users/tickets', { path: target });
+	const t = await ticket(target);
 	const sep = q ? '&' : '?';
-	window.location.href = `${target}${sep}ticket=${encodeURIComponent(ticket)}`;
+	window.location.href = `${target}${sep}ticket=${encodeURIComponent(t)}`;
 }
 
 /**

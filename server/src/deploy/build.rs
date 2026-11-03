@@ -445,7 +445,17 @@ pub(super) async fn restart(
 
 	let mut res = Ok(());
 	for d in group.domains.iter().filter(|d| render::has_app(d)) {
-		match render::restart(&group.name, d) {
+		// apply writes nginx and the units from the database, it waits
+		// until the live slot is settled; read after it: a deploy before
+		// this one may have switched the slot or the option changed
+		let _lock = job::lock(crate::apply::LOCK).await?;
+		let Ok((_, d)) = hosting::find_domain(&ctx.db.conn(), |x| x.id == d.id)
+		else {
+			log.line(&format!("{} is gone, not restarted", d.name))
+				.await;
+			continue;
+		};
+		match render::restart(&group.name, &d) {
 			Restart::InPlace { unit } => {
 				systemctl(log, "restart", &unit).await;
 			}
@@ -466,7 +476,7 @@ pub(super) async fn restart(
 				stop,
 			} => {
 				let switch = slot::Switch {
-					domain: d,
+					domain: &d,
 					start: &start,
 					port,
 					to,

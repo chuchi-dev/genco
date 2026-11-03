@@ -94,13 +94,12 @@
 		]}
 		empty="No blocked addresses."
 		minHeight={110}
-		class="blocks"
 	>
 		{#snippet row(b)}
 			<td>{b.address}</td>
 			<td>{b.note}</td>
 			<td>{b.createdBy}</td>
-			<td>{b.until ? formatTime(b.until) : 'unblocked'}</td>
+			<td>{b.until ? formatTime(b.until) : 'until unblocked'}</td>
 		{/snippet}
 	</ListView>
 	<div class="row-buttons">
@@ -112,9 +111,5 @@
 <style lang="scss">
 	p {
 		margin: 0 0 8px;
-	}
-
-	:global(.list-view.blocks) {
-		margin-bottom: 8px;
 	}
 </style>
