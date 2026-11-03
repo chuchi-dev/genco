@@ -204,15 +204,22 @@ pub async fn ensure_keys(groups: &[Group]) -> Result<Vec<String>, String> {
 	))
 	.await?;
 	let mut made = vec![];
-	for d in groups.iter().flat_map(|g| &g.mail_domains) {
-		let path = key_path(&d.name);
+	for name in signed(groups) {
+		let path = key_path(name);
 		if path.exists() {
 			continue;
 		}
 		make_key(&path, Some(RSPAMD_USER)).await?;
-		made.push(d.name.clone());
+		made.push(name.to_string());
 	}
 	Ok(made)
+}
+
+/// The domains that get a key and so are signed: every mail domain,
+/// send-only ones too.
+fn signed(groups: &[Group]) -> Vec<&str> {
+	let domains = groups.iter().flat_map(|g| &g.mail_domains);
+	domains.map(|d| d.name.as_str()).collect()
 }
 
 /// A 2048 bit RSA key in PKCS#1 (lettre reads only that, Rspamd both),
@@ -254,6 +261,27 @@ pub async fn dkim_record_of(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn send_only_domains_are_signed() {
+		let domain = |name: &str, send_only| crate::mailbox::MailDomain {
+			id: 0,
+			group_id: 1,
+			name: name.into(),
+			send_only,
+			mailboxes: vec![],
+			forwards: vec![],
+			senders: vec![],
+		};
+		let groups = [Group {
+			mail_domains: vec![
+				domain("shop.ch", false),
+				domain("textrem.ch", true),
+			],
+			..Default::default()
+		}];
+		assert_eq!(signed(&groups), ["shop.ch", "textrem.ch"]);
+	}
 
 	#[test]
 	fn canonical_classes_are_never_empty() {

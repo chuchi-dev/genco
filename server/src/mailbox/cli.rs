@@ -12,6 +12,22 @@ pub enum MailCmd {
 		name: String,
 		#[clap(long)]
 		group: String,
+		/// the inbox stays elsewhere, apps here only send from it
+		#[clap(long)]
+		send_only: bool,
+	},
+	/// Make a mail domain send-only (its inbox is elsewhere, only without
+	/// mailboxes and forwards) or receiving again
+	Set {
+		name: String,
+		#[clap(
+			long,
+			conflicts_with = "receive",
+			required_unless_present = "receive"
+		)]
+		send_only: bool,
+		#[clap(long)]
+		receive: bool,
 	},
 	/// Ask the admins by mail to confirm deleting a mail domain and its mail
 	DeleteDomain { name: String },
@@ -41,6 +57,10 @@ pub enum MailCmd {
 	/// Which sender domains this server may send mail as (SPF), for an
 	/// app's MAIL_FROM
 	Senders,
+	/// Send-only addresses: an app's own SMTP login that sends only as
+	/// that address, DKIM signed, no mailbox
+	#[clap(subcommand)]
+	Sender(SenderCmd),
 }
 
 pub(super) fn find_domain(groups: &[Group], name: &str) -> Result<MailDomain> {
@@ -74,7 +94,7 @@ pub async fn cli(
 	match cmd {
 		MailCmd::Senders => Ok(crate::senders::cli(cfg, db).await),
 		MailCmd::List => Ok(list_text(&groups)),
-		MailCmd::Dns { domain } => dns_text(cfg, &domain).await,
+		MailCmd::Dns { domain } => dns_text(cfg, db, &domain).await,
 		MailCmd::DeleteDomain { name } => {
 			let d = find_domain(&groups, &name)?;
 			deletion(crate::actions::Kind::MailDomain, d.id).await
@@ -83,18 +103,31 @@ pub async fn cli(
 			let b = find_mailbox(&groups, &address)?;
 			deletion(crate::actions::Kind::Mailbox, b.id).await
 		}
-		cmd => {
-			let msg = change(db, &groups, cmd, password).await?;
-			let report = crate::apply::apply_mail(cfg, db).await;
-			if !report.ok {
-				return Err(Error::Internal(format!(
-					"{msg}, but applying failed: {}",
-					report.log.join("; ")
-				)));
+		MailCmd::Sender(cmd) => {
+			let (msg, changed) = send_only::cli(cfg, db, &groups, cmd).await?;
+			if changed {
+				apply(cfg, db, &msg).await?;
 			}
 			Ok(msg)
 		}
+		cmd => {
+			let msg = change(db, &groups, cmd, password).await?;
+			apply(cfg, db, &msg).await?;
+			Ok(msg)
+		}
 	}
+}
+
+/// Applies mail after `msg`'s change.
+async fn apply(cfg: &Config, db: &Db, msg: &str) -> Result<()> {
+	let report = crate::apply::apply_mail(cfg, db).await;
+	if !report.ok {
+		return Err(Error::Internal(format!(
+			"{msg}, but applying failed: {}",
+			report.log.join("; ")
+		)));
+	}
+	Ok(())
 }
 
 pub(super) fn find_mailbox(groups: &[Group], address: &str) -> Result<Mailbox> {
@@ -111,9 +144,10 @@ pub(super) fn list_text(groups: &[Group]) -> String {
 	for d in domains(groups) {
 		let group = groups.iter().find(|g| g.id == d.group_id);
 		out.push_str(&format!(
-			"{} (group {})\n",
+			"{} (group {}{})\n",
 			d.name,
-			group.map_or("?", |g| g.name.as_str())
+			group.map_or("?", |g| g.name.as_str()),
+			if d.send_only { ", send-only" } else { "" }
 		));
 		for b in &d.mailboxes {
 			out.push_str(&format!("  {}  {} MB\n", b.address, b.quota_mb));
@@ -125,13 +159,16 @@ pub(super) fn list_text(groups: &[Group]) -> String {
 				f.targets.join(", ")
 			));
 		}
+		for s in &d.senders {
+			out.push_str(&format!("  {}  send-only {}\n", s.address, s.note));
+		}
 	}
 	out.trim_end().to_string()
 }
 
 /// `genco mail dns <domain>`
-pub async fn dns_text(cfg: &Config, domain: &str) -> Result<String> {
-	Ok(records_text(&dns_check(cfg, domain).await?))
+pub async fn dns_text(cfg: &Config, db: &Db, domain: &str) -> Result<String> {
+	Ok(records_text(&domain_dns(cfg, db, domain).await?))
 }
 
 /// DNS records for the terminal: what to enter, what is there now.
@@ -164,11 +201,33 @@ pub(super) async fn change(
 ) -> Result<String> {
 	let mailbox = |address: &str| find_mailbox(groups, address);
 	Ok(match cmd {
-		MailCmd::AddDomain { name, group } => {
+		MailCmd::AddDomain {
+			name,
+			group,
+			send_only,
+		} => {
 			let g = hosting::group_by_name(&db.conn(), &group)?
 				.ok_or_else(|| Error::Invalid(format!("no group {group}")))?;
-			add_domain(&db.conn(), g.id, &name)?;
-			format!("added the mail domain {name}")
+			add_domain(&db.conn(), g.id, &name, send_only)?;
+			if send_only {
+				format!(
+					"added the send-only mail domain {name}; add an address \
+					with genco mail sender add noreply@{name}"
+				)
+			} else {
+				format!("added the mail domain {name}")
+			}
+		}
+		MailCmd::Set {
+			name, send_only, ..
+		} => {
+			let d = find_domain(groups, &name)?;
+			set_mode(&db.conn(), d.id, send_only)?;
+			if send_only {
+				format!("{} is send-only, its inbox is elsewhere", d.name)
+			} else {
+				format!("{} receives mail here", d.name)
+			}
 		}
 		MailCmd::Add { address, quota } => {
 			let (local, domain) = split(&address)?;
@@ -210,4 +269,86 @@ pub(super) async fn change(
 		}
 		_ => unreachable!("cli handles the rest"),
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use clap::Parser as _;
+
+	fn parse(args: &[&str]) -> std::result::Result<MailCmd, clap::Error> {
+		MailCmd::try_parse_from(
+			std::iter::once("mail").chain(args.iter().copied()),
+		)
+	}
+
+	#[test]
+	fn the_mode_is_one_or_the_other() {
+		assert!(matches!(
+			parse(&["set", "x.ch", "--send-only"]).unwrap(),
+			MailCmd::Set {
+				send_only: true,
+				..
+			}
+		));
+		assert!(matches!(
+			parse(&["set", "x.ch", "--receive"]).unwrap(),
+			MailCmd::Set {
+				send_only: false,
+				..
+			}
+		));
+		assert!(parse(&["set", "x.ch"]).is_err());
+		assert!(parse(&["set", "x.ch", "--send-only", "--receive"]).is_err());
+		assert!(matches!(
+			parse(&["sender", "add", "noreply@x.ch", "--note", "shop"])
+				.unwrap(),
+			MailCmd::Sender(SenderCmd::Add { .. })
+		));
+	}
+
+	#[tokio::test]
+	async fn send_only_domains_from_the_terminal() {
+		let db = Db::memory();
+		db.conn()
+			.execute_batch(
+				"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+				INSERT INTO domain_groups (name, client_id, created_at)
+					VALUES ('shop', 1, 0);",
+			)
+			.unwrap();
+		let run = async |args: &[&str]| {
+			let groups = hosting::groups(&db.conn()).unwrap();
+			change(&db, &groups, parse(args).unwrap(), || Err("no".into()))
+				.await
+		};
+		let msg = run(&[
+			"add-domain",
+			"textrem.ch",
+			"--group",
+			"shop",
+			"--send-only",
+		])
+		.await
+		.unwrap();
+		assert!(msg.contains("send-only"), "{msg}");
+		let refused = run(&["forward", "info@textrem.ch", "a@b.ch"])
+			.await
+			.unwrap_err();
+		assert!(refused.to_string().contains("send-only"), "{refused}");
+
+		run(&["set", "textrem.ch", "--receive"]).await.unwrap();
+		run(&["forward", "info@textrem.ch", "a@b.ch"])
+			.await
+			.unwrap();
+		let refused = run(&["set", "textrem.ch", "--send-only"])
+			.await
+			.unwrap_err();
+		assert!(refused.to_string().contains("forwards"), "{refused}");
+		let list = list_text(&hosting::groups(&db.conn()).unwrap());
+		assert_eq!(
+			list,
+			"textrem.ch (group shop)\n  info@textrem.ch -> a@b.ch"
+		);
+	}
 }

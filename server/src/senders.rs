@@ -104,6 +104,11 @@ fn allows<'a>(
 	})
 }
 
+/// Whether the SPF of `domain` lets `ip` send, None without a record.
+pub async fn spf_allows(domain: &str, ip: Ipv4Addr) -> Option<bool> {
+	allows(domain, ip, 0, &AtomicUsize::new(0)).await
+}
+
 /// The domains an app here might send as: the panel's, the mail domains,
 /// every site domain and its parent (`shop.example.ch`, `example.ch`).
 fn candidates(cfg: &Config, db: &Db) -> Vec<String> {
@@ -148,7 +153,7 @@ async fn check(cfg: &Config, db: &Db) -> (Option<Ipv4Addr>, Vec<Sender>) {
 	let mut out = vec![];
 	for domain in candidates(cfg, db) {
 		let spf = spf_record(&domain).await;
-		let allowed = allows(&domain, ip, 0, &AtomicUsize::new(0)).await;
+		let allowed = spf_allows(&domain, ip).await;
 		let (status, mut note) = match allowed {
 			Some(true) => ("allowed", "SPF lets this server send".to_string()),
 			Some(false) => (

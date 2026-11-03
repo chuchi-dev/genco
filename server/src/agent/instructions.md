@@ -280,8 +280,8 @@ field in the panel.
 - Mail hosting: a group has mail domains with mailboxes (IMAP, Dovecot,
   mail in `/var/vmail/<domain>/<local>`) and forwards (`*@domain` is
   the catch-all). Everything uses one host, `mail.<panel domain>`, the
-  same for all domains. `genco mail list|add-domain|add|password|quota|
-  forward|unforward|delete|delete-domain|dns` (see `--help`); changes
+  same for all domains. `genco mail list|add-domain|set|add|password|
+  quota|forward|unforward|delete|delete-domain|dns|sender` (see `--help`); changes
   apply by themselves, deletions go by mail like the others. `genco mail
   dns <domain>` compares the records the domain needs (A of the mail
   host, MX, SPF, DMARC, SRV, PTR) with its DNS: when an admin asks what
@@ -289,6 +289,15 @@ field in the panel.
   what to add or change at their DNS host without dropping records of
   other senders (one SPF record per domain). Never put a mailbox
   password into the chat; admins set them in the panel.
+- An app that sends as a domain whose inbox is elsewhere (e.g. MX at
+  another provider): `genco mail add-domain <domain> --group <g>
+  --send-only`, then `genco mail sender add noreply@<domain> --note
+  <what for>`; give the app the printed settings (`ZIPP_SMTP_URL` for
+  zipp, Craft: SMTP, port 587, tls) and the admins the SPF/DKIM records
+  of `genco mail dns <domain>`. Never make such a domain receiving
+  (local mail to it would land here instead of its inbox). A send-only
+  address sends only as itself, also for noreply@ on a receiving domain;
+  `genco mail sender list|show|password|remove`.
   Rspamd (milter, Redis) filters: score 15 rejects, 6 marks `X-Spam: Yes`
   and Dovecot files it into Junk (`/var/log/rspamd/rspamd.log` shows the
   symbols of each mail); it signs outgoing mail with the domain's DKIM

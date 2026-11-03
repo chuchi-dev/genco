@@ -19,18 +19,20 @@ pub(super) fn map_file(name: &str, lines: Vec<String>) -> File {
 
 /// Postfix's maps, Dovecot's users and config, the mail host's nginx site.
 /// `cert`: the mail host has a certificate.
-/// `smtpd_sender_login_maps`: who may send as an address. A mailbox
-/// itself, and the SMTP login of its group for every address of the
-/// group's mail domains.
+/// `smtpd_sender_login_maps`: who may send as an address. A mailbox or
+/// send-only address itself, and the SMTP login of its group for every
+/// address of the group's mail domains. Postfix looks up the whole
+/// address before @domain, so its line names the group's login too.
 pub(super) fn senders(groups: &[Group]) -> Vec<String> {
 	let mut lines = vec![];
 	for g in groups {
 		let login = g.smtp.as_ref().map(|_| smtp_user(&g.name));
 		for d in &g.mail_domains {
-			for b in &d.mailboxes {
+			let own = d.mailboxes.iter().map(|b| &b.address);
+			for address in own.chain(d.senders.iter().map(|s| &s.address)) {
 				match &login {
-					Some(l) => lines.push(format!("{0} {0},{l}", b.address)),
-					None => lines.push(format!("{0} {0}", b.address)),
+					Some(l) => lines.push(format!("{address} {address},{l}")),
+					None => lines.push(format!("{address} {address}")),
 				}
 			}
 			if let Some(l) = &login {
@@ -65,17 +67,19 @@ pub fn files(
 		}
 	}
 
+	// a send-only domain's mail goes out to its own MX, also from here
+	let receiving = domains.iter().filter(|d| !d.send_only);
 	let mut files = vec![
 		map_file(
 			"domains",
-			domains.iter().map(|d| format!("{} OK", d.name)).collect(),
+			receiving.map(|d| format!("{} OK", d.name)).collect(),
 		),
 		map_file(
 			"mailboxes",
 			boxes().map(|b| format!("{0} {0}", b.address)).collect(),
 		),
-		// a mailbox sends as itself only, a group's SMTP login as any
-		// address of the group's mail domains
+		// a mailbox and a send-only address send as themselves only, a
+		// group's SMTP login as any address of the group's mail domains
 		map_file("senders", senders(groups)),
 		map_file(
 			"forwards",
@@ -100,10 +104,13 @@ pub fn files(
 		private_to: Some("dovecot".into()),
 	});
 
-	// the groups' SMTP logins: a passdb without a userdb, they can send
-	// but never open a mailbox
+	// the groups' SMTP logins and the send-only addresses: a passdb
+	// without a userdb, they can send but never open a mailbox
 	let mut smtp =
 		"# written by genco, changes here are overwritten\n".to_string();
+	for s in domains.iter().flat_map(|d| &d.senders) {
+		smtp.push_str(&format!("{}:{}\n", s.address, s.password_hash));
+	}
 	for g in groups.iter().filter(|g| !g.mail_domains.is_empty()) {
 		let Some((password, hash)) = &g.smtp else {
 			continue;
@@ -285,7 +292,8 @@ passdb passwd-file {{
 	passwd_file_path = {MAPS}/passwd
 }}
 
-# the groups' SMTP logins, no userdb: no IMAP for them
+# the groups' SMTP logins and the send-only addresses, no userdb: no
+# IMAP for them
 passdb smtp {{
 	driver = passwd-file
 	passwd_file_path = {MAPS}/smtp-passwd
@@ -463,14 +471,116 @@ mod tests {
 			id: 1,
 			group_id: 1,
 			name: "example.com".into(),
+			send_only: false,
 			mailboxes: vec![],
 			forwards: vec![],
+			senders: vec![],
 		};
 		let mail_domains = if mail { vec![domain] } else { vec![] };
 		vec![Group {
 			mail_domains,
 			..Default::default()
 		}]
+	}
+
+	/// shop.ch receives with a mailbox and a noreply@, textrem.ch is
+	/// send-only with a noreply@.
+	fn send_only_groups() -> Vec<Group> {
+		let sender = |id, domain: i64, address: &str| SendOnly {
+			id,
+			mail_domain_id: domain,
+			address: address.into(),
+			note: String::new(),
+			created_at: 0,
+			password_hash: format!("{{BLF-CRYPT}}hash-{id}"),
+		};
+		let shop = MailDomain {
+			id: 1,
+			group_id: 1,
+			name: "shop.ch".into(),
+			send_only: false,
+			mailboxes: vec![Mailbox {
+				id: 1,
+				mail_domain_id: 1,
+				address: "anna@shop.ch".into(),
+				quota_mb: 100,
+				password_hash: "{BLF-CRYPT}anna".into(),
+			}],
+			forwards: vec![],
+			senders: vec![sender(1, 1, "noreply@shop.ch")],
+		};
+		let textrem = MailDomain {
+			id: 2,
+			group_id: 1,
+			name: "textrem.ch".into(),
+			send_only: true,
+			mailboxes: vec![],
+			forwards: vec![],
+			senders: vec![sender(2, 2, "noreply@textrem.ch")],
+		};
+		vec![Group {
+			name: "shop".into(),
+			smtp: Some(("pw".into(), "{BLF-CRYPT}group".into())),
+			mail_domains: vec![shop, textrem],
+			..Default::default()
+		}]
+	}
+
+	fn content<'a>(files: &'a [File], path: &str) -> &'a str {
+		let f = files.iter().find(|f| f.path.as_os_str() == path);
+		&f.unwrap_or_else(|| panic!("no {path}")).content
+	}
+
+	#[test]
+	fn send_only_domains_are_no_mailbox_domains() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.com\"").unwrap();
+		let files = files(&cfg, &send_only_groups(), true, false);
+		let domains = content(&files, "/etc/genco/mail/domains");
+		assert!(domains.contains("shop.ch OK"));
+		assert!(!domains.contains("textrem.ch"), "{domains}");
+		for map in ["mailboxes", "forwards", "passwd"] {
+			let c = content(&files, &format!("/etc/genco/mail/{map}"));
+			assert!(!c.contains("noreply@"), "{map}: {c}");
+		}
+	}
+
+	#[test]
+	fn send_only_addresses_send_as_themselves() {
+		let lines = senders(&send_only_groups());
+		assert_eq!(
+			lines,
+			[
+				"anna@shop.ch anna@shop.ch,g-shop",
+				"noreply@shop.ch noreply@shop.ch,g-shop",
+				"@shop.ch g-shop",
+				"noreply@textrem.ch noreply@textrem.ch,g-shop",
+				"@textrem.ch g-shop",
+			]
+		);
+	}
+
+	#[test]
+	fn send_only_logins_have_no_mailbox() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.com\"").unwrap();
+		let files = files(&cfg, &send_only_groups(), true, false);
+		let smtp = content(&files, "/etc/genco/mail/smtp-passwd");
+		assert!(smtp.contains("noreply@shop.ch:{BLF-CRYPT}hash-1\n"));
+		assert!(smtp.contains("noreply@textrem.ch:{BLF-CRYPT}hash-2\n"));
+		assert!(smtp.contains("g-shop:{BLF-CRYPT}group\n"));
+		assert!(!smtp.contains("anna@"));
+
+		// IMAP needs a userdb entry, and the only userdb is the mailboxes'
+		let conf = content(&files, DOVECOT_CONF);
+		assert_eq!(conf.matches("userdb").count(), 2, "{conf}");
+		let userdb = conf.split("userdb passwd-file {").nth(1).unwrap();
+		let userdb = userdb.split('}').next().unwrap();
+		assert!(userdb.contains("/etc/genco/mail/passwd\n"), "{userdb}");
+		assert!(
+			conf.contains("passwd_file_path = /etc/genco/mail/smtp-passwd")
+		);
+		assert!(!conf.contains("prefetch"));
 	}
 
 	#[test]

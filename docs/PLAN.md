@@ -210,6 +210,11 @@ terminal.
       per mail domain in /etc/genco/dkim signs mail of mailboxes and of
       the sites, its record in the DNS helper; postsrsd rewrites the
       sender of forwarded mail (SRS) except for the server's own domains
+- [x] send-only mail (operator 2026-11-03): a mail domain whose inbox is
+      elsewhere receives nothing here but is signed; send-only addresses
+      are an app's own SMTP login that sends only as itself (no IMAP),
+      password encrypted with secrets.key; app settings with
+      `ZIPP_SMTP_URL` in the panel and `genco mail sender`
 - [ ] later: learn spam/ham from moves into and out of Junk (imapsieve),
       Sieve filters and vacation replies in the webmail (ManageSieve),
       mailbox owners change their password themselves

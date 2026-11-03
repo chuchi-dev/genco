@@ -438,6 +438,24 @@ const MIGRATIONS: &[&str] = &[
 	r#"
 	ALTER TABLE proposals ADD COLUMN rewrite_note TEXT;
 "#,
+	// mail domains whose inbox is elsewhere, apps only send from them;
+	// send-only addresses, each its own SMTP login that sends only as
+	// itself, the password encrypted with secrets.key (mailbox/send_only.rs)
+	r#"
+	ALTER TABLE mail_domains ADD COLUMN send_only INTEGER NOT NULL DEFAULT 0;
+
+	CREATE TABLE mail_senders (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		mail_domain_id INTEGER NOT NULL
+			REFERENCES mail_domains(id) ON DELETE CASCADE,
+		local_part TEXT NOT NULL,
+		password BLOB NOT NULL,
+		password_hash TEXT NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		UNIQUE (mail_domain_id, local_part)
+	);
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

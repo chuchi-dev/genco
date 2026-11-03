@@ -15,11 +15,14 @@
 	} = $props();
 
 	let name = $state('');
+	let sendOnly = $state(false);
 	// svelte-ignore state_referenced_locally
 	let group = $state(groupId ?? tree.groups[0]?.id ?? 0);
 
 	async function save() {
-		oncreated(await post('/mail-domains', { groupId: group, name }));
+		oncreated(
+			await post('/mail-domains', { groupId: group, name, sendOnly }),
+		);
 	}
 </script>
 
@@ -39,15 +42,44 @@
 				<option value={g.id}>{g.name}</option>
 			{/each}
 		</select>
+		<span>Mail:</span>
+		<div class="modes">
+			<label>
+				<input type="radio" bind:group={sendOnly} value={false} />
+				Receive mail here
+			</label>
+			<label>
+				<input type="radio" bind:group={sendOnly} value={true} />
+				Only send from apps here (inbox stays elsewhere)
+			</label>
+		</div>
 	</Form>
 	<p class="hint">
-		Mailboxes and forwards for addresses @this domain. Its page shows the
-		DNS records to set.
+		{#if sendOnly}
+			Apps send as addresses @this domain with their own login, signed;
+			mail to it still goes to its inbox elsewhere. Its page shows the DNS
+			records to set.
+		{:else}
+			Mailboxes and forwards for addresses @this domain. Its page shows
+			the DNS records to set.
+		{/if}
 	</p>
 </Dialog>
 
 <style>
 	.hint {
 		margin: 8px 0 0;
+	}
+
+	.modes {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		label {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+		}
 	}
 </style>

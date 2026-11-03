@@ -198,8 +198,33 @@ export type MailDomain = {
 	id: number;
 	groupId: number;
 	name: string;
+	/** the inbox is elsewhere, apps here only send from it */
+	sendOnly: boolean;
 	mailboxes: Mailbox[];
 	forwards: Forward[];
+	senders: SendOnly[];
+};
+
+/** an app's own SMTP login, it sends only as its address */
+export type SendOnly = {
+	id: number;
+	mailDomainId: number;
+	address: string;
+	note: string;
+	createdAt: number;
+};
+
+/** what an app needs to send as a send-only address */
+export type SenderSettings = {
+	host: string;
+	port: number;
+	user: string;
+	password: string;
+	from: string;
+	zippSmtpUrl: string;
+	smtpUrl: string;
+	/** the mail host has its certificate */
+	ready: boolean;
 };
 
 export type Mailbox = {

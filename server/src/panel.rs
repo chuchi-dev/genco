@@ -151,7 +151,7 @@ async fn rename(
 	if mail && !keep_mail_host {
 		for d in groups.iter().flat_map(|g| &g.mail_domains) {
 			step(&format!("DNS records of the mail domain {}", d.name));
-			match mailbox::dns_text(&cfg, &d.name).await {
+			match mailbox::dns_text(&cfg, db, &d.name).await {
 				Ok(text) => println!("{text}"),
 				Err(e) => println!("{e}"),
 			}

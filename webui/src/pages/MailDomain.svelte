@@ -10,7 +10,7 @@
 </script>
 
 <script lang="ts">
-	import { type DnsRecord, type Mailbox } from '@/lib/api';
+	import { post, type DnsRecord, type Mailbox } from '@/lib/api';
 	import { mail } from '@/lib/mail.svelte';
 	import {
 		message,
@@ -22,6 +22,8 @@
 	import MailboxDialog from '@/components/dialogs/MailboxDialog.svelte';
 	import DnsTable from '@/components/DnsTable.svelte';
 	import ForwardDialog from '@/components/dialogs/ForwardDialog.svelte';
+	import SenderDialog from '@/components/dialogs/SenderDialog.svelte';
+	import SenderSettings from '@/components/SenderSettings.svelte';
 
 	let { id }: { id: string } = $props();
 
@@ -32,8 +34,11 @@
 
 	let selectedBox = $state<number | null>(null);
 	let selectedForward = $state<number | null>(null);
-	// the dialog that is open: a new mailbox, one to change, a forward
-	let editing = $state<'new' | Mailbox | 'forward' | null>(null);
+	let selectedSender = $state<number | null>(null);
+	// the dialog that is open: a new mailbox, one to change, a forward, a
+	// send-only address
+	let editing = $state<'new' | Mailbox | 'forward' | 'sender' | null>(null);
+	let modeError = $state<string | null>(null);
 
 	let dns = $state<DnsRecord[] | null>(null);
 	// the mail server's own name, the first record of the check
@@ -43,6 +48,46 @@
 	const forward = $derived(
 		domain.forwards.find(f => f.id === selectedForward),
 	);
+
+	const sender = $derived(domain.senders.find(s => s.id === selectedSender));
+
+	async function newSenderPassword() {
+		const yes =
+			sender &&
+			(await message.confirm(
+				'New Password',
+				`Give ${sender.address} a new password? Apps with the old one can't send until they get the new one.`,
+			));
+		if (yes) await post(`/mail-senders/${sender.id}/password`);
+	}
+
+	async function removeSender() {
+		const deleted =
+			sender &&
+			(await confirmDelete({
+				title: 'Delete Send-only Address',
+				text: `Delete ${sender.address}? Apps that send with its login can't send anymore.`,
+				path: '/mail-senders/' + sender.id,
+			}));
+		if (deleted) selectedSender = null;
+	}
+
+	async function switchMode() {
+		const sendOnly = !domain.sendOnly;
+		const yes = await message.confirm(
+			sendOnly ? 'Send Only' : 'Receive Mail',
+			sendOnly
+				? `Make ${domain.name} send-only? Its inbox is elsewhere: mail to it no longer arrives here, apps still send as it.`
+				: `Receive mail for ${domain.name} here? Only when its MX points to this server, otherwise mail from this server to it lands here instead of its real inbox.`,
+		);
+		if (!yes) return;
+		modeError = null;
+		try {
+			await post(`/mail-domains/${domain.id}/mode`, { sendOnly });
+		} catch (e: any) {
+			modeError = e.message;
+		}
+	}
 
 	async function removeForward() {
 		const deleted =
@@ -70,7 +115,17 @@
 	<dd>
 		{#if group}<a href="/groups/{group.id}">{group.name}</a>{/if}
 	</dd>
-	{#if host}
+	<dt>Mail:</dt>
+	<dd>
+		{domain.sendOnly
+			? 'only sent from apps here, the inbox is elsewhere'
+			: 'received here'}
+		<Button onclick={switchMode}>
+			{domain.sendOnly ? 'Receive Mail Here…' : 'Make Send-only…'}
+		</Button>
+		{#if modeError}<span class="error">{modeError}</span>{/if}
+	</dd>
+	{#if host && !domain.sendOnly}
 		<dt>Webmail:</dt>
 		<dd>
 			<a href="https://{host}/" target="_blank" rel="noreferrer">
@@ -86,58 +141,94 @@
 	{/if}
 </dl>
 
-<h4>Mailboxes</h4>
-<ListView
-	items={domain.mailboxes}
-	key={b => b.id}
-	bind:selected={selectedBox}
-	columns={[{ label: 'Address' }, { label: 'Quota', num: true }]}
-	empty="No mailboxes yet."
-	ondblclick={b => (editing = b)}
-	maxHeight={260}
->
-	{#snippet row(b)}
-		<td>{b.address}</td>
-		<td class="num">{b.quotaMb} MB</td>
-	{/snippet}
-</ListView>
-<div class="row-buttons">
-	<Button onclick={() => (editing = 'new')}>New Mailbox…</Button>
-	<Button onclick={() => box && (editing = box)} disabled={!box}>
-		Password and Quota…
-	</Button>
-	<Button
-		disabled={!box}
-		onclick={() =>
-			box &&
-			requestDelete(`/mailboxes/${box.id}`, `the mailbox ${box.address}`)}
+{#if !domain.sendOnly}
+	<h4>Mailboxes</h4>
+	<ListView
+		items={domain.mailboxes}
+		key={b => b.id}
+		bind:selected={selectedBox}
+		columns={[{ label: 'Address' }, { label: 'Quota', num: true }]}
+		empty="No mailboxes yet."
+		ondblclick={b => (editing = b)}
+		maxHeight={260}
 	>
-		Delete…
-	</Button>
-</div>
+		{#snippet row(b)}
+			<td>{b.address}</td>
+			<td class="num">{b.quotaMb} MB</td>
+		{/snippet}
+	</ListView>
+	<div class="row-buttons">
+		<Button onclick={() => (editing = 'new')}>New Mailbox…</Button>
+		<Button onclick={() => box && (editing = box)} disabled={!box}>
+			Password and Quota…
+		</Button>
+		<Button
+			disabled={!box}
+			onclick={() =>
+				box &&
+				requestDelete(
+					`/mailboxes/${box.id}`,
+					`the mailbox ${box.address}`,
+				)}
+		>
+			Delete…
+		</Button>
+	</div>
 
-<h4>Forwards</h4>
+	<h4>Forwards</h4>
+	<ListView
+		items={domain.forwards}
+		key={f => f.id}
+		bind:selected={selectedForward}
+		columns={[{ label: 'Address' }, { label: 'Goes to' }]}
+		empty="No forwards."
+		maxHeight={260}
+	>
+		{#snippet row(f)}
+			<td>
+				{f.address.startsWith('*@')
+					? `${f.address} (all others)`
+					: f.address}
+			</td>
+			<td>{f.targets.join(', ')}</td>
+		{/snippet}
+	</ListView>
+	<div class="row-buttons">
+		<Button onclick={() => (editing = 'forward')}>New Forward…</Button>
+		<Button onclick={removeForward} disabled={!forward}>Delete</Button>
+	</div>
+{/if}
+
+<h4>Send-only addresses</h4>
+<p class="hint">
+	An app's own SMTP login: it sends only as its address, DKIM signed, and has
+	no mailbox.
+</p>
 <ListView
-	items={domain.forwards}
-	key={f => f.id}
-	bind:selected={selectedForward}
-	columns={[{ label: 'Address' }, { label: 'Goes to' }]}
-	empty="No forwards."
-	maxHeight={260}
+	items={domain.senders}
+	key={s => s.id}
+	bind:selected={selectedSender}
+	columns={[{ label: 'Address' }, { label: 'For' }]}
+	empty="No send-only addresses."
+	maxHeight={200}
 >
-	{#snippet row(f)}
-		<td>
-			{f.address.startsWith('*@')
-				? `${f.address} (all others)`
-				: f.address}
-		</td>
-		<td>{f.targets.join(', ')}</td>
+	{#snippet row(s)}
+		<td>{s.address}</td>
+		<td>{s.note}</td>
 	{/snippet}
 </ListView>
 <div class="row-buttons">
-	<Button onclick={() => (editing = 'forward')}>New Forward…</Button>
-	<Button onclick={removeForward} disabled={!forward}>Delete</Button>
+	<Button onclick={() => (editing = 'sender')}>Add…</Button>
+	<Button onclick={newSenderPassword} disabled={!sender}>
+		New Password…
+	</Button>
+	<Button onclick={removeSender} disabled={!sender}>Delete…</Button>
 </div>
+{#if sender}
+	{#key sender.id}
+		<SenderSettings {sender} {host} />
+	{/key}
+{/if}
 
 <h4>DNS</h4>
 <p class="hint">
@@ -160,6 +251,15 @@
 
 {#if editing === 'new'}
 	<MailboxDialog {domain} onclose={() => (editing = null)} />
+{:else if editing === 'sender'}
+	<SenderDialog
+		{domain}
+		oncreated={id => {
+			selectedSender = id;
+			editing = null;
+		}}
+		onclose={() => (editing = null)}
+	/>
 {:else if editing === 'forward'}
 	<ForwardDialog {domain} onclose={() => (editing = null)} />
 {:else if editing}

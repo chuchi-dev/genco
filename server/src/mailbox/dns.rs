@@ -140,11 +140,80 @@ async fn ptr_record(ip: &str, name: &str) -> DnsRecord {
 	)
 }
 
+/// The DKIM key of a mail domain, once apply made it.
+async fn dkim_check(domain: &str) -> Option<DnsRecord> {
+	let value = crate::mailfilter::dkim_record(domain).await?;
+	let name = format!("{}._domainkey.{domain}", crate::mailfilter::SELECTOR);
+	Some(
+		dkim_txt(
+			&name,
+			value,
+			"the key receivers check the signature of the mail with",
+		)
+		.await,
+	)
+}
+
+/// The SPF of a send-only domain: its inbox is elsewhere, so the record
+/// there stays and only gets this server added. Through a relay the
+/// relay's SPF counts, genco can't tell what that is.
+async fn send_only_spf(
+	domain: &str,
+	ip: &str,
+	relay: Option<&str>,
+) -> DnsRecord {
+	let found = spf(domain).await;
+	if let Some(relay) = relay {
+		let mut r = record(
+			domain,
+			"TXT",
+			format!("the SPF entry of {relay}"),
+			found,
+			false,
+			&format!(
+				"mail goes out through the relay {relay}: add what its \
+				docs say to the SPF record, not this server's IP"
+			),
+		);
+		r.status = "optional".into();
+		return r;
+	}
+	let allowed = match ip.parse() {
+		Ok(ip) => crate::senders::spf_allows(domain, ip).await,
+		Err(_) => None,
+	};
+	if found.is_empty() {
+		return record(
+			domain,
+			"TXT",
+			format!("v=spf1 ip4:{ip} ~all"),
+			found,
+			false,
+			"who may send mail as the domain: this server and whoever \
+			sends for the inbox elsewhere (their include:), in one record",
+		);
+	}
+	record(
+		domain,
+		"TXT",
+		format!("ip4:{ip}"),
+		found,
+		allowed == Some(true),
+		&format!(
+			"who may send mail as the domain: add ip4:{ip} to the SPF \
+			record that is there and keep the rest (one SPF record per name)"
+		),
+	)
+}
+
 /// The records `domain` needs for mail on this server, next to what its
-/// DNS has now.
+/// DNS has now. A send-only domain has no MX here, only what sending
+/// needs; `relay`: mail goes out through that host.
 pub(super) async fn dns_check(
 	cfg: &Config,
 	domain: &str,
+	send_only: bool,
+	relay: Option<&str>,
 ) -> Result<Vec<DnsRecord>> {
 	let host =
 		host(cfg).ok_or(Error::Invalid("the panel has no domain".into()))?;
@@ -167,6 +236,20 @@ pub(super) async fn dns_check(
 		.await,
 	];
 
+	if send_only {
+		records.push(send_only_spf(domain, &ip, relay).await);
+		records.extend(dkim_check(domain).await);
+		records.push(
+			dmarc_record(
+				domain,
+				format!("v=DMARC1; p=none; rua=mailto:postmaster@{domain}"),
+			)
+			.await,
+		);
+		records.push(ptr_record(&ip, &host).await);
+		return Ok(records);
+	}
+
 	let found = crate::dns::dig("MX", domain).await;
 	let ok = found.iter().any(|f| f.ends_with(&host));
 	records.push(record(
@@ -186,18 +269,7 @@ pub(super) async fn dns_check(
 		)
 		.await,
 	);
-	if let Some(value) = crate::mailfilter::dkim_record(domain).await {
-		let name =
-			format!("{}._domainkey.{domain}", crate::mailfilter::SELECTOR);
-		records.push(
-			dkim_txt(
-				&name,
-				value,
-				"the key receivers check the signature of the mail with",
-			)
-			.await,
-		);
-	}
+	records.extend(dkim_check(domain).await);
 	records.push(
 		dmarc_record(
 			domain,
@@ -237,6 +309,23 @@ pub(super) async fn dns_check(
 
 	records.push(ptr_record(&ip, &host).await);
 	Ok(records)
+}
+
+/// The check of a mail domain by name, in its mode and the mail settings'
+/// (a relay sends for it).
+pub(super) async fn domain_dns(
+	cfg: &Config,
+	db: &Db,
+	name: &str,
+) -> Result<Vec<DnsRecord>> {
+	let send_only: bool = db.conn().query_row(
+		"SELECT send_only FROM mail_domains WHERE name = ?1",
+		[name.trim().to_lowercase()],
+		|r| r.get(0),
+	)?;
+	let settings = crate::mail::settings(db)?;
+	let relay = (settings.mode == "relay").then_some(settings.relay_host);
+	dns_check(cfg, name, send_only, relay.as_deref()).await
 }
 
 /// What genco's own mails need, sent as genco@<panel>: SPF, DKIM and

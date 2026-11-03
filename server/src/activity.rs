@@ -138,6 +138,11 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("POST", "/mailboxes/*", "Change mailbox"),
 		("DELETE", "/mailboxes/*", "Ask to delete mailbox"),
 		("DELETE", "/forwards/*", "Delete forward"),
+		("POST", "/mail-domains/*/mode", "Change mail domain mode"),
+		("POST", "/mail-domains/*/senders", "Add send-only address"),
+		("GET", "/mail-senders/*", "Show send-only address login"),
+		("POST", "/mail-senders/*/password", "New send-only password"),
+		("DELETE", "/mail-senders/*", "Delete send-only address"),
 		("POST", "/secrets", "Save password"),
 		("POST", "/secrets/*", "Change password entry"),
 		("DELETE", "/secrets/*", "Delete password"),
@@ -224,6 +229,10 @@ fn target(conn: &Connection, path: &str) -> String {
 		"mailboxes" => {
 			"SELECT b.local_part || '@' || d.name FROM mailboxes b
 			JOIN mail_domains d ON d.id = b.mail_domain_id WHERE b.id = ?1"
+		}
+		"mail-senders" => {
+			"SELECT s.local_part || '@' || d.name FROM mail_senders s
+			JOIN mail_domains d ON d.id = s.mail_domain_id WHERE s.id = ?1"
 		}
 		"forwards" => {
 			"SELECT f.local_part || '@' || d.name FROM mail_forwards f

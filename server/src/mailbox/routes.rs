@@ -31,6 +31,8 @@ pub(super) fn apply_soon(cfg: Arc<Config>, db: Db, events: Events) {
 pub(super) struct DomainReq {
 	pub(super) group_id: i64,
 	pub(super) name: String,
+	#[serde(default)]
+	pub(super) send_only: bool,
 }
 
 pub(super) async fn create_domain(
@@ -38,9 +40,84 @@ pub(super) async fn create_domain(
 	State(state): State<AppState>,
 	Json(req): Json<DomainReq>,
 ) -> Result<Json<i64>> {
-	let id = add_domain(&state.db.conn(), req.group_id, &req.name)?;
+	let id =
+		add_domain(&state.db.conn(), req.group_id, &req.name, req.send_only)?;
 	apply_soon(state.cfg.clone(), state.db.clone(), state.events.clone());
 	Ok(Json(id))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ModeReq {
+	pub(super) send_only: bool,
+}
+
+pub(super) async fn update_mode(
+	_authed: Authed,
+	State(state): State<AppState>,
+	UrlPath(id): UrlPath<i64>,
+	Json(req): Json<ModeReq>,
+) -> Result<Json<()>> {
+	set_mode(&state.db.conn(), id, req.send_only)?;
+	apply_soon(state.cfg.clone(), state.db.clone(), state.events.clone());
+	Ok(Json(()))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SenderReq {
+	pub(super) local_part: String,
+	#[serde(default)]
+	pub(super) note: String,
+}
+
+pub(super) async fn create_sender(
+	_authed: Authed,
+	State(state): State<AppState>,
+	UrlPath(domain_id): UrlPath<i64>,
+	Json(req): Json<SenderReq>,
+) -> Result<Json<i64>> {
+	domain_by_id(&state.db.conn(), domain_id)?;
+	let key = std::path::Path::new(crate::secrets::KEY_FILE);
+	let id =
+		send_only::add(&state.db, key, domain_id, &req.local_part, &req.note)
+			.await?;
+	apply_soon(state.cfg.clone(), state.db.clone(), state.events.clone());
+	Ok(Json(id))
+}
+
+/// The app settings with the password; the activity log records who
+/// asked.
+pub(super) async fn sender_settings(
+	_authed: Authed,
+	State(cfg): State<Arc<Config>>,
+	State(db): State<Db>,
+	UrlPath(id): UrlPath<i64>,
+) -> Result<Json<send_only::AppSettings>> {
+	let key = std::path::Path::new(crate::secrets::KEY_FILE);
+	Ok(Json(send_only::app_settings(&cfg, &db.conn(), key, id)?))
+}
+
+pub(super) async fn sender_password(
+	_authed: Authed,
+	State(state): State<AppState>,
+	UrlPath(id): UrlPath<i64>,
+) -> Result<Json<()>> {
+	let key = std::path::Path::new(crate::secrets::KEY_FILE);
+	send_only::new_password(&state.db, key, id).await?;
+	apply_soon(state.cfg.clone(), state.db.clone(), state.events.clone());
+	Ok(Json(()))
+}
+
+/// A send-only address holds no mail, it goes without a confirmation.
+pub(super) async fn delete_sender(
+	_authed: Authed,
+	State(state): State<AppState>,
+	UrlPath(id): UrlPath<i64>,
+) -> Result<Json<()>> {
+	send_only::remove(&state.db.conn(), id)?;
+	apply_soon(state.cfg.clone(), state.db.clone(), state.events.clone());
+	Ok(Json(()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,7 +211,7 @@ pub(super) async fn dns_route(
 	UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<Vec<DnsRecord>>> {
 	let (_, name) = domain_by_id(&db.conn(), id)?;
-	Ok(Json(dns_check(&cfg, &name).await?))
+	Ok(Json(domain_dns(&cfg, &db, &name).await?))
 }
 
 pub fn routes() -> Router<AppState> {
@@ -143,6 +220,13 @@ pub fn routes() -> Router<AppState> {
 		.route("/mail-domains/{id}/mailboxes", post(create_mailbox))
 		.route("/mail-domains/{id}/forwards", post(create_forward))
 		.route("/mail-domains/{id}/dns", get(dns_route))
+		.route("/mail-domains/{id}/mode", post(update_mode))
+		.route("/mail-domains/{id}/senders", post(create_sender))
+		.route(
+			"/mail-senders/{id}",
+			get(sender_settings).delete(delete_sender),
+		)
+		.route("/mail-senders/{id}/password", post(sender_password))
 		.route("/mailboxes/{id}", post(update_mailbox))
 		.route("/forwards/{id}", delete(delete_forward))
 		.route("/groups/{id}/smtp", get(group_smtp))

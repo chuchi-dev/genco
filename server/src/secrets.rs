@@ -20,7 +20,7 @@ use crate::events::{Event, Events};
 use crate::users::Authed;
 
 /// 32 random bytes, only root reads it. Without it the values are lost.
-const KEY_FILE: &str = "/etc/genco/secrets.key";
+pub const KEY_FILE: &str = "/etc/genco/secrets.key";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +90,16 @@ fn open(key: &Key, blob: &[u8]) -> Result<String> {
 			))
 		})?;
 	String::from_utf8(plain).map_err(|e| Error::Internal(e.to_string()))
+}
+
+/// Encrypts a password of another table with the key in `key_file`
+/// (`KEY_FILE`), e.g. a send-only mail address's.
+pub fn seal_with(key_file: &Path, plain: &str) -> Result<Vec<u8>> {
+	seal(&key(key_file)?, plain)
+}
+
+pub fn open_with(key_file: &Path, blob: &[u8]) -> Result<String> {
+	open(&key(key_file)?, blob)
 }
 
 const COLUMNS: &str =

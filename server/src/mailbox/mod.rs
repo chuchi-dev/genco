@@ -3,11 +3,15 @@
 //! takes mail from mailboxes on 587/465; everything runs under one host
 //! name, `mail.<panel domain>`. genco writes the maps and Dovecot's whole
 //! config, the DNS check tells what the domain's records should be.
+//! A send-only mail domain has its inbox elsewhere: genco receives
+//! nothing for it, apps only send from it, signed, with send-only
+//! addresses (`send_only`).
 
 mod cli;
 mod conf;
 mod dns;
 mod routes;
+mod send_only;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -37,6 +41,7 @@ pub use conf::{
 use dns::*;
 pub use dns::{DnsRecord, panel_dns};
 pub use routes::routes;
+pub use send_only::{SendOnly, SenderCmd};
 
 /// Where Dovecot keeps the mail, `<domain>/<local part>/Maildir`.
 pub const VMAIL: &str = "/var/vmail";
@@ -50,8 +55,11 @@ pub struct MailDomain {
 	pub id: i64,
 	pub group_id: i64,
 	pub name: String,
+	/// the inbox is elsewhere: no mailboxes or forwards, genco only sends
+	pub send_only: bool,
 	pub mailboxes: Vec<Mailbox>,
 	pub forwards: Vec<Forward>,
+	pub senders: Vec<SendOnly>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,7 +84,8 @@ pub struct Forward {
 	pub targets: Vec<String>,
 }
 
-/// Every mail domain with its mailboxes and forwards.
+/// Every mail domain with its mailboxes, forwards and send-only
+/// addresses.
 pub fn load(conn: &Connection) -> rusqlite::Result<Vec<MailDomain>> {
 	let mut stmt = conn.prepare(
 		"SELECT b.id, b.mail_domain_id, b.local_part || '@' || d.name,
@@ -112,16 +121,21 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<MailDomain>> {
 		})?
 		.collect::<rusqlite::Result<_>>()?;
 
-	let mut stmt = conn
-		.prepare("SELECT id, group_id, name FROM mail_domains ORDER BY name")?;
+	let senders = send_only::load(conn)?;
+
+	let mut stmt = conn.prepare(
+		"SELECT id, group_id, name, send_only FROM mail_domains ORDER BY name",
+	)?;
 	stmt.query_map([], |r| {
 		let id: i64 = r.get(0)?;
 		Ok(MailDomain {
 			id,
 			group_id: r.get(1)?,
 			name: r.get(2)?,
+			send_only: r.get(3)?,
 			mailboxes: util::matching(&boxes, |b| b.mail_domain_id == id),
 			forwards: util::matching(&forwards, |f| f.mail_domain_id == id),
+			senders: util::matching(&senders, |s| s.mail_domain_id == id),
 		})
 	})?
 	.collect()
@@ -221,8 +235,14 @@ pub async fn ensure_smtp_logins(db: &Db) -> Result<()> {
 	Ok(())
 }
 
-/// Not with mail off: its mailboxes couldn't send.
-fn add_domain(conn: &Connection, group_id: i64, name: &str) -> Result<i64> {
+/// Not with mail off: its mailboxes couldn't send. `send_only`: the
+/// inbox stays elsewhere, apps here only send from it.
+fn add_domain(
+	conn: &Connection,
+	group_id: i64,
+	name: &str,
+	send_only: bool,
+) -> Result<i64> {
 	if crate::mail::is_off(conn) {
 		return Err(crate::mail::off_error(
 			"a mail domain can't send; turn mail on first",
@@ -231,11 +251,51 @@ fn add_domain(conn: &Connection, group_id: i64, name: &str) -> Result<i64> {
 	let name = name.trim().to_lowercase();
 	hosting::check_domain_name(&name)?;
 	conn.execute(
-		"INSERT INTO mail_domains (group_id, name, created_at)
-		VALUES (?1, ?2, ?3)",
-		params![group_id, name, now()],
+		"INSERT INTO mail_domains (group_id, name, send_only, created_at)
+		VALUES (?1, ?2, ?3, ?4)",
+		params![group_id, name, send_only, now()],
 	)?;
 	Ok(conn.last_insert_rowid())
+}
+
+/// Receiving or send-only. A domain becomes send-only only without
+/// mailboxes and forwards: their mail would no longer arrive.
+fn set_mode(conn: &Connection, domain_id: i64, send_only: bool) -> Result<()> {
+	let (name, boxes, forwards): (String, i64, i64) = conn.query_row(
+		"SELECT name,
+		(SELECT count(*) FROM mailboxes WHERE mail_domain_id = d.id),
+		(SELECT count(*) FROM mail_forwards WHERE mail_domain_id = d.id)
+		FROM mail_domains d WHERE id = ?1",
+		[domain_id],
+		|r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+	)?;
+	if send_only && boxes + forwards > 0 {
+		return Err(Error::Invalid(format!(
+			"{name} has {boxes} mailboxes and {forwards} forwards, delete \
+			them first: a send-only domain receives no mail here"
+		)));
+	}
+	conn.execute(
+		"UPDATE mail_domains SET send_only = ?1 WHERE id = ?2",
+		params![send_only, domain_id],
+	)?;
+	Ok(())
+}
+
+/// Mailboxes and forwards only on receiving domains.
+fn check_receiving(conn: &Connection, domain_id: i64) -> Result<()> {
+	let (name, send_only): (String, bool) = conn.query_row(
+		"SELECT name, send_only FROM mail_domains WHERE id = ?1",
+		[domain_id],
+		|r| Ok((r.get(0)?, r.get(1)?)),
+	)?;
+	if send_only {
+		return Err(Error::Invalid(format!(
+			"{name} is send-only, its inbox is elsewhere: no mailboxes or \
+			forwards here"
+		)));
+	}
+	Ok(())
 }
 
 pub async fn add_mailbox(
@@ -249,7 +309,9 @@ pub async fn add_mailbox(
 	check_local_part(&local)?;
 	let hash = hash(password).await?;
 	let conn = db.conn();
+	check_receiving(&conn, domain_id)?;
 	taken_by_forward(&conn, domain_id, &local)?;
+	send_only::taken_by_sender(&conn, domain_id, &local)?;
 	conn.execute(
 		"INSERT INTO mailboxes (mail_domain_id, local_part, password_hash,
 		quota_mb, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -311,8 +373,10 @@ fn set_forward(
 	targets: &[String],
 ) -> Result<i64> {
 	let local = local.trim().to_lowercase();
+	check_receiving(conn, domain_id)?;
 	if local != "*" {
 		check_local_part(&local)?;
+		send_only::taken_by_sender(conn, domain_id, &local)?;
 	}
 	let targets: Vec<String> = targets
 		.iter()
@@ -380,10 +444,55 @@ mod tests {
 		)
 		.unwrap();
 		crate::db::set_setting(&conn, "mail", r#"{"mode":"off"}"#).unwrap();
-		let refused = add_domain(&conn, 1, "shop.ch").unwrap_err();
+		let refused = add_domain(&conn, 1, "shop.ch", false).unwrap_err();
+		assert!(refused.to_string().contains("mail is off"));
+		let refused = add_domain(&conn, 1, "shop.ch", true).unwrap_err();
 		assert!(refused.to_string().contains("mail is off"));
 
 		crate::db::set_setting(&conn, "mail", r#"{"mode":"direct"}"#).unwrap();
-		add_domain(&conn, 1, "shop.ch").unwrap();
+		add_domain(&conn, 1, "shop.ch", false).unwrap();
+	}
+
+	pub(super) fn group_with_domains(conn: &Connection) {
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+				VALUES ('shop', 1, 0);",
+		)
+		.unwrap();
+		add_domain(conn, 1, "shop.ch", false).unwrap();
+		add_domain(conn, 1, "textrem.ch", true).unwrap();
+	}
+
+	#[tokio::test]
+	async fn send_only_domains_take_no_mailboxes_or_forwards() {
+		let db = crate::db::Db::memory();
+		group_with_domains(&db.conn());
+		let to = vec!["a@b.ch".to_string()];
+		let refused = set_forward(&db.conn(), 2, "info", &to).unwrap_err();
+		assert!(refused.to_string().contains("send-only"), "{refused}");
+		let refused =
+			add_mailbox(&db, 2, "info", "long enough pw".into(), None)
+				.await
+				.unwrap_err();
+		assert!(refused.to_string().contains("send-only"), "{refused}");
+	}
+
+	#[test]
+	fn only_an_empty_domain_becomes_send_only() {
+		let db = crate::db::Db::memory();
+		group_with_domains(&db.conn());
+		let conn = db.conn();
+		set_forward(&conn, 1, "info", &["a@b.ch".into()]).unwrap();
+		let refused = set_mode(&conn, 1, true).unwrap_err();
+		assert!(refused.to_string().contains("1 forwards"), "{refused}");
+
+		conn.execute("DELETE FROM mail_forwards", []).unwrap();
+		set_mode(&conn, 1, true).unwrap();
+		// and back, always
+		set_mode(&conn, 1, false).unwrap();
+		set_mode(&conn, 2, false).unwrap();
+		let d = load(&conn).unwrap();
+		assert!(d.iter().all(|d| !d.send_only));
 	}
 }
