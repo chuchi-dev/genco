@@ -11,9 +11,12 @@
 
 	let users = $state<User[]>([]);
 	let selected = $state<number | null>(null);
-	let adding = $state(false);
+	/// invite by mail or add with a password
+	let adding = $state<'invite' | 'password' | null>(null);
 	let email = $state('');
 	let name = $state('');
+	let newPassword = $state('');
+	let repeat = $state('');
 	let error = $state<string | null>(null);
 
 	const canRemove = $derived(
@@ -38,11 +41,34 @@
 		);
 		if (password === null) return;
 		await post('/users/invite', { email, name, password });
-		adding = false;
+		adding = null;
 		email = name = '';
 
 		await load();
 		message.show('Invite Sent', `${sentTo} got a link to set a password.`);
+	}
+
+	async function add() {
+		if (newPassword !== repeat)
+			throw new Error("The passwords don't match.");
+		const added = email;
+		const password = await message.password(
+			'Add User',
+			`add ${email} as an admin`,
+		);
+		if (password === null) return;
+		await post('/users/add', {
+			email,
+			name,
+			newPassword,
+			repeat,
+			password,
+		});
+		adding = null;
+		email = name = newPassword = repeat = '';
+
+		await load();
+		message.show('User Added', `${added} can log in now.`);
 	}
 
 	/// a new link, also when someone forgot the password
@@ -88,15 +114,40 @@
 <Dialog title="Users" resizable icon="users" {onclose} width={460}>
 	{#if adding}
 		<p class="hint">
-			The new user is an admin of this server and gets a mail with a link
-			to set a password.
+			{#if adding === 'invite'}
+				The new user is an admin of this server and gets a mail with a
+				link to set a password.
+			{:else}
+				The new user is an admin of this server and can log in with this
+				password right away. At least 10 characters.
+			{/if}
 		</p>
-		<Form onsubmit={invite} oncancel={() => (adding = false)} ok="Invite">
+		<Form
+			onsubmit={adding === 'invite' ? invite : add}
+			oncancel={() => (adding = null)}
+			ok={adding === 'invite' ? 'Invite' : 'Add'}
+		>
 			<label for="u-name">Name:</label>
 			<!-- svelte-ignore a11y_autofocus -->
 			<input id="u-name" autofocus bind:value={name} />
 			<label for="u-email">Email:</label>
 			<input id="u-email" type="email" bind:value={email} />
+			{#if adding === 'password'}
+				<label for="u-password">Password:</label>
+				<input
+					id="u-password"
+					type="password"
+					autocomplete="new-password"
+					bind:value={newPassword}
+				/>
+				<label for="u-repeat">Repeat:</label>
+				<input
+					id="u-repeat"
+					type="password"
+					autocomplete="new-password"
+					bind:value={repeat}
+				/>
+			{/if}
 		</Form>
 	{:else}
 		<p class="hint">Every user is an admin of this server.</p>
@@ -115,7 +166,8 @@
 		</ListView>
 		{#if error}<p class="error">{error}</p>{/if}
 		<div class="row-buttons">
-			<Button onclick={() => (adding = true)}>Invite…</Button>
+			<Button onclick={() => (adding = 'invite')}>Invite…</Button>
+			<Button onclick={() => (adding = 'password')}>Add…</Button>
 			<Button onclick={reinvite} disabled={selected === null}>
 				Send Link
 			</Button>

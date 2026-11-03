@@ -193,6 +193,10 @@
 				onclick: () => (dialogs.open = 'totp'),
 			},
 			{
+				label: 'Change Email…',
+				onclick: () => (dialogs.open = 'account'),
+			},
+			{
 				label: 'Change Password…',
 				onclick: () => (dialogs.open = 'password'),
 			},

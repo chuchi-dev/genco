@@ -166,6 +166,11 @@ terminal.
       activity`, kept a year
 - [x] admins are invited by mail and set their own password (link valid
       3 days, "Send Link" again doubles as password reset)
+- [x] or added with a password (Start → Users → Add…, confirmed with the
+      admin's own password), they can log in right away (operator
+      2026-11-03)
+- [x] an admin changes their own email and name (Start → Change
+      Email…, with the password), the old address gets a mail about it
 
 ### 8c. Usage stats (operator 2026-11-01, instead of Grafana)
 - [x] a sample every minute into /var/lib/genco/stats.db (no backup):

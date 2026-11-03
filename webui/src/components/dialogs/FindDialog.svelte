@@ -69,6 +69,7 @@
 		},
 		{ name: 'Activity Log', also: 'history', dialog: 'activity' },
 		{ name: 'Two-Factor Login', also: 'totp 2fa', dialog: 'totp' },
+		{ name: 'Change Email', also: 'name account', dialog: 'account' },
 		{ name: 'Change Password', also: '', dialog: 'password' },
 		{ name: 'Apply Changes', also: '', dialog: 'apply' },
 		{ name: 'New Client', also: 'add', dialog: 'client' },

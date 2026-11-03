@@ -9,6 +9,7 @@
 	import MailDomainDialog from '@/components/dialogs/MailDomainDialog.svelte';
 	import UsersDialog from '@/components/dialogs/UsersDialog.svelte';
 	import PasswordDialog from '@/components/dialogs/PasswordDialog.svelte';
+	import AccountDialog from '@/components/dialogs/AccountDialog.svelte';
 	import ApplyDialog from '@/components/dialogs/ApplyDialog.svelte';
 	import SettingsDialog from '@/components/dialogs/SettingsDialog.svelte';
 	import TotpDialog from '@/components/dialogs/TotpDialog.svelte';
@@ -91,6 +92,8 @@
 	<UsersDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'password'}
 	<PasswordDialog onclose={() => (dialogs.open = null)} />
+{:else if dialogs.open === 'account'}
+	<AccountDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'apply'}
 	<ApplyDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'settings'}

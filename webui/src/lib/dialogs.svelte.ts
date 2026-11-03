@@ -7,6 +7,7 @@ export type DialogKind =
 	| 'mail'
 	| 'users'
 	| 'password'
+	| 'account'
 	| 'apply'
 	| 'settings'
 	| 'totp'

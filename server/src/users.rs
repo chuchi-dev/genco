@@ -575,6 +575,68 @@ async fn change_password(
 	Ok(Json(()))
 }
 
+#[derive(Debug, Deserialize)]
+struct AccountReq {
+	email: String,
+	name: String,
+	password: String,
+}
+
+/// An admin changes their own email and name; sessions stay. The old
+/// address hears of it: a stolen session can't move the account away
+/// unnoticed.
+async fn change_account(
+	authed: Authed,
+	State(cfg): State<Arc<Config>>,
+	State(db): State<Db>,
+	Json(req): Json<AccountReq>,
+) -> Result<Json<User>> {
+	verify_password(&db, &authed.user, &req.password).await?;
+	let old = authed.user.email;
+	let user = set_account(&db.conn(), authed.user.id, &req.email, &req.name)?;
+	if user.email == old {
+		return Ok(Json(user));
+	}
+
+	let domain = cfg.domain.as_deref().unwrap_or("this server");
+	let body = format!(
+		"Hi {name}
+
+The email of your genco admin account on {domain} 		was changed to {email}. Log in with it from now on.
+
+If that 		wasn't you, tell another admin right away.
+",
+		name = user.name,
+		email = user.email,
+	);
+	let subject = format!("Your admin email on {domain} was changed");
+	if let Err(e) = mail::send(&cfg, &[old], &subject, &body).await {
+		tracing::error!("mail about the changed email of {}: {e}", user.id);
+	}
+	Ok(Json(user))
+}
+
+fn set_account(
+	conn: &Connection,
+	user_id: i64,
+	email: &str,
+	name: &str,
+) -> Result<User> {
+	let email = email.trim().to_lowercase();
+	if !email.contains('@') {
+		return Err(Error::Invalid("invalid email".into()));
+	}
+	if name.trim().is_empty() {
+		return Err(Error::Invalid("the name is empty".into()));
+	}
+
+	conn.execute(
+		"UPDATE users SET email = ?1, name = ?2 WHERE id = ?3",
+		params![email, name.trim(), user_id],
+	)?;
+	Ok(by_id(conn, user_id)?)
+}
+
 /// how long the link of an invite works
 const INVITE_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 
@@ -606,6 +668,33 @@ async fn invite(
 		invited: true,
 		..user
 	}))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddReq {
+	email: String,
+	name: String,
+	/// the new admin's, twice
+	new_password: String,
+	repeat: String,
+	/// the adding admin's, as for an invite
+	password: String,
+}
+
+/// Adds an admin with a password, who can log in right away, for a
+/// panel without mail or an admin sitting next to you.
+async fn add(
+	authed: Authed,
+	State(db): State<Db>,
+	Json(req): Json<AddReq>,
+) -> Result<Json<User>> {
+	verify_password(&db, &authed.user, &req.password).await?;
+	if req.new_password != req.repeat {
+		return Err(Error::Invalid("the passwords don't match".into()));
+	}
+	let hash = hash_password_async(req.new_password).await?;
+	Ok(Json(create(&db.conn(), &req.email, &req.name, &hash)?))
 }
 
 /// A new link for an admin who lost the first one or the password.
@@ -852,10 +941,12 @@ pub fn routes() -> Router<AppState> {
 		.route("/logout", post(logout))
 		.route("/tickets", post(create_ticket))
 		.route("/password", post(change_password))
+		.route("/account", post(change_account))
 		.route("/totp/setup", post(setup_totp))
 		.route("/totp/enable", post(enable_totp))
 		.route("/totp/disable", post(disable_totp))
 		.route("/", get(list_users))
+		.route("/add", post(add))
 		.route("/invite", post(invite))
 		.route("/invite/{token}", get(get_invite).post(accept_invite))
 		.route("/{id}/invite", post(reinvite))
@@ -908,6 +999,86 @@ mod tests {
 
 		// the session token itself stays out of URLs
 		assert!(session_hash(&parts("/api/events?token=abc")).is_err());
+	}
+
+	fn add_req(email: &str, new: &str, repeat: &str) -> AddReq {
+		AddReq {
+			email: email.into(),
+			name: "New".into(),
+			new_password: new.into(),
+			repeat: repeat.into(),
+			password: "admin password".into(),
+		}
+	}
+
+	#[tokio::test]
+	async fn an_admin_adds_one_with_a_password() {
+		let db = Db::memory();
+		let hash = hash_password("admin password").unwrap();
+		let admin = create(&db.conn(), "admin@example.ch", "Admin", &hash);
+		let authed = || Authed {
+			token: String::new(),
+			user: admin.as_ref().unwrap().clone(),
+		};
+		let add_one = |req| add(authed(), State(db.clone()), Json(req));
+
+		let mismatch = add_one(add_req("a@example.ch", "long enough 1", "x"));
+		assert!(mismatch.await.is_err());
+		let weak = add_one(add_req("a@example.ch", "short", "short"));
+		assert!(weak.await.is_err());
+		let mut wrong =
+			add_req("a@example.ch", "long enough 1", "long enough 1");
+		wrong.password = "wrong".into();
+		assert!(add_one(wrong).await.is_err());
+		assert_eq!(list(&db.conn()).unwrap().len(), 1);
+
+		let req = add_req(" A@example.ch", "long enough 1", "long enough 1");
+		let user = add_one(req).await.unwrap().0;
+		assert_eq!(user.email, "a@example.ch");
+		assert!(!user.invited);
+		let found = check_credentials(
+			&db,
+			"a@example.ch",
+			"long enough 1".into(),
+			"test",
+		)
+		.await
+		.unwrap();
+		assert_eq!(found.0, user.id);
+
+		let twice = add_req("a@example.ch", "long enough 2", "long enough 2");
+		assert!(add_one(twice).await.is_err());
+	}
+
+	#[tokio::test]
+	async fn an_admin_changes_their_email() {
+		let db = Db::memory();
+		let hash = hash_password("admin password").unwrap();
+		let a = create(&db.conn(), "a@example.ch", "A", &hash).unwrap();
+		create(&db.conn(), "b@example.ch", "B", &hash).unwrap();
+
+		assert!(verify_password(&db, &a, "wrong").await.is_err());
+		verify_password(&db, &a, "admin password").await.unwrap();
+
+		let taken = set_account(&db.conn(), a.id, " B@example.ch", "A");
+		assert!(taken.is_err());
+		assert!(set_account(&db.conn(), a.id, "a", "A").is_err());
+
+		let user =
+			set_account(&db.conn(), a.id, " New@Example.ch", " Anna ").unwrap();
+		assert_eq!(
+			(user.email.as_str(), user.name.as_str()),
+			("new@example.ch", "Anna")
+		);
+		let found = check_credentials(
+			&db,
+			"new@example.ch",
+			"admin password".into(),
+			"test",
+		)
+		.await
+		.unwrap();
+		assert_eq!(found.0, a.id);
 	}
 
 	#[test]

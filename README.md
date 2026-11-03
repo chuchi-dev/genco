@@ -51,9 +51,9 @@ genco is young and runs our own servers. Expect rough edges, and read
   patch releases install themselves if the server allows it, the rest
   with one click or `genco update --yes`, with a backup and an automatic
   rollback if the new version doesn't come up.
-- **Admins** with two-factor login, invites by mail, an activity log of
-  every change, a password store, usage stats per server, group and
-  domain, and what the agent costs per day.
+- **Admins** with two-factor login, invites by mail or a password, an
+  activity log of every change, a password store, usage stats per
+  server, group and domain, and what the agent costs per day.
 - Deleting a domain, database, group or mailbox needs a confirmation by
   mail.
 
