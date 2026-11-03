@@ -169,7 +169,7 @@ export type Group = {
 	workers: Worker[];
 	schedules: Schedule[];
 	php: PhpSettings;
-	limits: Limits;
+	limits: Limits & { defaults: LimitDefaults };
 };
 
 /** what a group's slice may use, null is the default */
@@ -179,6 +179,11 @@ export type Limits = {
 	memoryHighMb: number | null;
 	cpuPercent: number | null;
 	tasksMax: number | null;
+};
+
+/** what each of a group's limits is when it is empty, the others kept */
+export type LimitDefaults = {
+	[K in keyof Limits]: number;
 };
 
 /** what a group's PHP may use */
@@ -514,7 +519,9 @@ export async function download(
 export function saveGroup(
 	group: Group,
 	change: Partial<
-		Pick<Group, 'clientId' | 'notes' | 'repo' | 'branch' | 'php' | 'limits'>
+		Pick<Group, 'clientId' | 'notes' | 'repo' | 'branch' | 'php'> & {
+			limits: Limits;
+		}
 	>,
 ): Promise<{ warning: string | null }> {
 	const { clientId, notes, repo, branch, php } = { ...group, ...change };

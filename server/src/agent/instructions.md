@@ -248,7 +248,7 @@ field in the panel.
   the running slice gets them, nothing restarts. `genco tree` shows each
   group's `limits` (null is the default). Change limits only this way,
   never with drop-ins (`/etc/systemd/system/genco-*.slice.d/`,
-  `genco-*.service.d/`): they override genco and are reported as a
+  `genco-*.service.d/`) or `systemctl set-property`: they override genco and are reported as a
   problem; `genco group adopt-limits <group>` moves a slice drop-in's
   limits into the settings. Check the RAM first, genco warns when the
   groups' limits add up to more than the server has.

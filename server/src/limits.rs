@@ -14,6 +14,10 @@ pub const CPU_PERCENT: u32 = 150;
 pub const TASKS_MAX: u32 = 512;
 
 const SYSTEMD: &str = "/etc/systemd/system";
+/// Where `systemctl set-property` writes without `--runtime`; its files
+/// win over those of the same name in /run/systemd/system.control, where
+/// genco sets the limits on the running slice.
+const SYSTEM_CONTROL: &str = "/etc/systemd/system.control";
 
 /// `None` is the default.
 #[derive(
@@ -46,6 +50,31 @@ impl Limits {
 
 	pub fn tasks(&self) -> u32 {
 		self.tasks_max.unwrap_or(TASKS_MAX)
+	}
+
+	/// The slice's settings, in its unit and for `systemctl set-property`.
+	pub fn unit_properties(&self) -> [String; 4] {
+		[
+			format!("MemoryHigh={}", unit_size(self.memory_high())),
+			format!("MemoryMax={}", unit_size(self.memory_max())),
+			format!("TasksMax={}", self.tasks()),
+			format!("CPUQuota={}%", self.cpu()),
+		]
+	}
+
+	/// What each setting is when it is empty and the others stay: the
+	/// panel's placeholders.
+	pub fn defaults(&self) -> Defaults {
+		let high = Limits {
+			memory_high_mb: None,
+			..*self
+		};
+		Defaults {
+			memory_max_mb: MEMORY_MAX_MB,
+			memory_high_mb: high.memory_high(),
+			cpu_percent: CPU_PERCENT,
+			tasks_max: TASKS_MAX,
+		}
 	}
 
 	/// Within what the server has: `ram_mb` and `cores`.
@@ -96,8 +125,35 @@ impl Limits {
 	}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Defaults {
+	pub memory_max_mb: u32,
+	pub memory_high_mb: u32,
+	pub cpu_percent: u32,
+	pub tasks_max: u32,
+}
+
+/// A group's limits for the panel, with their defaults.
+pub fn with_defaults<S: serde::Serializer>(
+	limits: &Limits,
+	s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+	#[derive(Serialize)]
+	struct Shown<'a> {
+		#[serde(flatten)]
+		limits: &'a Limits,
+		defaults: Defaults,
+	}
+	Shown {
+		limits,
+		defaults: limits.defaults(),
+	}
+	.serialize(s)
+}
+
 /// "2.5 GB", "512 MB"
-pub fn size(mb: u32) -> String {
+fn size(mb: u32) -> String {
 	if mb < 1024 {
 		return format!("{mb} MB");
 	}
@@ -106,7 +162,7 @@ pub fn size(mb: u32) -> String {
 }
 
 /// As systemd takes it: 1G, 1536M.
-pub fn unit_size(mb: u32) -> String {
+fn unit_size(mb: u32) -> String {
 	if mb.is_multiple_of(1024) {
 		format!("{}G", mb / 1024)
 	} else {
@@ -174,7 +230,7 @@ pub fn server_memory() -> (u32, u32) {
 	(mb("MemTotal:"), mb("SwapTotal:"))
 }
 
-pub fn cores() -> u32 {
+fn cores() -> u32 {
 	std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
 }
 
@@ -232,42 +288,51 @@ pub fn memory_problem(
 }
 
 /// A file in the drop-in folder of one of genco's units: systemd reads
-/// it after genco's unit, its settings win. genco writes no drop-ins,
-/// every one there is someone else's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// it after genco's unit, its settings win. genco writes no drop-ins
+/// there, every one is someone else's. Those in /run/systemd/system.control
+/// are genco's, the limits on the running slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropIn {
 	pub path: PathBuf,
-	pub group: String,
-	/// `genco-<group>.slice` or one of its services
+	/// `None` for a prefix drop-in (genco-.slice.d), it changes every group
+	pub group: Option<String>,
+	/// `genco-<group>.slice` or one of its services, `genco-.slice`
 	pub unit: String,
 }
 
 impl DropIn {
-	pub fn is_slice(&self) -> bool {
+	fn is_slice(&self) -> bool {
 		self.unit.ends_with(".slice")
 	}
 
 	pub fn text(&self) -> String {
 		let path = self.path.display();
-		if self.is_slice() {
-			format!(
-				"{path} overrides genco's limits of {}; move it into the \
-				group's limits",
-				self.group
-			)
-		} else {
-			format!(
-				"{path} overrides genco's unit {} of {}; move it into \
+		match (&self.group, self.is_slice()) {
+			(Some(g), true) => format!(
+				"{path} overrides genco's limits of {g}; move it into the \
+				group's limits"
+			),
+			(Some(g), false) => format!(
+				"{path} overrides genco's unit {} of {g}; move it into \
 				genco's settings",
-				self.unit, self.group
-			)
+				self.unit
+			),
+			(None, true) => format!(
+				"{path} overrides genco's limits of every group; set them \
+				per group and remove it"
+			),
+			(None, false) => format!(
+				"{path} overrides all of genco's services; move it into \
+				genco's settings"
+			),
 		}
 	}
 }
 
-/// The drop-ins among `paths` (files under /etc/systemd/system) that
-/// change a unit of one of the `groups`.
-pub fn foreign(paths: &[PathBuf], groups: &[&str]) -> Vec<DropIn> {
+/// The drop-ins among `paths` (files under /etc/systemd/system and
+/// /etc/systemd/system.control) that change a unit of one of the
+/// `groups`, or of all of them.
+fn foreign(paths: &[PathBuf], groups: &[&str]) -> Vec<DropIn> {
 	let mut found: Vec<DropIn> = paths
 		.iter()
 		.filter_map(|path| {
@@ -280,12 +345,18 @@ pub fn foreign(paths: &[PathBuf], groups: &[&str]) -> Vec<DropIn> {
 			if !unit.ends_with(".slice") && !unit.ends_with(".service") {
 				return None;
 			}
-			// group names have no "-" and no "."
 			let rest = unit.strip_prefix("genco-")?;
-			let group = rest.split(['-', '.']).next()?;
-			groups.contains(&group).then(|| DropIn {
+			// genco-.slice.d is read for every genco-*.slice
+			let group = if rest.starts_with('.') {
+				None
+			} else {
+				// group names have no "-" and no "."
+				let group = rest.split(['-', '.']).next()?;
+				Some(groups.contains(&group).then(|| group.to_string())?)
+			};
+			(!groups.is_empty()).then(|| DropIn {
 				path: path.clone(),
-				group: group.into(),
+				group,
 				unit: unit.into(),
 			})
 		})
@@ -295,20 +366,22 @@ pub fn foreign(paths: &[PathBuf], groups: &[&str]) -> Vec<DropIn> {
 }
 
 /// Every file in the drop-in folders of genco's units.
-pub fn dropin_files() -> Vec<PathBuf> {
+fn dropin_files() -> Vec<PathBuf> {
 	let mut files = vec![];
-	let Ok(entries) = std::fs::read_dir(SYSTEMD) else {
-		return files;
-	};
-	for dir in entries.flatten() {
-		let name = dir.file_name().to_string_lossy().to_string();
-		if !name.starts_with("genco-") || !name.ends_with(".d") {
-			continue;
-		}
-		let Ok(inner) = std::fs::read_dir(dir.path()) else {
+	for base in [SYSTEMD, SYSTEM_CONTROL] {
+		let Ok(entries) = std::fs::read_dir(base) else {
 			continue;
 		};
-		files.extend(inner.flatten().map(|e| e.path()));
+		for dir in entries.flatten() {
+			let name = dir.file_name().to_string_lossy().to_string();
+			if !name.starts_with("genco-") || !name.ends_with(".d") {
+				continue;
+			}
+			let Ok(inner) = std::fs::read_dir(dir.path()) else {
+				continue;
+			};
+			files.extend(inner.flatten().map(|e| e.path()));
+		}
 	}
 	files
 }
@@ -344,8 +417,13 @@ pub fn adopt(mut limits: Limits, content: &str) -> Result<Limits> {
 					Some(systemd_size(value).ok_or_else(bad)?)
 			}
 			"CPUQuota" => {
+				// set-property writes 150.00%
 				let v = value.strip_suffix('%').ok_or_else(bad)?;
-				limits.cpu_percent = Some(v.parse().map_err(|_| bad())?)
+				let v: f64 = v.parse().map_err(|_| bad())?;
+				if !v.is_finite() || v < 0.0 {
+					return Err(bad());
+				}
+				limits.cpu_percent = Some(v.round() as u32)
 			}
 			"TasksMax" => {
 				limits.tasks_max = Some(value.parse().map_err(|_| bad())?)
@@ -371,17 +449,32 @@ fn systemd_size(value: &str) -> Option<u32> {
 	Some((n * factor).round() as u32)
 }
 
-/// The drop-in files of a group's slice, in the order systemd reads them.
+/// The drop-in files of a group's slice, also those of `systemctl
+/// set-property`, in the order systemd reads them.
 pub fn slice_dropins(group: &str) -> Vec<PathBuf> {
-	let dir =
-		Path::new(SYSTEMD).join(format!("{}.d", crate::render::slice(group)));
-	let files: Vec<PathBuf> = std::fs::read_dir(&dir)
-		.map(|e| e.flatten().map(|e| e.path()).collect())
-		.unwrap_or_default();
-	foreign(&files, &[group])
+	let dir = format!("{}.d", crate::render::slice(group));
+	let files: Vec<PathBuf> = [SYSTEMD, SYSTEM_CONTROL]
 		.into_iter()
-		.map(|d| d.path)
-		.collect()
+		.flat_map(|base| {
+			std::fs::read_dir(Path::new(base).join(&dir))
+				.map(|e| e.flatten().map(|e| e.path()).collect())
+				.unwrap_or_else(|_| vec![])
+		})
+		.collect();
+	read_order(foreign(&files, &[group]))
+}
+
+/// By file name, whatever the folder; of two with the same name the one in
+/// system.control wins, it comes last.
+fn read_order(dropins: Vec<DropIn>) -> Vec<PathBuf> {
+	let mut paths: Vec<PathBuf> = dropins.into_iter().map(|d| d.path).collect();
+	paths.sort_by_key(|p| {
+		(
+			p.file_name().map(|n| n.to_owned()),
+			p.starts_with(SYSTEM_CONTROL),
+		)
+	});
+	paths
 }
 
 #[cfg(test)]
@@ -547,23 +640,40 @@ mod tests {
 			"/etc/systemd/system/genco-other.slice.d/a.conf",
 			// a timer has no limits
 			"/etc/systemd/system/genco-shop-cron-x.timer.d/a.conf",
+			// systemctl set-property without --runtime
+			"/etc/systemd/system.control/genco-shop.slice.d/50-MemoryMax.conf",
+			// for every group's slice and every genco service
+			"/etc/systemd/system/genco-.slice.d/memory.conf",
+			"/etc/systemd/system/genco-.service.d/env.conf",
 		]
 		.into_iter()
 		.map(PathBuf::from)
 		.collect();
 		let found = foreign(&paths, &["puresport", "shop"]);
-		let units: Vec<(&str, &str)> = found
+		let units: Vec<(Option<&str>, &str)> = found
 			.iter()
-			.map(|d| (d.group.as_str(), d.unit.as_str()))
+			.map(|d| (d.group.as_deref(), d.unit.as_str()))
 			.collect();
 		assert_eq!(
 			units,
 			[
-				("puresport", "genco-puresport.slice"),
-				("shop", "genco-shop-php8.4.service"),
-				("shop", "genco-shop-worker-q.service"),
+				(None, "genco-.service"),
+				(None, "genco-.slice"),
+				(Some("puresport"), "genco-puresport.slice"),
+				(Some("shop"), "genco-shop-php8.4.service"),
+				(Some("shop"), "genco-shop-worker-q.service"),
+				(Some("shop"), "genco-shop.slice"),
 			]
 		);
+		assert!(found[5].path.starts_with(SYSTEM_CONTROL));
+		assert_eq!(
+			found[1].text(),
+			"/etc/systemd/system/genco-.slice.d/memory.conf overrides \
+			genco's limits of every group; set them per group and remove it"
+		);
+		// without groups nothing is overridden
+		assert!(foreign(&paths, &[]).is_empty());
+		let found = &found[2..];
 		assert_eq!(
 			found[0].text(),
 			"/etc/systemd/system/genco-puresport.slice.d/memory.conf \
@@ -571,6 +681,91 @@ mod tests {
 			limits"
 		);
 		assert!(found[1].text().contains("unit genco-shop-php8.4.service"));
+	}
+
+	#[test]
+	fn set_property_files_come_after_those_of_the_same_name() {
+		let d = |path: &str| DropIn {
+			path: path.into(),
+			group: Some("shop".into()),
+			unit: "genco-shop.slice".into(),
+		};
+		let order = read_order(vec![
+			d(
+				"/etc/systemd/system.control/genco-shop.slice.d/50-MemoryMax.conf",
+			),
+			d("/etc/systemd/system/genco-shop.slice.d/50-MemoryMax.conf"),
+			d("/etc/systemd/system/genco-shop.slice.d/90-cpu.conf"),
+			d("/etc/systemd/system/genco-shop.slice.d/10-tasks.conf"),
+		]);
+		let order: Vec<String> =
+			order.iter().map(|p| p.display().to_string()).collect();
+		assert_eq!(
+			order,
+			[
+				"/etc/systemd/system/genco-shop.slice.d/10-tasks.conf",
+				"/etc/systemd/system/genco-shop.slice.d/50-MemoryMax.conf",
+				"/etc/systemd/system.control/genco-shop.slice.d/\
+				50-MemoryMax.conf",
+				"/etc/systemd/system/genco-shop.slice.d/90-cpu.conf",
+			]
+		);
+	}
+
+	#[test]
+	fn the_slice_s_properties() {
+		assert_eq!(
+			Limits::default().unit_properties(),
+			[
+				"MemoryHigh=1G",
+				"MemoryMax=1536M",
+				"TasksMax=512",
+				"CPUQuota=150%"
+			]
+		);
+		let l = Limits {
+			memory_max_mb: Some(2560),
+			cpu_percent: Some(200),
+			tasks_max: Some(1024),
+			..Limits::default()
+		};
+		assert_eq!(
+			l.unit_properties(),
+			[
+				"MemoryHigh=1706M",
+				"MemoryMax=2560M",
+				"TasksMax=1024",
+				"CPUQuota=200%"
+			]
+		);
+	}
+
+	#[test]
+	fn defaults_are_what_an_empty_field_means() {
+		let l = Limits {
+			memory_max_mb: Some(3072),
+			memory_high_mb: Some(1024),
+			cpu_percent: Some(300),
+			tasks_max: None,
+		};
+		assert_eq!(
+			l.defaults(),
+			Defaults {
+				memory_max_mb: 1536,
+				memory_high_mb: 2048,
+				cpu_percent: 150,
+				tasks_max: 512,
+			}
+		);
+		#[derive(Serialize)]
+		struct G {
+			#[serde(serialize_with = "with_defaults")]
+			limits: Limits,
+		}
+		let json = serde_json::to_value(G { limits: l }).unwrap();
+		assert_eq!(json["limits"]["memoryMaxMb"], 3072);
+		assert_eq!(json["limits"]["tasksMax"], serde_json::Value::Null);
+		assert_eq!(json["limits"]["defaults"]["memoryHighMb"], 2048);
 	}
 
 	#[test]
@@ -598,6 +793,14 @@ mod tests {
 			(Some(3072), Some(2048))
 		);
 		assert_eq!(l.tasks_max, Some(1024));
+		// as systemctl set-property writes it
+		let l = adopt(
+			l,
+			"# This is a drop-in unit file extension, created via \
+			\"systemctl set-property\"\n[Slice]\nCPUQuota=150.00%\n",
+		)
+		.unwrap();
+		assert_eq!(l.cpu_percent, Some(150));
 
 		// what it can't take over stays a manual job
 		assert!(adopt(l, "[Slice]\nMemoryMax=infinity").is_err());

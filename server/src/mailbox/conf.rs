@@ -152,20 +152,33 @@ After=docker.service
 pub const POSTFIX_AFTER_DOCKER: &str =
 	"/etc/systemd/system/postfix.service.d/genco-docker.conf";
 
-/// Docker is installed: its unit and dockerd exist. A purge without a
-/// reboot leaves docker0 and the br-* bridges behind.
-fn docker_installed_with(exists: impl Fn(&str) -> bool) -> bool {
+/// Docker is installed: its unit and dockerd exist, and the unit isn't
+/// masked (`systemctl mask` links it to /dev/null, it can't start). A
+/// purge without a reboot leaves docker0 and the br-* bridges behind.
+fn docker_installed_with(
+	exists: impl Fn(&str) -> bool,
+	masked: impl Fn(&str) -> bool,
+) -> bool {
 	let unit = [
 		"/etc/systemd/system/docker.service",
+		"/run/systemd/system/docker.service",
 		"/lib/systemd/system/docker.service",
 		"/usr/lib/systemd/system/docker.service",
 	];
 	let dockerd = ["/usr/bin/dockerd", "/usr/sbin/dockerd"];
-	unit.into_iter().any(&exists) && dockerd.into_iter().any(&exists)
+	!unit.into_iter().any(&masked)
+		&& unit.into_iter().any(&exists)
+		&& dockerd.into_iter().any(&exists)
 }
 
 pub fn docker_installed() -> bool {
-	docker_installed_with(|p| std::path::Path::new(p).exists())
+	docker_installed_with(
+		|p| std::path::Path::new(p).exists(),
+		|p| {
+			let to = std::fs::read_link(p);
+			to.is_ok_and(|to| to.as_os_str() == "/dev/null")
+		},
+	)
 }
 
 /// A Docker bridge on this server: docker0 (host.docker.internal) or a
@@ -472,8 +485,9 @@ mod tests {
 
 	#[test]
 	fn docker_is_installed_with_its_unit_and_dockerd() {
-		let with =
-			|paths: &[&str]| docker_installed_with(|p| paths.contains(&p));
+		let with = |paths: &[&str]| {
+			docker_installed_with(|p| paths.contains(&p), |_| false)
+		};
 		assert!(with(&[
 			"/lib/systemd/system/docker.service",
 			"/usr/bin/dockerd"
@@ -486,6 +500,18 @@ mod tests {
 		assert!(!with(&["/usr/bin/dockerd"]));
 		assert!(!with(&["/etc/systemd/system/docker.service"]));
 		assert!(!with(&[]));
+
+		// masked in /etc, the package's unit is still there
+		let mask = "/etc/systemd/system/docker.service";
+		let paths = [
+			mask,
+			"/lib/systemd/system/docker.service",
+			"/usr/bin/dockerd",
+		];
+		assert!(!docker_installed_with(
+			|p| paths.contains(&p),
+			|p| p == mask
+		));
 	}
 
 	#[test]

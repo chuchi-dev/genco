@@ -89,7 +89,8 @@ pub struct Group {
 	pub workers: Vec<crate::procs::Worker>,
 	pub schedules: Vec<crate::procs::Schedule>,
 	pub php: PhpSettings,
-	/// what its slice may use
+	/// what its slice may use, the panel gets the defaults too
+	#[serde(serialize_with = "limits::with_defaults")]
 	pub limits: Limits,
 	/// password and Dovecot hash of its SMTP login `g-<group>`, made by
 	/// apply once it has mail domains; never to the browser with the tree
@@ -400,7 +401,7 @@ pub fn set_limits(
 }
 
 /// When the groups' memory limits add up to more than the server has.
-pub fn memory_warning(conn: &Connection) -> rusqlite::Result<Option<String>> {
+fn memory_warning(conn: &Connection) -> rusqlite::Result<Option<String>> {
 	let (ram, swap) = limits::server_memory();
 	let all = groups(conn)?.into_iter().map(|g| g.limits);
 	Ok(limits::overcommit(all, ram, swap))
@@ -752,14 +753,11 @@ async fn update_group(
 		check_git(repo, "repository")?;
 	}
 	check_git(req.branch.trim(), "branch")?;
-	// all or nothing: wrong PHP settings change nothing else either
-	if let Some(php) = &req.php {
-		php.check()?;
-	}
-	if let Some(l) = &req.limits {
-		limits::check_here(l)?;
-	}
-	let n = db.conn().execute(
+	// all or nothing: wrong PHP settings or limits change nothing else
+	// either
+	let conn = db.conn();
+	let tx = conn.unchecked_transaction()?;
+	let n = tx.execute(
 		"UPDATE domain_groups SET client_id = ?1, notes = ?2, repo = ?3,
 		branch = ?4 WHERE id = ?5",
 		params![req.client_id, req.notes, repo, req.branch.trim(), id],
@@ -768,12 +766,13 @@ async fn update_group(
 		return Err(Error::NotFound);
 	}
 	if let Some(php) = req.php {
-		set_php(&db.conn(), id, &php)?;
+		set_php(&tx, id, &php)?;
 	}
 	let warning = match req.limits {
-		Some(l) => set_limits(&db.conn(), id, &l)?,
+		Some(l) => set_limits(&tx, id, &l)?,
 		None => None,
 	};
+	tx.commit()?;
 	events.send(Event::Tree);
 	Ok(Json(UpdateGroupResp { warning }))
 }

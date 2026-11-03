@@ -148,8 +148,9 @@ and, while Docker runs, on docker0's address, so containers still send
 through `host.docker.internal:25`. The Docker bridges' networks may relay
 in either case (`mynetworks`). Postfix starts after Docker (and starts
 it) where Docker is installed. Docker counts as installed only with its
-`docker.service` unit and `dockerd`: bridges left after a purge without a
-reboot don't count, and Podman's (`podman0`, `cni-podman0`) never do.
+`docker.service` unit and `dockerd`, and not with a masked unit: bridges
+left after a purge without a reboot don't count, and Podman's (`podman0`,
+`cni-podman0`) never do.
 Without Docker, apply sets Postfix back to `loopback-only`, drops the
 bridge networks from `mynetworks`, removes the drop-in that orders it
 after Docker and restarts it. Postfix refuses to start when an address of
@@ -235,10 +236,12 @@ to the server's RAM, CPU 10% to 100% per core, tasks 64 to 65536. Above
 `MemoryMax` it kills a process of the group (the OOM killer, in `journalctl
 -k`). `genco apply` writes the slice and sets the new limits on the running
 slice (`systemctl set-property --runtime`, systemd doesn't apply a changed
-slice file before a unit starts in it); nothing restarts. `systemctl show
+slice file before a unit starts in it), also on a stopped one, whose old
+runtime values would win over the file; nothing restarts. `systemctl show
 genco-<group>.slice -p MemoryMax` or
 `/sys/fs/cgroup/genco.slice/genco-<group>.slice/memory.max` show what holds
-now; `genco tree` has each group's `limits` (`null` is the default).
+now; `genco tree` has each group's `limits` (`null` is the default, its
+`defaults` what an empty one means).
 
 When the groups' memory limits add up to more than the server's RAM,
 saving warns ("Group memory limits add up to 6.5 GB, the server has 3.9
@@ -251,7 +254,10 @@ more than 90% of the RAM.
 
 **Drop-ins.** Files in `/etc/systemd/system/genco-*.slice.d/` or
 `genco-*.service.d/` override what genco writes, so the panel's limits
-would no longer be what holds. genco never writes or removes them by
+would no longer be what holds; so do the prefix folders `genco-.slice.d/`
+and `genco-.service.d/` (every group) and `/etc/systemd/system.control/`,
+where `systemctl set-property` without `--runtime` writes. genco's own
+are in `/run/systemd/system.control/`. genco never writes or removes them by
 itself: `genco apply` lists them as warnings, the minute check reports each
 as a problem, and the group's Configuration tab shows them. To move the
 limits of a slice drop-in (`MemoryHigh`, `MemoryMax`, `CPUQuota`,
@@ -261,9 +267,10 @@ limits of a slice drop-in (`MemoryHigh`, `MemoryMax`, `CPUQuota`,
 genco group adopt-limits shop
 ```
 
-It reads the drop-ins of `genco-shop.slice.d` in systemd's order, stores
-the limits, moves the files to `/var/backups/genco/trash`, reloads systemd
-and runs `genco apply`. A drop-in with other settings (or `infinity`, a
+It reads the drop-ins of `genco-shop.slice.d` (in `/etc/systemd/system`
+and `system.control`) in systemd's order, moves the files to
+`/var/backups/genco/trash`, stores the limits (nothing when a file can't
+be moved), reloads systemd and runs `genco apply`. A drop-in with other settings (or `infinity`, a
 percentage) is refused; move that one by hand.
 
 **ImageMagick.** PHP's Imagick keeps a photo's pixels in memory: a Craft

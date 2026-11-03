@@ -12,7 +12,6 @@
 	// what the group's slice may use; empty fields are the defaults
 	let { group }: { group: Group } = $props();
 
-	const DEFAULT_MEMORY = 1536;
 	const text = (v: number | null) => (v === null ? '' : String(v));
 
 	// svelte-ignore state_referenced_locally
@@ -29,9 +28,7 @@
 		limit: null,
 	});
 
-	const highDefault = $derived(
-		Math.floor(((Number(fields.memoryMaxMb) || DEFAULT_MEMORY) * 2) / 3),
-	);
+	const defaults = $derived(group.limits.defaults);
 
 	$effect(() => {
 		get(`/stats?scope=group:${group.id}&range=1h`)
@@ -78,7 +75,7 @@
 			<input
 				id="gl-memory"
 				inputmode="numeric"
-				placeholder={String(DEFAULT_MEMORY)}
+				placeholder={String(defaults.memoryMaxMb)}
 				bind:value={fields.memoryMaxMb}
 			/>
 			MB for all its processes
@@ -88,7 +85,7 @@
 			<input
 				id="gl-high"
 				inputmode="numeric"
-				placeholder={String(highDefault)}
+				placeholder={String(defaults.memoryHighMb)}
 				bind:value={fields.memoryHighMb}
 			/>
 			MB, 2/3 of the limit if empty
@@ -98,7 +95,7 @@
 			<input
 				id="gl-cpu"
 				inputmode="numeric"
-				placeholder="150"
+				placeholder={String(defaults.cpuPercent)}
 				bind:value={fields.cpuPercent}
 			/>
 			%, 100 is one core
@@ -108,7 +105,7 @@
 			<input
 				id="gl-tasks"
 				inputmode="numeric"
-				placeholder="512"
+				placeholder={String(defaults.tasksMax)}
 				bind:value={fields.tasksMax}
 			/>
 			processes and threads

@@ -84,37 +84,25 @@ pub(super) async fn start_units(
 	}
 }
 
-/// A changed slice's limits on the running slice: systemd reads its file
-/// on daemon-reload but applies it only once a unit starts in it. With
-/// `--runtime` they stay in /run until the next boot reads the file.
+/// A changed slice's limits: systemd reads its file on daemon-reload but
+/// applies it only once a unit starts in it. With `--runtime` they stay in
+/// /run/systemd/system.control until the next boot and win over the file
+/// meanwhile: also set on a slice that isn't running (it stays stopped),
+/// else it would start with the old values.
 pub(super) async fn set_limits(
 	r: &mut Report,
 	g: &Group,
 	changed: &HashSet<PathBuf>,
 ) {
 	let slice = render::slice(&g.name);
-	if !changed.contains(&render::unit_path(&slice)) || !is_active(&slice).await
-	{
+	if !changed.contains(&render::unit_path(&slice)) {
 		return;
 	}
-	let l = &g.limits;
-	let high =
-		format!("MemoryHigh={}", crate::limits::unit_size(l.memory_high()));
-	let max = format!("MemoryMax={}", crate::limits::unit_size(l.memory_max()));
-	let tasks = format!("TasksMax={}", l.tasks());
-	let cpu = format!("CPUQuota={}%", l.cpu());
-	let args = [
-		"systemctl",
-		"set-property",
-		"--runtime",
-		&slice,
-		&high,
-		&max,
-		&tasks,
-		&cpu,
-	];
+	let props = g.limits.unit_properties();
+	let mut args = vec!["systemctl", "set-property", "--runtime", &slice];
+	args.extend(props.iter().map(String::as_str));
 	if r.run(&args).await {
-		r.info(format!("{slice}: {}", l.describe()));
+		r.info(format!("{slice}: {}", g.limits.describe()));
 	}
 }
 

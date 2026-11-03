@@ -88,17 +88,10 @@ pub(super) async fn postfix(
 	let cert = mailbox::host(cfg).is_some_and(|h| host::has_cert(&h));
 	let mut restart = false;
 	let mut reload = changed.iter().any(|p| p.starts_with("/etc/genco/mail"));
-	let after_docker = Path::new(mailbox::POSTFIX_AFTER_DOCKER);
-	if !mailbox::docker_installed() && after_docker.exists() {
-		match std::fs::remove_file(after_docker) {
-			Ok(()) => {
-				r.info(format!("removed {}", after_docker.display()));
-				r.run(&["systemctl", "daemon-reload"]).await;
-			}
-			Err(e) => {
-				r.error(format!("removing {}: {e}", after_docker.display()))
-			}
-		}
+	if !mailbox::docker_installed()
+		&& remove_unwritten(r, Path::new(mailbox::POSTFIX_AFTER_DOCKER))
+	{
+		r.run(&["systemctl", "daemon-reload"]).await;
 	}
 
 	let bridges = mailbox::docker_bridges().await;
@@ -122,6 +115,27 @@ pub(super) async fn postfix(
 		r.run(&["systemctl", "restart", "postfix"]).await;
 	} else if reload {
 		r.run(&["postfix", "reload"]).await;
+	}
+}
+
+/// Removes a unit file or drop-in genco no longer writes, only one with
+/// its header; true when it did and systemd needs a daemon-reload.
+fn remove_unwritten(r: &mut Report, path: &Path) -> bool {
+	let Ok(content) = std::fs::read_to_string(path) else {
+		return false;
+	};
+	if !content.starts_with(render::HEADER) {
+		return false;
+	}
+	match std::fs::remove_file(path) {
+		Ok(()) => {
+			r.info(format!("removed {}", path.display()));
+			true
+		}
+		Err(e) => {
+			r.error(format!("removing {}: {e}", path.display()));
+			false
+		}
 	}
 }
 

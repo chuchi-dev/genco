@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::hosting::{Domain, Group, Kind, PhpSettings};
-use crate::limits;
 use crate::procs::{Schedule, Worker};
 
 pub const HEADER: &str = "# written by genco, changes here are overwritten";
@@ -647,23 +646,16 @@ fn public_files(group: &Group, d: &Domain) -> String {
 /// apply sets them on the running slice too, systemd reads a changed
 /// slice's file but doesn't apply it until a unit starts in it.
 fn slice_unit(group: &Group) -> String {
-	let l = &group.limits;
 	format!(
 		"{HEADER}: change the limits in the panel or with genco group set
 [Unit]
 Description=Limits of the group {g}
 
 [Slice]
-MemoryHigh={high}
-MemoryMax={max}
-TasksMax={tasks}
-CPUQuota={cpu}%
+{}
 ",
+		group.limits.unit_properties().join("\n"),
 		g = group.name,
-		high = limits::unit_size(l.memory_high()),
-		max = limits::unit_size(l.memory_max()),
-		tasks = l.tasks(),
-		cpu = l.cpu(),
 	)
 }
 
@@ -1046,6 +1038,7 @@ table inet genco {{
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::limits;
 	use std::path::Path;
 
 	fn domain(id: i64, name: &str, kind: Kind) -> Domain {

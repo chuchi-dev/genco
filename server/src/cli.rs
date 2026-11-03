@@ -1,6 +1,8 @@
 //! `genco client|group|domain|database ...`: what the panel does, for the
 //! agent and the terminal. `genco apply` puts the changes on the server.
 
+use std::path::{Path, PathBuf};
+
 use clap::Parser;
 use rusqlite::Connection;
 
@@ -340,7 +342,6 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 	{
 		let g = hosting::group_by_name(conn, &name)?
 			.ok_or_else(|| Error::Invalid(format!("no group {name}")))?;
-		// all or nothing: wrong limits change nothing else either
 		let mut l = g.limits;
 		if let Some(v) = memory {
 			l.memory_max_mb = limits::parse_size(&v)?;
@@ -354,9 +355,11 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 		if let Some(v) = tasks {
 			l.tasks_max = limits::parse_count(&v)?;
 		}
-		limits::check_here(&l)?;
 
-		hosting::set_repo(conn, g.id, repo.as_deref(), branch.as_deref())?;
+		// all or nothing: wrong PHP settings or limits change nothing else
+		// either
+		let tx = conn.unchecked_transaction()?;
+		hosting::set_repo(&tx, g.id, repo.as_deref(), branch.as_deref())?;
 		let php = hosting::PhpSettings {
 			upload_mb: php_upload.unwrap_or(g.php.upload_mb),
 			memory_mb: php_memory.unwrap_or(g.php.memory_mb),
@@ -364,16 +367,17 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 			max_input_vars: php_input_vars.unwrap_or(g.php.max_input_vars),
 		};
 		if php != g.php {
-			hosting::set_php(conn, g.id, &php)?;
+			hosting::set_php(&tx, g.id, &php)?;
 		}
 		let mut msg = "changed, run genco apply".to_string();
 		if l != g.limits {
-			let warning = hosting::set_limits(conn, g.id, &l)?;
+			let warning = hosting::set_limits(&tx, g.id, &l)?;
 			msg.push_str(&format!("\nlimits: {}", l.describe()));
 			if let Some(w) = warning {
 				msg.push_str(&format!("\nwarning: {w}"));
 			}
 		}
+		tx.commit()?;
 		return Ok(msg);
 	}
 	if let GroupCmd::DeployKey { .. } | GroupCmd::AdoptLimits { .. } = cmd {
@@ -396,15 +400,17 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 	Ok(format!("added group {id}, run genco apply"))
 }
 
-/// Takes the limits of the group's slice drop-ins into its settings, moves
-/// the files to the trash and reloads systemd; `genco apply` after it
-/// writes the slice and sets them on the running one.
+/// Takes the limits of the group's slice drop-ins (also those of
+/// `systemctl set-property`) into its settings, moves the files to the
+/// trash and reloads systemd; `genco apply` after it writes the slice and
+/// sets them on the running one.
 pub async fn adopt_limits(db: &crate::db::Db, name: &str) -> Result<String> {
 	let g = group_of(&db.conn(), name)?;
 	let files = limits::slice_dropins(&g.name);
 	if files.is_empty() {
 		return Err(Error::Invalid(format!(
-			"no drop-ins in /etc/systemd/system/genco-{name}.slice.d"
+			"no drop-ins of genco-{name}.slice in /etc/systemd/system or \
+			/etc/systemd/system.control"
 		)));
 	}
 	let mut l = g.limits;
@@ -414,27 +420,25 @@ pub async fn adopt_limits(db: &crate::db::Db, name: &str) -> Result<String> {
 		l = limits::adopt(l, &content)
 			.map_err(|e| Error::Invalid(format!("{}: {e}", f.display())))?;
 	}
-	let warning = hosting::set_limits(&db.conn(), g.id, &l)?;
 
+	// set_limits refuses wrong limits before a file moves; the limits are
+	// only stored once the files are in the trash
 	actions::trash_dir().map_err(Error::Internal)?;
 	let stamp = crate::util::stamp().await;
+	let (warning, moved) = {
+		let conn = db.conn();
+		let tx = conn.unchecked_transaction()?;
+		let warning = hosting::set_limits(&tx, g.id, &l)?;
+		let moved = trash_files(&files, actions::TRASH, &stamp)?;
+		tx.commit()?;
+		(warning, moved)
+	};
 	let mut msg = String::new();
-	for f in &files {
-		let dir = f.parent().and_then(|d| d.file_name()).unwrap_or_default();
-		let file = f.file_name().unwrap_or_default();
-		let to = format!(
-			"{}/{}-{}-{stamp}",
-			actions::TRASH,
-			dir.to_string_lossy(),
-			file.to_string_lossy()
-		);
-		std::fs::copy(f, &to)
-			.and_then(|_| std::fs::remove_file(f))
-			.map_err(|e| Error::Internal(format!("{}: {e}", f.display())))?;
+	for (f, to) in files.iter().zip(&moved) {
 		msg.push_str(&format!("moved {} to {to}\n", f.display()));
 	}
-	// only when nothing else is in it
-	if let Some(dir) = files[0].parent() {
+	// only when nothing else is in them
+	for dir in files.iter().filter_map(|f| f.parent()) {
 		let _ = std::fs::remove_dir(dir);
 	}
 	crate::util::sh("systemctl daemon-reload")
@@ -446,6 +450,30 @@ pub async fn adopt_limits(db: &crate::db::Db, name: &str) -> Result<String> {
 		msg.push_str(&format!("\nwarning: {w}"));
 	}
 	Ok(msg)
+}
+
+/// Copies the files into `trash`, then removes them: when a copy fails
+/// all stay. A copy's name has the file's folders, system.control may
+/// have one of the same name as system.
+fn trash_files(
+	files: &[PathBuf],
+	trash: &str,
+	stamp: &str,
+) -> Result<Vec<String>> {
+	let failed = |f: &Path, e| Error::Internal(format!("{}: {e}", f.display()));
+	let mut copies = vec![];
+	for f in files {
+		let mut parts: Vec<_> = f.iter().rev().take(3).collect();
+		parts.reverse();
+		let name = parts.join(std::ffi::OsStr::new("-"));
+		let to = format!("{trash}/{}-{stamp}", name.to_string_lossy());
+		std::fs::copy(f, &to).map_err(|e| failed(f, e))?;
+		copies.push(to);
+	}
+	for f in files {
+		std::fs::remove_file(f).map_err(|e| failed(f, e))?;
+	}
+	Ok(copies)
 }
 
 pub fn domain(
@@ -740,5 +768,80 @@ pub fn schedule(conn: &Connection, cmd: ScheduleCmd) -> Result<String> {
 			Ok("removed, run genco apply".into())
 		}
 		ScheduleCmd::Run { .. } => unreachable!("main starts it"),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn wrong_limits_change_nothing_else() {
+		let db = crate::db::Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('acme', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+				VALUES ('shop', 1, 0);",
+		)
+		.unwrap();
+		let set = GroupCmd::Set {
+			name: "shop".into(),
+			repo: None,
+			branch: Some("next".into()),
+			php_upload: None,
+			php_memory: None,
+			php_time: None,
+			php_input_vars: None,
+			memory: None,
+			memory_high: None,
+			cpu: Some("5%".into()),
+			tasks: None,
+		};
+		assert!(group(&conn, set).is_err());
+		let g = hosting::group_by_name(&conn, "shop").unwrap().unwrap();
+		assert_ne!(g.branch, "next");
+	}
+
+	#[test]
+	fn dropins_stay_when_one_can_t_be_copied() {
+		let base = std::env::temp_dir()
+			.join(format!("genco-trash-test-{}", std::process::id()));
+		let etc = base.join("system/genco-shop.slice.d");
+		let control = base.join("system.control/genco-shop.slice.d");
+		let trash = base.join("trash");
+		for d in [&etc, &control] {
+			std::fs::create_dir_all(d).unwrap();
+		}
+		let files = [
+			etc.join("50-MemoryMax.conf"),
+			control.join("50-MemoryMax.conf"),
+		];
+		for f in &files {
+			std::fs::write(f, "[Slice]\nMemoryMax=2G\n").unwrap();
+		}
+		let trash = trash.to_str().unwrap();
+
+		// no trash folder: nothing is removed
+		assert!(trash_files(&files, trash, "s").is_err());
+		assert!(files.iter().all(|f| f.exists()));
+
+		std::fs::create_dir(trash).unwrap();
+		let copies = trash_files(&files, trash, "s").unwrap();
+		assert_eq!(
+			copies,
+			[
+				format!(
+					"{trash}/system-genco-shop.slice.d-50-MemoryMax.conf-s"
+				),
+				format!(
+					"{trash}/system.control-genco-shop.slice.d-\
+					50-MemoryMax.conf-s"
+				),
+			]
+		);
+		assert!(files.iter().all(|f| !f.exists()));
+		assert!(copies.iter().all(|c| Path::new(c).exists()));
+		std::fs::remove_dir_all(&base).unwrap();
 	}
 }
