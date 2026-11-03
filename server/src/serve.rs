@@ -9,6 +9,7 @@ use crate::*;
 use axum::Router;
 use axum::http::{HeaderName, HeaderValue};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -182,7 +183,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 	let state = AppState {
 		cfg: cfg.clone(),
 		db,
-		events,
+		events: events.clone(),
 		runner: runner.clone(),
 		stats,
 	};
@@ -241,8 +242,11 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.map_err(|e| format!("failed to listen on {}: {e}", cfg.listen))?;
 	tracing::info!("listening on http://{}", cfg.listen);
 
-	axum::serve(listener, app)
-		.with_graceful_shutdown(async move {
+	// open requests get a few seconds to finish, the event streams end
+	// right away
+	let server = axum::serve(listener, app).with_graceful_shutdown({
+		let events = events.clone();
+		async move {
 			let mut term =
 				signal::unix::signal(signal::unix::SignalKind::terminate())
 					.unwrap();
@@ -251,9 +255,19 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 				_ = term.recv() => {}
 			}
 			runner.shutdown();
-		})
-		.await
-		.map_err(|e| e.to_string())
+			events.close();
+		}
+	});
+	tokio::select! {
+		res = server => res.map_err(|e| e.to_string()),
+		_ = async {
+			events.closed().await;
+			tokio::time::sleep(Duration::from_secs(5)).await;
+		} => {
+			tracing::warn!("requests still open after 5 s, exiting anyway");
+			Ok(())
+		}
+	}
 }
 
 #[cfg(test)]

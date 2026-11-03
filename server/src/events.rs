@@ -7,7 +7,7 @@ use axum::response::sse::{self, KeepAlive, Sse};
 use axum::routing::get;
 use futures::{Stream, StreamExt as _};
 use serde::Serialize;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::AppState;
@@ -49,6 +49,9 @@ pub struct Events {
 	tx: broadcast::Sender<Event>,
 	/// identifies this run of genco
 	boot: i64,
+	/// true once genco shuts down, the streams end so the graceful
+	/// shutdown doesn't wait for them
+	closed: watch::Sender<bool>,
 }
 
 impl Events {
@@ -56,6 +59,20 @@ impl Events {
 		Self {
 			tx: broadcast::channel(1024).0,
 			boot: now(),
+			closed: watch::channel(false).0,
+		}
+	}
+
+	/// Ends all streams, the browsers reconnect when genco is back.
+	pub fn close(&self) {
+		self.closed.send_replace(true);
+	}
+
+	/// Resolves when `close` was called.
+	pub fn closed(&self) -> impl Future<Output = ()> + use<> {
+		let mut rx = self.closed.subscribe();
+		async move {
+			let _ = rx.wait_for(|closed| *closed).await;
 		}
 	}
 
@@ -77,7 +94,8 @@ async fn stream(
 	// a session that ended (log out, new password, expired) gets no more
 	// events, the stream closes within a minute
 	let token = authed.token;
-	let ended = async move {
+	let closed = events.closed();
+	let expired = async move {
 		loop {
 			tokio::time::sleep(Duration::from_secs(60)).await;
 			let alive: bool = db
@@ -91,6 +109,12 @@ async fn stream(
 			if !alive {
 				return;
 			}
+		}
+	};
+	let ended = async move {
+		tokio::select! {
+			_ = expired => {}
+			_ = closed => {}
 		}
 	};
 
@@ -110,4 +134,19 @@ async fn stream(
 
 pub fn routes() -> Router<AppState> {
 	Router::new().route("/", get(stream))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn close_ends_waiting_and_later_streams() {
+		let events = Events::new();
+		let waiting = tokio::spawn(events.closed());
+		events.close();
+		let soon = Duration::from_secs(1);
+		tokio::time::timeout(soon, waiting).await.unwrap().unwrap();
+		tokio::time::timeout(soon, events.closed()).await.unwrap();
+	}
 }
