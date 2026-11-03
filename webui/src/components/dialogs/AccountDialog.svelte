@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { post, type User } from '@/lib/api';
+	import { message } from '@/lib/dialogs.svelte';
 	import { session } from '@/lib/session.svelte';
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
@@ -9,20 +10,29 @@
 	let name = $state(session.user?.name ?? '');
 	let email = $state(session.user?.email ?? '');
 	let password = $state('');
+	let code = $state('');
 
 	async function save() {
-		session.user = (await post('/users/account', {
+		const resp = (await post('/users/account', {
 			email,
 			name,
 			password,
-		})) as User;
+			code,
+		})) as { user: User; confirmSent: string | null };
+		session.user = resp.user;
 		onclose();
+		if (resp.confirmSent)
+			message.show(
+				'Confirm Email',
+				`We sent a link to ${resp.confirmSent}. Open it to use the new email, until then you log in with ${resp.user.email}.`,
+			);
 	}
 </script>
 
 <Dialog title="Change Email" icon="key" {onclose}>
 	<p class="hint">
-		If the email changes, the old address gets a mail about it.
+		A new email needs the link mailed to it, then the old address gets a
+		mail about the change.
 	</p>
 	<Form onsubmit={save} oncancel={onclose}>
 		<label for="acc-name">Name:</label>
@@ -37,6 +47,16 @@
 			autocomplete="current-password"
 			bind:value={password}
 		/>
+		{#if session.user?.totp}
+			<label for="acc-code">Two-factor code:</label>
+			<input
+				id="acc-code"
+				inputmode="numeric"
+				autocomplete="one-time-code"
+				placeholder="For a new email"
+				bind:value={code}
+			/>
+		{/if}
 	</Form>
 </Dialog>
 

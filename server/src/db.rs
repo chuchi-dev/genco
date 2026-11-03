@@ -405,6 +405,12 @@ const MIGRATIONS: &[&str] = &[
 	r#"
 	ALTER TABLE proposals ADD COLUMN removed_chars INTEGER NOT NULL DEFAULT 0;
 "#,
+	// a new email of an admin waits for the link mailed to it
+	r#"
+	ALTER TABLE users ADD COLUMN new_email TEXT;
+	ALTER TABLE users ADD COLUMN new_email_hash TEXT;
+	ALTER TABLE users ADD COLUMN new_email_expires INTEGER;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

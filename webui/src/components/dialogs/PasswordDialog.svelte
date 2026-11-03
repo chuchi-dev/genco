@@ -2,15 +2,16 @@
 	import { post } from '@/lib/api';
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
+	import NewPassword from '../NewPassword.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 
 	let current = $state('');
 	let password = $state('');
-	let repeat = $state('');
+	let newPassword: NewPassword;
 
 	async function save() {
-		if (password !== repeat) throw new Error("The passwords don't match.");
+		newPassword.check();
 		await post('/users/password', { current, password });
 		onclose();
 	}
@@ -27,19 +28,11 @@
 			autofocus
 			bind:value={current}
 		/>
-		<label for="pw-new">New password:</label>
-		<input
+		<NewPassword
 			id="pw-new"
-			type="password"
-			autocomplete="new-password"
+			label="New password:"
 			bind:value={password}
-		/>
-		<label for="pw-repeat">Confirm:</label>
-		<input
-			id="pw-repeat"
-			type="password"
-			autocomplete="new-password"
-			bind:value={repeat}
+			bind:this={newPassword}
 		/>
 	</Form>
 </Dialog>

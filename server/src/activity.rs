@@ -127,6 +127,7 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("DELETE", "/users/*", "Delete admin"),
 		("POST", "/users/password", "Change password"),
 		("POST", "/users/account", "Change email"),
+		("POST", "/users/email/*", "Confirm new email"),
 		("POST", "/users/logout", "Log out"),
 		("POST", "/users/totp/enable", "Turn on two-factor login"),
 		("POST", "/users/totp/disable", "Turn off two-factor login"),

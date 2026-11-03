@@ -99,18 +99,29 @@ pub fn create(
 	name: &str,
 	hash: &str,
 ) -> Result<User> {
-	let email = email.trim().to_lowercase();
-	if !email.contains('@') {
-		return Err(Error::Invalid("invalid email".into()));
-	}
+	let (email, name) = normalize(email, name)?;
 
 	conn.execute(
 		"INSERT INTO users (email, name, password_hash, created_at)
 		VALUES (?1, ?2, ?3, ?4)",
-		params![email, name.trim(), hash, now()],
+		params![email, name, hash, now()],
 	)?;
 
 	Ok(by_id(conn, conn.last_insert_rowid())?)
+}
+
+/// The email trimmed and lowercase, the name trimmed. The email must be
+/// one mail can go to: a broken one breaks every mail to the admins.
+fn normalize(email: &str, name: &str) -> Result<(String, String)> {
+	let email = email.trim().to_lowercase();
+	if email.parse::<lettre::Address>().is_err() {
+		return Err(Error::Invalid(format!("invalid email {email:?}")));
+	}
+	let name = name.trim();
+	if name.is_empty() {
+		return Err(Error::Invalid("the name is empty".into()));
+	}
+	Ok((email, name.into()))
 }
 
 pub fn by_id(conn: &Connection, id: i64) -> rusqlite::Result<User> {
@@ -173,11 +184,7 @@ where
 		}) else {
 			return Err(Error::InvalidSessionToken);
 		};
-		let user = conn.query_row(
-			&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"),
-			[user_id],
-			User::from_row,
-		)?;
+		let user = by_id(&conn, user_id)?;
 
 		// at most once a minute, most requests only read
 		conn.execute(
@@ -453,11 +460,7 @@ fn create_session(
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
 		params![tokens::hash(&token), id, user_id, user_agent, ip, now()],
 	)?;
-	let user = conn.query_row(
-		&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"),
-		[user_id],
-		User::from_row,
-	)?;
+	let user = by_id(&conn, user_id)?;
 	activity::log(&conn, &user.name, "Login", "", from, Some(true));
 
 	Ok(LoginResp { token, user })
@@ -580,23 +583,161 @@ struct AccountReq {
 	email: String,
 	name: String,
 	password: String,
+	/// of the authenticator app, for a new email when the admin has 2FA
+	#[serde(default)]
+	code: String,
 }
 
-/// An admin changes their own email and name; sessions stay. The old
-/// address hears of it: a stolen session can't move the account away
-/// unnoticed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountResp {
+	user: User,
+	/// the new email, mailed a link to confirm it
+	confirm_sent: Option<String>,
+}
+
+/// An admin changes their own name, and email: the new one only counts
+/// once the link mailed to it is opened, then the old address hears of
+/// it. With 2FA a stolen session and password alone can't move the
+/// account and its confirmation mails away.
 async fn change_account(
 	authed: Authed,
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	Json(req): Json<AccountReq>,
-) -> Result<Json<User>> {
-	verify_password(&db, &authed.user, &req.password).await?;
-	let old = authed.user.email;
-	let user = set_account(&db.conn(), authed.user.id, &req.email, &req.name)?;
-	if user.email == old {
-		return Ok(Json(user));
+) -> Result<Json<AccountResp>> {
+	let user = authed.user;
+	verify_password(&db, &user, &req.password).await?;
+	let (email, name) = normalize(&req.email, &req.name)?;
+
+	let confirm_sent = if email == user.email {
+		None
+	} else {
+		verify_code(&db, &user, &req.code).await?;
+		send_email_link(&cfg, &db, &user, &email, &name).await?;
+		Some(email)
+	};
+
+	db.conn().execute(
+		"UPDATE users SET name = ?1 WHERE id = ?2",
+		params![name, user.id],
+	)?;
+	let user = by_id(&db.conn(), user.id)?;
+	Ok(Json(AccountResp { user, confirm_sent }))
+}
+
+/// how long the link to confirm a new email works
+const EMAIL_LINK_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Stores `email` as the admin's next one, the token of its link
+/// replaces an earlier one.
+fn request_email(
+	conn: &Connection,
+	user_id: i64,
+	email: &str,
+) -> Result<String> {
+	email_free(conn, email)?;
+	let token = util::random_hex(32);
+	conn.execute(
+		"UPDATE users SET new_email = ?1, new_email_hash = ?2,
+		new_email_expires = ?3 WHERE id = ?4",
+		params![email, tokens::hash(&token), now() + EMAIL_LINK_MS, user_id],
+	)?;
+	Ok(token)
+}
+
+fn email_free(conn: &Connection, email: &str) -> Result<()> {
+	let taken: bool = conn.query_row(
+		"SELECT EXISTS (SELECT 1 FROM users WHERE email = ?1)",
+		[email],
+		|r| r.get(0),
+	)?;
+	if taken {
+		return Err(Error::Invalid(format!("{email} is another admin's")));
 	}
+	Ok(())
+}
+
+async fn send_email_link(
+	cfg: &Config,
+	db: &Db,
+	user: &User,
+	email: &str,
+	name: &str,
+) -> Result<()> {
+	let domain = cfg
+		.domain
+		.as_deref()
+		.ok_or(Error::Invalid("the panel has no domain".into()))?;
+	let token = request_email(&db.conn(), user.id, email)?;
+
+	let body = format!(
+		"Hi {name}\n\n\
+		Confirm {email} as the email of your genco admin account on \
+		{domain} with this link, it works for a day:\n\n\
+		https://{domain}/email/{token}\n\n\
+		Until then you log in with {old}. If you didn't ask for this, \
+		ignore this mail.\n",
+		old = user.email,
+	);
+	let subject = format!("Confirm your admin email on {domain}");
+	if let Err(e) = mail::send(cfg, &[email.into()], &subject, &body).await {
+		db.conn().execute(
+			"UPDATE users SET new_email = NULL, new_email_hash = NULL,
+			new_email_expires = NULL WHERE id = ?1",
+			[user.id],
+		)?;
+		return Err(e);
+	}
+	Ok(())
+}
+
+/// The admin's next email of a link that still works.
+fn email_of_link(
+	conn: &Connection,
+	user_id: i64,
+	token: &str,
+) -> Result<String> {
+	conn.query_row(
+		"SELECT new_email FROM users
+		WHERE id = ?1 AND new_email_hash = ?2 AND new_email_expires > ?3",
+		params![user_id, tokens::hash(token), now()],
+		|r| r.get(0),
+	)
+	.map_err(|_| Error::Invalid("the link is wrong or expired".into()))
+}
+
+/// The email of the link becomes the admin's, the link is used up; not
+/// when another admin took the address in between.
+fn confirm_email(conn: &Connection, user_id: i64, token: &str) -> Result<User> {
+	let email = email_of_link(conn, user_id, token)?;
+	email_free(conn, &email)?;
+	conn.execute(
+		"UPDATE users SET email = new_email, new_email = NULL,
+		new_email_hash = NULL, new_email_expires = NULL WHERE id = ?1",
+		[user_id],
+	)?;
+	Ok(by_id(conn, user_id)?)
+}
+
+/// What the page of the link shows: the email it confirms.
+async fn get_email_link(
+	authed: Authed,
+	State(db): State<Db>,
+	Path(token): Path<String>,
+) -> Result<Json<String>> {
+	Ok(Json(email_of_link(&db.conn(), authed.user.id, &token)?))
+}
+
+/// Opened logged in as the admin, the link alone changes nothing.
+async fn confirm_email_link(
+	authed: Authed,
+	State(cfg): State<Arc<Config>>,
+	State(db): State<Db>,
+	Path(token): Path<String>,
+) -> Result<Json<User>> {
+	let old = authed.user.email;
+	let user = confirm_email(&db.conn(), authed.user.id, &token)?;
 
 	let domain = cfg.domain.as_deref().unwrap_or("this server");
 	let body = format!(
@@ -612,27 +753,6 @@ async fn change_account(
 		tracing::error!("mail about the changed email of {}: {e}", user.id);
 	}
 	Ok(Json(user))
-}
-
-fn set_account(
-	conn: &Connection,
-	user_id: i64,
-	email: &str,
-	name: &str,
-) -> Result<User> {
-	let email = email.trim().to_lowercase();
-	if !email.contains('@') {
-		return Err(Error::Invalid("invalid email".into()));
-	}
-	if name.trim().is_empty() {
-		return Err(Error::Invalid("the name is empty".into()));
-	}
-
-	conn.execute(
-		"UPDATE users SET email = ?1, name = ?2 WHERE id = ?3",
-		params![email, name.trim(), user_id],
-	)?;
-	Ok(by_id(conn, user_id)?)
 }
 
 /// how long the link of an invite works
@@ -673,26 +793,45 @@ async fn invite(
 struct AddReq {
 	email: String,
 	name: String,
-	/// the new admin's, twice
+	/// the new admin's
 	new_password: String,
-	repeat: String,
 	/// the adding admin's, as for an invite
 	password: String,
 }
 
 /// Adds an admin with a password, who can log in right away, for a
-/// panel without mail or an admin sitting next to you.
+/// panel without mail or an admin sitting next to you. Nobody gets a
+/// mail about it, so the other admins do.
 async fn add(
 	authed: Authed,
+	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	Json(req): Json<AddReq>,
 ) -> Result<Json<User>> {
 	verify_password(&db, &authed.user, &req.password).await?;
-	if req.new_password != req.repeat {
-		return Err(Error::Invalid("the passwords don't match".into()));
-	}
 	let hash = hash_password_async(req.new_password).await?;
-	Ok(Json(create(&db.conn(), &req.email, &req.name, &hash)?))
+	let user = create(&db.conn(), &req.email, &req.name, &hash)?;
+
+	let others: Vec<String> = list(&db.conn())?
+		.into_iter()
+		.filter(|u| u.id != authed.user.id && u.id != user.id)
+		.map(|u| u.email)
+		.collect();
+	// without a domain there is no address to send from
+	if let Some(domain) = cfg.domain.as_deref().filter(|_| !others.is_empty()) {
+		let body = format!(
+			"{by} added {email} ({name}) as an admin on {domain}.\n\n\
+			If that's news to you, ask {by} about it.\n",
+			by = authed.user.name,
+			email = user.email,
+			name = user.name,
+		);
+		let subject = format!("New admin on {domain}");
+		if let Err(e) = mail::send(&cfg, &others, &subject, &body).await {
+			tracing::error!("mail about the added admin {}: {e}", user.id);
+		}
+	}
+	Ok(Json(user))
 }
 
 /// A new link for an admin who lost the first one or the password.
@@ -704,11 +843,7 @@ async fn reinvite(
 	Json(req): Json<PasswordOnly>,
 ) -> Result<Json<()>> {
 	verify_password(&db, &authed.user, &req.password).await?;
-	let user = db.conn().query_row(
-		&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"),
-		[id],
-		User::from_row,
-	)?;
+	let user = by_id(&db.conn(), id)?;
 	send_invite(&cfg, &db, &user, &authed.user.name).await?;
 	Ok(Json(()))
 }
@@ -853,6 +988,35 @@ fn check_code(
 	})
 }
 
+/// The code of the admin's authenticator app when 2FA is on, used up as
+/// at the login; wrong ones count against the same limit.
+async fn verify_code(db: &Db, user: &User, code: &str) -> Result<()> {
+	if !user.totp {
+		return Ok(());
+	}
+	let (secret, last_step): (String, u64) = db.conn().query_row(
+		"SELECT totp_secret, totp_step FROM users WHERE id = ?1",
+		[user.id],
+		|r| Ok((r.get(0)?, r.get(1)?)),
+	)?;
+	let key = format!("code:{}", user.id);
+	let step = attempts_allowed(&key, MAX_CODE_FAILURES)
+		.then(|| check_code(&secret, &user.email, code, last_step))
+		.flatten();
+	let Some(step) = step else {
+		attempt_failed(&key, MAX_CODE_FAILURES);
+		tokio::time::sleep(Duration::from_secs(1)).await;
+		return Err(Error::Invalid("the two-factor code is wrong".into()));
+	};
+
+	CODE_FAILURES.lock().unwrap().remove(&key);
+	db.conn().execute(
+		"UPDATE users SET totp_step = ?1 WHERE id = ?2",
+		params![step, user.id],
+	)?;
+	Ok(())
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TotpSetup {
@@ -940,6 +1104,10 @@ pub fn routes() -> Router<AppState> {
 		.route("/tickets", post(create_ticket))
 		.route("/password", post(change_password))
 		.route("/account", post(change_account))
+		.route(
+			"/email/{token}",
+			get(get_email_link).post(confirm_email_link),
+		)
 		.route("/totp/setup", post(setup_totp))
 		.route("/totp/enable", post(enable_totp))
 		.route("/totp/disable", post(disable_totp))
@@ -999,12 +1167,21 @@ mod tests {
 		assert!(session_hash(&parts("/api/events?token=abc")).is_err());
 	}
 
-	fn add_req(email: &str, new: &str, repeat: &str) -> AddReq {
+	#[test]
+	fn emails_are_ones_mail_can_go_to() {
+		let ok = normalize(" A.B@Example.ch\n", " Anna ").unwrap();
+		assert_eq!(ok, ("a.b@example.ch".into(), "Anna".into()));
+		for bad in ["a", "a b@example.ch", "a@example.ch\nb@x.ch", "@x.ch"] {
+			assert!(normalize(bad, "A").is_err(), "{bad:?}");
+		}
+		assert!(normalize("a@example.ch", " ").is_err());
+	}
+
+	fn add_req(email: &str, new: &str) -> AddReq {
 		AddReq {
 			email: email.into(),
 			name: "New".into(),
 			new_password: new.into(),
-			repeat: repeat.into(),
 			password: "admin password".into(),
 		}
 	}
@@ -1012,26 +1189,30 @@ mod tests {
 	#[tokio::test]
 	async fn an_admin_adds_one_with_a_password() {
 		let db = Db::memory();
+		let cfg: Arc<Config> = Arc::new(toml::from_str("").unwrap());
 		let hash = hash_password("admin password").unwrap();
 		let admin = create(&db.conn(), "admin@example.ch", "Admin", &hash);
 		let authed = || Authed {
 			token: String::new(),
 			user: admin.as_ref().unwrap().clone(),
 		};
-		let add_one = |req| add(authed(), State(db.clone()), Json(req));
+		let add_one = |req| {
+			add(authed(), State(cfg.clone()), State(db.clone()), Json(req))
+		};
 
-		let mismatch = add_one(add_req("a@example.ch", "long enough 1", "x"));
-		assert!(mismatch.await.is_err());
-		let weak = add_one(add_req("a@example.ch", "short", "short"));
+		let weak = add_one(add_req("a@example.ch", "short"));
 		assert!(weak.await.is_err());
-		let mut wrong =
-			add_req("a@example.ch", "long enough 1", "long enough 1");
+		let mut wrong = add_req("a@example.ch", "long enough 1");
 		wrong.password = "wrong".into();
 		assert!(add_one(wrong).await.is_err());
+		let broken = add_req("a b@example.ch", "long enough 1");
+		assert!(add_one(broken).await.is_err());
 		assert_eq!(list(&db.conn()).unwrap().len(), 1);
 
-		let req = add_req(" A@example.ch", "long enough 1", "long enough 1");
-		let user = add_one(req).await.unwrap().0;
+		let user = add_one(add_req(" A@example.ch", "long enough 1"))
+			.await
+			.unwrap()
+			.0;
 		assert_eq!(user.email, "a@example.ch");
 		assert!(!user.invited);
 		let found = check_credentials(
@@ -1044,39 +1225,65 @@ mod tests {
 		.unwrap();
 		assert_eq!(found.0, user.id);
 
-		let twice = add_req("a@example.ch", "long enough 2", "long enough 2");
+		let twice = add_req("a@example.ch", "long enough 2");
 		assert!(add_one(twice).await.is_err());
 	}
 
+	#[test]
+	fn a_new_email_counts_after_its_link() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let hash = hash_password("admin password").unwrap();
+		let a = create(&conn, "a@example.ch", "A", &hash).unwrap();
+		let b = create(&conn, "b@example.ch", "B", &hash).unwrap();
+
+		assert!(request_email(&conn, a.id, "b@example.ch").is_err());
+
+		// only once, and only for the admin who asked
+		let token = request_email(&conn, a.id, "new@example.ch").unwrap();
+		assert_eq!(by_id(&conn, a.id).unwrap().email, "a@example.ch");
+		assert!(confirm_email(&conn, b.id, &token).is_err());
+		assert!(confirm_email(&conn, a.id, "wrong").is_err());
+		let user = confirm_email(&conn, a.id, &token).unwrap();
+		assert_eq!(user.email, "new@example.ch");
+		assert!(confirm_email(&conn, a.id, &token).is_err());
+
+		// a later link replaces the earlier one
+		let first = request_email(&conn, a.id, "x@example.ch").unwrap();
+		let token = request_email(&conn, a.id, "y@example.ch").unwrap();
+		assert!(confirm_email(&conn, a.id, &first).is_err());
+
+		// expired
+		conn.execute("UPDATE users SET new_email_expires = ?1", [now() - 1])
+			.unwrap();
+		assert!(confirm_email(&conn, a.id, &token).is_err());
+
+		// taken by another admin in between
+		let token = request_email(&conn, a.id, "z@example.ch").unwrap();
+		create(&conn, "z@example.ch", "Z", &hash).unwrap();
+		assert!(confirm_email(&conn, a.id, &token).is_err());
+		assert_eq!(by_id(&conn, a.id).unwrap().email, "new@example.ch");
+	}
+
 	#[tokio::test]
-	async fn an_admin_changes_their_email() {
+	async fn a_new_email_needs_the_code_with_2fa() {
 		let db = Db::memory();
 		let hash = hash_password("admin password").unwrap();
 		let a = create(&db.conn(), "a@example.ch", "A", &hash).unwrap();
-		create(&db.conn(), "b@example.ch", "B", &hash).unwrap();
+		verify_code(&db, &a, "").await.unwrap();
 
-		assert!(verify_password(&db, &a, "wrong").await.is_err());
-		verify_password(&db, &a, "admin password").await.unwrap();
-
-		let taken = set_account(&db.conn(), a.id, " B@example.ch", "A");
-		assert!(taken.is_err());
-		assert!(set_account(&db.conn(), a.id, "a", "A").is_err());
-
-		let user =
-			set_account(&db.conn(), a.id, " New@Example.ch", " Anna ").unwrap();
-		assert_eq!(
-			(user.email.as_str(), user.name.as_str()),
-			("new@example.ch", "Anna")
-		);
-		let found = check_credentials(
-			&db,
-			"new@example.ch",
-			"admin password".into(),
-			"test",
-		)
-		.await
-		.unwrap();
-		assert_eq!(found.0, a.id);
+		let secret = Secret::generate_secret().to_encoded().to_string();
+		db.conn()
+			.execute("UPDATE users SET totp_secret = ?1", [&secret])
+			.unwrap();
+		let a = by_id(&db.conn(), a.id).unwrap();
+		assert!(verify_code(&db, &a, "").await.is_err());
+		let code = totp(&secret, &a.email)
+			.unwrap()
+			.generate((now() / 1000) as u64);
+		verify_code(&db, &a, &code).await.unwrap();
+		// used up
+		assert!(verify_code(&db, &a, &code).await.is_err());
 	}
 
 	#[test]

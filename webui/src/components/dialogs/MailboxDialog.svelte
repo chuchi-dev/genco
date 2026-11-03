@@ -2,6 +2,7 @@
 	import { post, type MailDomain, type Mailbox } from '@/lib/api';
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
+	import NewPassword from '../NewPassword.svelte';
 
 	// a new mailbox, or a new password and quota for one
 	let {
@@ -16,12 +17,12 @@
 
 	let local = $state('');
 	let password = $state('');
-	let repeat = $state('');
+	let newPassword: NewPassword;
 	// svelte-ignore state_referenced_locally
 	let quota = $state(String(mailbox?.quotaMb ?? 2048));
 
 	async function save() {
-		if (password !== repeat) throw new Error("The passwords don't match");
+		newPassword.check();
 		const quotaMb = Number(quota);
 		if (!Number.isInteger(quotaMb) || quotaMb < 10)
 			throw new Error('The quota is a number of MB, at least 10');
@@ -61,24 +62,12 @@
 				<span>@{domain.name}</span>
 			</span>
 		{/if}
-		<label for="mb-pw">Password:</label>
-		<!-- svelte-ignore a11y_autofocus -->
-		<input
+		<NewPassword
 			id="mb-pw"
-			type="password"
-			autocomplete="new-password"
 			autofocus={!!mailbox}
-			placeholder={mailbox
-				? 'empty keeps the current one'
-				: '10 characters or more'}
+			placeholder={mailbox ? 'Empty keeps the current one' : undefined}
 			bind:value={password}
-		/>
-		<label for="mb-repeat">Repeat:</label>
-		<input
-			id="mb-repeat"
-			type="password"
-			autocomplete="new-password"
-			bind:value={repeat}
+			bind:this={newPassword}
 		/>
 		<label for="mb-quota">Quota (MB):</label>
 		<input id="mb-quota" inputmode="numeric" bind:value={quota} />

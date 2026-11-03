@@ -6,6 +6,7 @@
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
 	import ListView from '../win/ListView.svelte';
+	import NewPassword from '../NewPassword.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 
@@ -16,7 +17,7 @@
 	let email = $state('');
 	let name = $state('');
 	let newPassword = $state('');
-	let repeat = $state('');
+	let newPasswordInput = $state<NewPassword>();
 	let error = $state<string | null>(null);
 
 	const canRemove = $derived(
@@ -49,8 +50,7 @@
 	}
 
 	async function add() {
-		if (newPassword !== repeat)
-			throw new Error("The passwords don't match.");
+		newPasswordInput?.check();
 		const added = email;
 		const password = await message.password(
 			'Add User',
@@ -61,11 +61,10 @@
 			email,
 			name,
 			newPassword,
-			repeat,
 			password,
 		});
 		adding = null;
-		email = name = newPassword = repeat = '';
+		email = name = newPassword = '';
 
 		await load();
 		message.show('User Added', `${added} can log in now.`);
@@ -119,7 +118,7 @@
 				link to set a password.
 			{:else}
 				The new user is an admin of this server and can log in with this
-				password right away. At least 10 characters.
+				password right away.
 			{/if}
 		</p>
 		<Form
@@ -133,19 +132,10 @@
 			<label for="u-email">Email:</label>
 			<input id="u-email" type="email" bind:value={email} />
 			{#if adding === 'password'}
-				<label for="u-password">Password:</label>
-				<input
+				<NewPassword
 					id="u-password"
-					type="password"
-					autocomplete="new-password"
 					bind:value={newPassword}
-				/>
-				<label for="u-repeat">Repeat:</label>
-				<input
-					id="u-repeat"
-					type="password"
-					autocomplete="new-password"
-					bind:value={repeat}
+					bind:this={newPasswordInput}
 				/>
 			{/if}
 		</Form>

@@ -24,6 +24,7 @@
 	import Window from '@/components/win/Window.svelte';
 	import Form from '@/components/win/Form.svelte';
 	import Icon from '@/components/win/Icon.svelte';
+	import NewPassword from '@/components/NewPassword.svelte';
 
 	// the link of an invite mail: the new admin sets a password
 	let { token, user }: { token: string; user: User } = $props();
@@ -32,10 +33,10 @@
 	history.replaceState(history.state, '', '/invite');
 
 	let password = $state('');
-	let repeat = $state('');
+	let newPassword: NewPassword;
 
 	async function save() {
-		if (password !== repeat) throw new Error("The passwords don't match");
+		newPassword.check();
 		await post(`/users/invite/${token}`, { password });
 		sessionStorage.removeItem(KEY);
 		go('/login');
@@ -49,24 +50,13 @@
 			<div>
 				<p>
 					Hi {user.name}, choose a password for {user.email} on {location.hostname}.
-					At least 10 characters.
 				</p>
 				<Form onsubmit={save} ok="Save">
-					<label for="password">Password:</label>
-					<!-- svelte-ignore a11y_autofocus -->
-					<input
+					<NewPassword
 						id="password"
-						type="password"
-						autocomplete="new-password"
 						autofocus
 						bind:value={password}
-					/>
-					<label for="repeat">Repeat:</label>
-					<input
-						id="repeat"
-						type="password"
-						autocomplete="new-password"
-						bind:value={repeat}
+						bind:this={newPassword}
 					/>
 				</Form>
 			</div>

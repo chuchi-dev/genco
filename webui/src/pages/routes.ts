@@ -35,6 +35,10 @@ export function registerRoutes() {
 				/^\/confirm\/(?<token>[0-9a-f]+)$/,
 				() => import('./Confirm.svelte'),
 			],
+			[
+				/^\/email\/(?<token>[0-9a-f]+)$/,
+				() => import('./ConfirmEmail.svelte'),
+			],
 		],
 	);
 }
