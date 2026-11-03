@@ -210,6 +210,94 @@ pub(super) async fn dns_check(
 	Ok(records)
 }
 
+/// What genco's own mails need, sent as genco@<panel>: SPF, DKIM and
+/// DMARC of the panel's domain and the PTR of the server's address.
+pub async fn panel_dns(
+	cfg: &Config,
+	groups: &[Group],
+) -> Result<Vec<DnsRecord>> {
+	let panel = cfg
+		.domain
+		.clone()
+		.ok_or(Error::Invalid("the panel has no domain".into()))?;
+	let ips = crate::dns::own_ipv4().await;
+	let ip = ips.first().cloned().unwrap_or_default();
+	let mut records = vec![];
+
+	let found = crate::dns::dig("A", &panel).await;
+	let ok = found.iter().any(|f| ips.contains(f));
+	records.push(record(
+		&panel,
+		"A",
+		ip.clone(),
+		found,
+		ok,
+		"the panel, genco sends its mails as genco@ this name",
+	));
+
+	let found = spf(&panel).await;
+	let ok = spf_has(&found, &["a".into(), format!("ip4:{ip}")]);
+	records.push(record(
+		&panel,
+		"TXT",
+		"v=spf1 a ~all".into(),
+		found,
+		ok,
+		"this server may send as the panel's name (only one SPF record per \
+		name, keep what is there and add a)",
+	));
+
+	if let Some(value) = crate::mail::panel_dkim_record().await {
+		let name =
+			format!("{}._domainkey.{panel}", crate::mail::PANEL_SELECTOR);
+		let found = crate::dns::dig_txt(&name).await;
+		let ok = found.iter().any(|f| dkim_key(f) == dkim_key(&value));
+		records.push(record(
+			&name,
+			"TXT",
+			value,
+			found,
+			ok,
+			"the key genco signs its mails with",
+		));
+	}
+
+	let dmarc = format!("_dmarc.{panel}");
+	let found: Vec<String> = crate::dns::dig_txt(&dmarc)
+		.await
+		.into_iter()
+		.filter(|t| t.starts_with("v=DMARC1"))
+		.collect();
+	let ok = !found.is_empty();
+	records.push(record(
+		&dmarc,
+		"TXT",
+		"v=DMARC1; p=quarantine".into(),
+		found,
+		ok,
+		"what receivers do with mail that fails SPF and DKIM",
+	));
+
+	// postfix greets with this name, the PTR should say the same
+	let helo = if enabled(groups) {
+		host(cfg).unwrap_or_else(|| panel.clone())
+	} else {
+		panel.clone()
+	};
+	let found = crate::dns::dig("-x", &ip).await;
+	let ok = found.iter().any(|f| f == &helo);
+	records.push(record(
+		&ip,
+		"PTR",
+		helo,
+		found,
+		ok,
+		"the reverse DNS of the server's IP, only the hoster can set it; \
+		without it many receivers take mail for spam",
+	));
+	Ok(records)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

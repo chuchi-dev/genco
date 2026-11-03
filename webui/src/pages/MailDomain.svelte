@@ -8,9 +8,7 @@
 </script>
 
 <script lang="ts">
-	import { listKeys } from '@/lib/listKeys';
-	import { untrack } from 'svelte';
-	import { get, newest, type DnsRecord, type Mailbox } from '@/lib/api';
+	import { type DnsRecord, type Mailbox } from '@/lib/api';
 	import {
 		message,
 		requestDelete,
@@ -19,6 +17,7 @@
 	import Button from '@/components/win/Button.svelte';
 	import ListView from '@/components/win/ListView.svelte';
 	import MailboxDialog from '@/components/dialogs/MailboxDialog.svelte';
+	import DnsTable from '@/components/DnsTable.svelte';
 	import ForwardDialog from '@/components/dialogs/ForwardDialog.svelte';
 
 	let { id }: { id: string } = $props();
@@ -36,34 +35,8 @@
 	let editing = $state<'new' | Mailbox | 'forward' | null>(null);
 
 	let dns = $state<DnsRecord[] | null>(null);
-	let dnsError = $state<string | null>(null);
-	let checking = $state(false);
 	// the mail server's own name, the first record of the check
 	const host = $derived(dns?.find(r => r.kind === 'A')?.name ?? null);
-
-	const loadDns = newest();
-	function check() {
-		checking = true;
-		loadDns(
-			get(`/mail-domains/${domain.id}/dns`),
-			(records: DnsRecord[]) => {
-				dns = records;
-				dnsError = null;
-				checking = false;
-			},
-			e => {
-				dnsError = e.message;
-				checking = false;
-			},
-		);
-	}
-	// again only for another domain: the tree gives a new object on every
-	// change anywhere
-	const domainId = $derived(Number(id));
-	$effect(() => {
-		void domainId;
-		untrack(check);
-	});
 
 	const box = $derived(domain.mailboxes.find(b => b.id === selectedBox));
 	const forward = $derived(
@@ -80,13 +53,6 @@
 			}));
 		if (deleted) selectedForward = null;
 	}
-
-	const STATUS: Record<DnsRecord['status'], string> = {
-		ok: 'ok',
-		missing: 'missing',
-		differs: 'change',
-		optional: 'optional',
-	};
 </script>
 
 <dl class="props">
@@ -170,37 +136,8 @@
 	Set these at the domain's DNS host. Asking the agent works too, e.g. "what
 	do I have to change in the DNS of {domain.name}?"
 </p>
-{#if dnsError}<p class="error">{dnsError}</p>{/if}
-<div class="list-view" {@attach listKeys}>
-	<table>
-		<thead>
-			<tr>
-				<th>Status</th>
-				<th>Name</th>
-				<th>Type</th>
-				<th>Value to set</th>
-				<th>Now</th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each dns ?? [] as r (r.kind + r.name)}
-				<tr title={r.note}>
-					<td class="dns {r.status}">{STATUS[r.status]}</td>
-					<td class="selectable">{r.name}</td>
-					<td>{r.kind}</td>
-					<td class="selectable mono">{r.value}</td>
-					<td class="mono now">{r.found.join(' | ') || '–'}</td>
-				</tr>
-			{:else}
-				<tr><td colspan="5" class="empty">Looking up…</td></tr>
-			{/each}
-		</tbody>
-	</table>
-</div>
+<DnsTable path={`/mail-domains/${domain.id}/dns`} bind:records={dns} />
 <div class="row-buttons">
-	<Button onclick={check} disabled={checking}>
-		{checking ? 'Checking…' : 'Check Again'}
-	</Button>
 	<span class="gap"></span>
 	<Button
 		onclick={() =>
@@ -230,40 +167,6 @@
 
 	h4 {
 		margin: 14px 0 6px;
-	}
-
-	// the DNS table, its rows don't select
-	.list-view {
-		max-height: 260px;
-	}
-
-	.mono {
-		font-family: $mono;
-	}
-
-	.now {
-		color: $hint;
-		max-width: 260px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.dns {
-		font-weight: bold;
-
-		&.ok {
-			color: $ok;
-		}
-
-		&.missing,
-		&.differs {
-			color: $error;
-		}
-
-		&.optional {
-			color: $hint;
-			font-weight: normal;
-		}
 	}
 
 	.hint {

@@ -137,6 +137,12 @@ pub(super) async fn webmail_service(
 
 /// The users and directories mail needs, before its files are written.
 pub(super) async fn prepare_mail(r: &mut Report, groups: &[Group]) {
+	// genco's own mails are signed with or without mail domains
+	match crate::mail::ensure_panel_key().await {
+		Ok(true) => r.info("made the DKIM key of genco's own mail"),
+		Ok(false) => {}
+		Err(e) => r.error(format!("DKIM key of genco's mail: {e}")),
+	}
 	if !mailbox::enabled(groups) {
 		return;
 	}

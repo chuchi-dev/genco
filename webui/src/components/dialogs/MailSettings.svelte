@@ -3,6 +3,7 @@
 	import { session } from '@/lib/session.svelte';
 	import Button from '../win/Button.svelte';
 	import Form from '../win/Form.svelte';
+	import DnsTable from '../DnsTable.svelte';
 
 	// how postfix sends the mails of genco and the sites
 
@@ -98,6 +99,16 @@
 </fieldset>
 
 <fieldset>
+	<legend>DNS for genco's mails</legend>
+	<p class="hint">
+		genco sends its mails (alerts, confirmations, invites) as genco@ the
+		panel's name, signed with its own DKIM key. Set these at that name's DNS
+		host; with a relay, also what the relay asks for.
+	</p>
+	<DnsTable path="/settings/mail/dns" />
+</fieldset>
+
+<fieldset>
 	<legend>Test</legend>
 	<div class="test">
 		<input type="email" aria-label="Send the test to" bind:value={testTo} />
@@ -111,6 +122,11 @@
 
 	p {
 		margin: 0 0 8px;
+	}
+
+	// the DNS table scrolls instead of widening the dialog
+	fieldset {
+		min-width: 0;
 	}
 
 	.modes {

@@ -102,6 +102,7 @@ into the server's config, and the CLI does the same:
 | Add a client, group, domain or database | `genco client add`, `genco group add`, `genco domain add`, `genco database add` (see `--help`) |
 | Change a domain | `genco domain set <name> --php 8.4` |
 | Which sender domains apps may use (SPF) | `genco mail senders` |
+| DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
 | A PostgreSQL database | `genco database add <name> --group <g> --postgres`, then `genco apply` (installs PostgreSQL the first time) |
 | Environment variables of an app | `genco domain env <name> --set NAME=value --secret NAME=value --unset NAME`, then `genco apply` |
 | A stored password (Start → Passwords) | `genco secret list`, `genco secret show <name>` |

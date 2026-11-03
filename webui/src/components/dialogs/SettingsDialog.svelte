@@ -19,7 +19,7 @@
 	let tab = $state('mail');
 </script>
 
-<Dialog title="Settings" icon="gear" {onclose} width={500}>
+<Dialog title="Settings" icon="gear" {onclose} width={600}>
 	<Tabs tabs={TABS} selected={tab} onselect={t => (tab = t)}>
 		<!-- all stay mounted: a token shown once mustn't go with a tab
 		switch -->

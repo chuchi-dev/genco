@@ -32,6 +32,7 @@ use crate::util;
 pub use cli::{MailCmd, cli};
 pub use conf::{SUBMISSION, SUBMISSION_OPTIONS, files, postfix_settings};
 use dns::*;
+pub use dns::{DnsRecord, panel_dns};
 pub use routes::routes;
 
 /// Where Dovecot keeps the mail, `<domain>/<local part>/Maildir`.

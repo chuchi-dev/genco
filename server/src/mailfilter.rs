@@ -224,7 +224,11 @@ pub async fn ensure_keys(groups: &[Group]) -> Result<Vec<String>, String> {
 
 /// The DKIM record's value of a domain, from its key.
 pub async fn dkim_record(domain: &str) -> Option<String> {
-	let path = key_path(domain);
+	dkim_record_of(&key_path(domain)).await
+}
+
+/// The DKIM record's value of a key file.
+pub async fn dkim_record_of(path: &Path) -> Option<String> {
 	if !path.exists() {
 		return None;
 	}

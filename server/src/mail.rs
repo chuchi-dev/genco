@@ -66,9 +66,10 @@ pub async fn send(
 			t.parse().map_err(|e| Error::Invalid(format!("{t}: {e}")))?;
 		msg = msg.to(mb);
 	}
-	let msg = msg
+	let mut msg = msg
 		.body(body.to_string())
 		.map_err(|e| Error::Internal(e.to_string()))?;
+	sign(cfg, &mut msg);
 
 	let transport =
 		AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
@@ -79,6 +80,53 @@ pub async fn send(
 		.await
 		.map_err(|e| Error::Internal(format!("sending the mail: {e}")))?;
 	Ok(())
+}
+
+/// genco's own key: postfix signs only mail with a login, genco's comes
+/// over localhost:25 without one. Its own selector, the panel's domain
+/// may be a mail domain with a key of its own too.
+pub const PANEL_SELECTOR: &str = "genco-panel";
+const PANEL_KEY: &str = "/etc/genco/dkim/panel.key";
+
+/// Signs genco's mail as its domain when the key is there; without it
+/// the mail goes unsigned, a report must not fail on the key.
+fn sign(cfg: &Config, msg: &mut Message) {
+	use lettre::message::dkim::{
+		DkimConfig, DkimSigningAlgorithm, DkimSigningKey,
+	};
+	let (Some(domain), Ok(pem)) =
+		(cfg.domain.as_deref(), std::fs::read_to_string(PANEL_KEY))
+	else {
+		return;
+	};
+	match DkimSigningKey::new(&pem, DkimSigningAlgorithm::Rsa) {
+		Ok(key) => msg.sign(&DkimConfig::default_config(
+			PANEL_SELECTOR.into(),
+			domain.into(),
+			key,
+		)),
+		Err(e) => tracing::error!("DKIM key of genco's mail: {e}"),
+	}
+}
+
+/// Makes genco's DKIM key if there is none, true if it did. PKCS#1, what
+/// lettre reads; only root.
+pub async fn ensure_panel_key() -> std::result::Result<bool, String> {
+	if std::path::Path::new(PANEL_KEY).exists() {
+		return Ok(false);
+	}
+	crate::util::sh(&format!(
+		"mkdir -p /etc/genco/dkim && umask 077 \
+		&& openssl genrsa -traditional -out {PANEL_KEY}.new 2048 2>/dev/null \
+		&& mv {PANEL_KEY}.new {PANEL_KEY}"
+	))
+	.await?;
+	Ok(true)
+}
+
+/// The DKIM record of genco's key.
+pub async fn panel_dkim_record() -> Option<String> {
+	crate::mailfilter::dkim_record_of(std::path::Path::new(PANEL_KEY)).await
 }
 
 /// Every admin's address.
@@ -229,4 +277,15 @@ pub fn routes() -> Router<AppState> {
 	Router::new()
 		.route("/settings/mail", get(get_settings).post(save_settings))
 		.route("/settings/mail/test", post(test_mail))
+		.route("/settings/mail/dns", get(dns_route))
+}
+
+/// The DNS records genco's own mails need, sent from genco@<panel>.
+async fn dns_route(
+	_authed: Authed,
+	State(cfg): State<Arc<Config>>,
+	State(db): State<Db>,
+) -> Result<Json<Vec<crate::mailbox::DnsRecord>>> {
+	let groups = crate::hosting::groups(&db.conn())?;
+	Ok(Json(crate::mailbox::panel_dns(&cfg, &groups).await?))
 }
