@@ -343,14 +343,13 @@ struct Build<'a> {
 	job: &'a Job,
 }
 
-/// The step's container, after ENGINE: rootless podman maps the runner's
-/// user into it, docker gets it as `--user`. Arguments: image, name,
-/// source, cache, command, seconds.
+/// The step's container, after ENGINE and IMAGE_USER. Arguments: image,
+/// name, source, cache, command, seconds.
 const CONTAINER: &str = r#"set -o pipefail; exec 2>&1
 timeout "$6" $E run --rm --name "$2" $U \
 	--cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 \
 	-v "$3:/src" -v "$4:/cache" -w /src \
-	-e HOME=/cache/home -e CARGO_HOME=/cache/cargo -e npm_config_cache=/cache/npm \
+	$H -e CARGO_HOME=/cache/cargo -e npm_config_cache=/cache/npm \
 	"$1" bash -c "$5"
 rc=$?
 if [ $rc -eq 124 ]; then
@@ -359,15 +358,29 @@ if [ $rc -eq 124 ]; then
 fi
 exit $rc"#;
 
-/// The engine and how it maps the runner's user, for the scripts below.
-const ENGINE: &str = r#"if command -v podman >/dev/null; then E=podman; U=--userns=keep-id
-elif command -v docker >/dev/null; then E=docker; U="--user $(id -u):$(id -g)"
+/// The engine, for the scripts below.
+const ENGINE: &str = r#"if command -v podman >/dev/null; then E=podman
+elif command -v docker >/dev/null; then E=docker
 else echo "neither podman nor docker on the runner"; exit 3; fi"#;
+
+/// Who runs in a container of the image `$1`, after ENGINE: rootless
+/// podman maps the runner's user onto the image's own (a build image with
+/// a USER keeps its home and tools, e.g. rustup in a private home), so
+/// what the build writes belongs to the runner; docker runs as the
+/// runner's user. Root images get their HOME in the cache.
+const IMAGE_USER: &str = r#"H="-e HOME=/cache/home"
+if [ $E = podman ]; then
+	IU=$($E run --rm --network none --entrypoint id "$1" -u 2>/dev/null) || IU=0
+	IG=$($E run --rm --network none --entrypoint id "$1" -g 2>/dev/null) || IG=0
+	U="--userns=keep-id:uid=$IU,gid=$IG --user $IU:$IG"
+	[ "$IU" = 0 ] || H=
+else U="--user $(id -u):$(id -g)"; fi"#;
 
 /// `tar` in a container of the job's image on the source folder, no
 /// network: the source goes in and the artifacts come out there, so a
 /// link the build planted resolves inside the container, never on the
-/// runner's own disk. Arguments: image, source, tar's arguments.
+/// runner's own disk. After ENGINE and IMAGE_USER. Arguments: image,
+/// source, tar's arguments.
 const TAR: &str = r#"exec $E run --rm -i --network none --cap-drop ALL \
 	--security-opt no-new-privileges $U -v "$2:/src" -w /src "$1" tar "${@:3}""#;
 
@@ -449,10 +462,15 @@ impl Build<'_> {
 	/// `tar` in a container, see TAR.
 	fn tar(&self, src: &Path, args: &[&str]) -> Command {
 		let mut c = Command::new("bash");
-		c.args(["-c", &format!("{ENGINE}\n{TAR}"), "bash", &self.job.image])
-			.arg(src)
-			.args(args)
-			.kill_on_drop(true);
+		c.args([
+			"-c",
+			&format!("{ENGINE}\n{IMAGE_USER}\n{TAR}"),
+			"bash",
+			&self.job.image,
+		])
+		.arg(src)
+		.args(args)
+		.kill_on_drop(true);
 		c
 	}
 
@@ -498,7 +516,7 @@ impl Build<'_> {
 		let mut child = Command::new("bash")
 			.args([
 				"-c",
-				&format!("{ENGINE}\n{CONTAINER}"),
+				&format!("{ENGINE}\n{IMAGE_USER}\n{CONTAINER}"),
 				"bash",
 				&job.image,
 				&name,
