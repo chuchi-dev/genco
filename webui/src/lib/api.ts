@@ -374,6 +374,35 @@ export type Stats = {
 	domains: { name: string; requests: number; errors: number; tx: number }[];
 };
 
+export type TopPage = {
+	path: string;
+	requests: number;
+	/** answers 400 to 499 */
+	clientErrors: number;
+	/** 500 and above */
+	serverErrors: number;
+	bytes: number;
+};
+
+export type TopAddress = {
+	ip: string;
+	requests: number;
+	clientErrors: number;
+	serverErrors: number;
+	/** its most requested path */
+	path: string;
+};
+
+export type TopPages = {
+	pages: TopPage[];
+	/** the most requested paths that answered 404 */
+	notFound: TopPage[];
+	/** the clients with the most requests */
+	addresses: TopAddress[];
+	/** the oldest request read when the log doesn't cover the period */
+	from: number | null;
+};
+
 export type Snapshot = {
 	id: string;
 	time: string;

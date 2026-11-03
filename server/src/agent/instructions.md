@@ -280,6 +280,10 @@ field in the panel.
   databases there or with a token (`/api/databases/<name>/dump`, Craft
   without personal data); developers who want a copy can get one that
   way, don't send them dumps yourself.
+- Each domain's requests are logged in
+  `/var/log/nginx/genco/<domain>.access.log`: asked which pages are
+  called (or answer 404), count them there; admins see them in the
+  domain's Usage section.
 - `genco activity` shows who did what: logins, every change in the
   panel or with an API token, `genco` commands and your tool calls.
 - `{{inventory}}` is what `genco setup` found on the server before it

@@ -176,6 +176,13 @@ terminal.
       memory of an app; minutes for 2 days, hours for 400 days
 - [x] charts on the server page, a Usage tab of a group with a table per
       domain, and on the domain page; 1h, 24h, 7d, 30d
+- [x] top pages of a domain (operator 2026-11-03): `GET
+      /api/domains/{id}/top?hours=` reads the newest 50 MB of its access
+      log (and `.1`) on request: the 50 most requested paths without the
+      query (requests, 4xx, 5xx, bytes) and the top 404s, no user
+      agents, and the top addresses (requests, 4xx, 5xx, their most
+      requested path); lists under the domain's charts; admins only, no
+      tokens: paths are text anyone can log, IPs personal data
 
 ### 10. Mail hosting (operator 2026-11-01)
 - [x] mail domains in a group with mailboxes (Dovecot 2.4, IMAPS 993,

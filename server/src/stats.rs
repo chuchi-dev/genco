@@ -23,6 +23,7 @@ use crate::error::{Error, Result};
 use crate::hosting::{self, Group};
 use crate::render;
 use crate::tokens::Reader;
+use crate::users::Authed;
 use crate::util::sh;
 
 const MINUTE: i64 = 60_000;
@@ -365,6 +366,258 @@ fn count_requests(lines: &str, own: &[String]) -> Sample {
 	s
 }
 
+/// A request of an access log line.
+#[derive(Debug, PartialEq)]
+struct Hit<'a> {
+	ip: &'a str,
+	/// milliseconds
+	at: i64,
+	/// without the query, at most `MAX_PATH` bytes
+	path: &'a str,
+	status: u16,
+	bytes: i64,
+}
+
+/// Longer paths are cut, they are bots' garbage anyway.
+const MAX_PATH: usize = 200;
+
+/// A line in nginx's combined format, nothing for anything else (a
+/// TLS handshake on the HTTP port, a cut line).
+fn parse_line(line: &str) -> Option<Hit<'_>> {
+	let ip = line.split(' ').next()?;
+	let time = line.split_once('[')?.1.split_once(']')?.0;
+	let mut quoted = line.split('"');
+	let request = quoted.nth(1)?;
+	let mut fields = quoted.next()?.split_whitespace();
+	let status = fields.next()?.parse().ok()?;
+	let bytes = fields.next()?.parse().unwrap_or(0);
+
+	// `GET /a b HTTP/1.1`: the path may have spaces
+	let target = request.split_once(' ')?.1;
+	let target = match target.rsplit_once(' ') {
+		Some((t, v)) if v.starts_with("HTTP/") => t,
+		_ => target,
+	};
+	if !target.starts_with('/') {
+		return None;
+	}
+	let mut path = target.split('?').next()?;
+	if path.len() > MAX_PATH {
+		let mut end = MAX_PATH;
+		while !path.is_char_boundary(end) {
+			end -= 1;
+		}
+		path = &path[..end];
+	}
+
+	Some(Hit {
+		ip,
+		at: log_time(time)?,
+		path,
+		status,
+		bytes,
+	})
+}
+
+/// `01/Nov/2026:17:37:10 +0100` in milliseconds.
+fn log_time(time: &str) -> Option<i64> {
+	let (date, zone) = time.split_once(' ')?;
+	let mut parts = date.split([':', '/']);
+	let day: i64 = parts.next()?.parse().ok()?;
+	let month = parts.next()?;
+	let month = [
+		"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+		"Nov", "Dec",
+	]
+	.iter()
+	.position(|m| *m == month)? as i64
+		+ 1;
+	let year: i64 = parts.next()?.parse().ok()?;
+	let mut clock = [0i64; 3];
+	for c in &mut clock {
+		*c = parts.next()?.parse().ok()?;
+	}
+
+	// days since 1970 of a proleptic Gregorian date (Howard Hinnant)
+	let y = if month <= 2 { year - 1 } else { year };
+	let era = y.div_euclid(400);
+	let yoe = y - era * 400;
+	let mp = (month + 9) % 12;
+	let doy = (153 * mp + 2) / 5 + day - 1;
+	let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	let days = era * 146_097 + doe - 719_468;
+
+	let sign = if zone.starts_with('-') { -1 } else { 1 };
+	let zone = zone.get(1..5)?;
+	let offset = zone[..2].parse::<i64>().ok()? * 3600
+		+ zone[2..].parse::<i64>().ok()? * 60;
+	let secs = days * 86_400 + clock[0] * 3600 + clock[1] * 60 + clock[2];
+	Some((secs - sign * offset) * 1000)
+}
+
+/// At most this much of the logs is read for the top pages.
+const TOP_READ: u64 = 50 << 20;
+/// Different paths counted, the rest (bots trying thousands) is left out.
+const TOP_PATHS: usize = 50_000;
+const TOP_LEN: usize = 50;
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Page {
+	path: String,
+	requests: i64,
+	/// answers 400 to 499
+	client_errors: i64,
+	/// 500 and above
+	server_errors: i64,
+	bytes: i64,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TopResp {
+	pages: Vec<Page>,
+	/// the most requested paths that answered 404
+	not_found: Vec<Page>,
+	/// the clients with the most requests
+	addresses: Vec<Address>,
+	/// the oldest request read when the logs don't go back to the start
+	/// of the period (rotated, or more than `TOP_READ`)
+	from: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Address {
+	ip: String,
+	requests: i64,
+	client_errors: i64,
+	server_errors: i64,
+	/// its most requested path
+	path: String,
+}
+
+/// The requests since `since` in the newest `TOP_READ` bytes of the
+/// logs, newest file first. Requests of the server itself don't count,
+/// like in the usage.
+async fn top_pages(files: &[PathBuf], since: i64, own: &[String]) -> TopResp {
+	use tokio::io::AsyncBufReadExt as _;
+
+	let mut pages: HashMap<String, Page> = HashMap::new();
+	let mut missing: HashMap<String, Page> = HashMap::new();
+	let mut ips: HashMap<String, Page> = HashMap::new();
+	// requests per address and path, for each address's top path
+	let mut ip_paths: HashMap<(String, String), i64> = HashMap::new();
+	let mut budget = TOP_READ;
+	let mut oldest = None;
+	let mut complete = false;
+
+	for path in files {
+		let Ok(mut f) = tokio::fs::File::open(path).await else {
+			continue;
+		};
+		let size = f.metadata().await.map(|m| m.len()).unwrap_or(0);
+		let start = size.saturating_sub(budget);
+		let _ = f.seek(std::io::SeekFrom::Start(start)).await;
+		budget -= size - start;
+		let mut r = tokio::io::BufReader::new(f.take(size - start));
+
+		let mut line = vec![];
+		// the first line is cut unless it is the file's
+		let mut skip = start > 0;
+		let mut first = true;
+		loop {
+			line.clear();
+			match r.read_until(b'\n', &mut line).await {
+				Ok(0) | Err(_) => break,
+				Ok(_) => {}
+			}
+			if std::mem::take(&mut skip) {
+				continue;
+			}
+			let text = String::from_utf8_lossy(&line);
+			let Some(hit) = parse_line(text.trim_end()) else {
+				continue;
+			};
+			if first {
+				first = false;
+				oldest = Some(oldest.map_or(hit.at, |o: i64| o.min(hit.at)));
+				complete |= hit.at < since;
+			}
+			if hit.at < since || own.iter().any(|o| o == hit.ip) {
+				continue;
+			}
+			count(&mut pages, hit.path, &hit);
+			if hit.status == 404 {
+				count(&mut missing, hit.path, &hit);
+			}
+			count(&mut ips, hit.ip, &hit);
+			let key = (hit.ip.to_string(), hit.path.to_string());
+			if ip_paths.len() < TOP_PATHS || ip_paths.contains_key(&key) {
+				*ip_paths.entry(key).or_default() += 1;
+			}
+		}
+		if complete || budget == 0 {
+			break;
+		}
+	}
+
+	let addresses = top(ips)
+		.into_iter()
+		.map(|a| {
+			let path = ip_paths
+				.iter()
+				.filter(|((ip, _), _)| *ip == a.path)
+				.max_by(|(x, a), (y, b)| a.cmp(b).then_with(|| y.1.cmp(&x.1)))
+				.map(|((_, path), _)| path.clone())
+				.unwrap_or_default();
+			Address {
+				ip: a.path,
+				requests: a.requests,
+				client_errors: a.client_errors,
+				server_errors: a.server_errors,
+				path,
+			}
+		})
+		.collect();
+
+	TopResp {
+		pages: top(pages),
+		not_found: top(missing),
+		addresses,
+		from: oldest.filter(|_| !complete).map(|o| o.max(since)),
+	}
+}
+
+/// Counts the request under `key`, a path or an address.
+fn count(pages: &mut HashMap<String, Page>, key: &str, hit: &Hit) {
+	if pages.len() >= TOP_PATHS && !pages.contains_key(key) {
+		return;
+	}
+	let p = pages.entry(key.to_string()).or_insert_with(|| Page {
+		path: key.to_string(),
+		..Default::default()
+	});
+	p.requests += 1;
+	p.bytes += hit.bytes;
+	match hit.status {
+		400..=499 => p.client_errors += 1,
+		500.. => p.server_errors += 1,
+		_ => {}
+	}
+}
+
+fn top(pages: HashMap<String, Page>) -> Vec<Page> {
+	let mut pages: Vec<Page> = pages.into_values().collect();
+	pages.sort_by(|a, b| {
+		b.requests
+			.cmp(&a.requests)
+			.then_with(|| a.path.cmp(&b.path))
+	});
+	pages.truncate(TOP_LEN);
+	pages
+}
+
 /// Bytes of each group: its directory and its databases.
 async fn group_disks(groups: &[Group]) -> HashMap<String, i64> {
 	let sizes = sh("mariadb -N -B -e 'SELECT table_schema, \
@@ -613,8 +866,40 @@ async fn stats_route(
 	}))
 }
 
+#[derive(Debug, Deserialize)]
+struct TopQuery {
+	hours: i64,
+}
+
+/// The most requested paths of a domain, from its access log. Only for
+/// admins: anyone can put text into a path (an AI agent's key must not
+/// read it) and IPs are personal data.
+async fn top_route(
+	_authed: Authed,
+	State(db): State<Db>,
+	axum::extract::Path(id): axum::extract::Path<i64>,
+	Query(q): Query<TopQuery>,
+) -> Result<Json<TopResp>> {
+	if !(1..=30 * 24).contains(&q.hours) {
+		return Err(Error::Invalid("hours is 1 to 720".into()));
+	}
+	let (_, d) = hosting::find_domain(&db.conn(), |d| d.id == id)?;
+
+	let log = format!("{NGINX_LOGS}/{}.access.log", d.name);
+	let files = [PathBuf::from(&log), PathBuf::from(format!("{log}.1"))];
+	let own: Vec<String> = crate::dns::own_ips()
+		.await
+		.into_iter()
+		.chain(["127.0.0.1".into(), "::1".into()])
+		.collect();
+	let since = now() - q.hours * HOUR;
+	Ok(Json(top_pages(&files, since, &own).await))
+}
+
 pub fn routes() -> Router<AppState> {
-	Router::new().route("/stats", get(stats_route))
+	Router::new()
+		.route("/stats", get(stats_route))
+		.route("/domains/{id}/top", get(top_route))
 }
 
 #[cfg(test)]
@@ -634,6 +919,94 @@ mod tests {
 		assert_eq!(s.requests, Some(2));
 		assert_eq!(s.errors, Some(1));
 		assert_eq!(s.tx, Some(1050));
+	}
+
+	#[test]
+	fn parses_a_line_without_the_query() {
+		let line = "1.2.3.4 - - [01/Nov/2026:17:37:10 +0100] \"GET /a/b?token=x HTTP/2.0\" 404 153 \"-\" \"x\"";
+		let hit = parse_line(line).unwrap();
+		assert_eq!(hit.ip, "1.2.3.4");
+		assert_eq!(hit.path, "/a/b");
+		assert_eq!(hit.status, 404);
+		assert_eq!(hit.bytes, 153);
+		// 2026-11-01 16:37:10 UTC
+		assert_eq!(hit.at, 1_793_551_030_000);
+		assert_eq!(log_time("01/Jan/1970:01:00:00 +0100"), Some(0),);
+	}
+
+	#[test]
+	fn paths_with_spaces_long_ones_and_garbage() {
+		let line = "1.2.3.4 - - [01/Nov/2026:17:37:10 +0100] \"GET /a b HTTP/1.1\" 400 0 \"-\" \"x\"";
+		assert_eq!(parse_line(line).unwrap().path, "/a b");
+
+		let long = format!(
+			"1.2.3.4 - - [01/Nov/2026:17:37:10 +0100] \"GET /{} HTTP/1.1\" 200 1 \"-\" \"x\"",
+			"ä".repeat(300)
+		);
+		assert!(parse_line(&long).unwrap().path.len() <= MAX_PATH);
+
+		for garbage in [
+			"",
+			"nonsense",
+			"1.2.3.4 - - [01/Nov/2026:17:37:10 +0100] \"\\x16\\x03\\x01\" 400 157 \"-\" \"-\"",
+			"1.2.3.4 - - [bad time] \"GET / HTTP/1.1\" 200 1 \"-\" \"x\"",
+			"1.2.3.4 - - [01/Nov/2026:17:37:10 +0100] \"GET / HTTP/1.1",
+		] {
+			assert_eq!(parse_line(garbage), None, "{garbage}");
+		}
+	}
+
+	#[tokio::test]
+	async fn top_pages_of_the_period_from_both_logs() {
+		let dir = std::env::temp_dir()
+			.join(format!("genco-top-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let line = |time: &str, path: &str, status: u16| {
+			format!(
+				"1.2.3.4 - - [{time} +0000] \"GET {path} HTTP/2.0\" {status} 10 \"-\" \"x\"\n"
+			)
+		};
+		let old = line("01/Nov/2026:08:00:00", "/old", 200)
+			+ &line("01/Nov/2026:11:00:00", "/a", 200);
+		let new = line("01/Nov/2026:12:00:00", "/a?x=1", 200)
+			+ &line("01/Nov/2026:12:00:01", "/missing", 404)
+			+ &line("01/Nov/2026:12:00:02", "/a", 502)
+			+ "garbage\n"
+			+ "127.0.0.1 - - [01/Nov/2026:12:00:03 +0000] \"GET /self HTTP/2.0\" 200 1 \"-\" \"x\"\n";
+		let files = [dir.join("log"), dir.join("log.1")];
+		std::fs::write(&files[0], new).unwrap();
+		std::fs::write(&files[1], old).unwrap();
+
+		// since 10:00 UTC: the old file is read up to its start
+		let since = log_time("01/Nov/2026:10:00:00 +0000").unwrap();
+		let own = ["127.0.0.1".to_string()];
+		let top = top_pages(&files, since, &own).await;
+
+		let a = Page {
+			path: "/a".into(),
+			requests: 3,
+			client_errors: 0,
+			server_errors: 1,
+			bytes: 30,
+		};
+		assert_eq!(top.pages[0], a);
+		assert_eq!(top.pages.len(), 2);
+		assert_eq!(top.not_found.len(), 1);
+		assert_eq!(top.not_found[0].path, "/missing");
+		assert_eq!(top.not_found[0].client_errors, 1);
+		assert_eq!(top.from, None);
+		let addresses = top.addresses;
+		assert_eq!(addresses.len(), 1);
+		assert_eq!(addresses[0].ip, "1.2.3.4");
+		assert_eq!(addresses[0].requests, 4);
+		assert_eq!(addresses[0].client_errors, 1);
+		assert_eq!(addresses[0].server_errors, 1);
+		assert_eq!(addresses[0].path, "/a");
+
+		// a period before the logs start
+		let top = top_pages(&files[..1], since, &own).await;
+		assert_eq!(top.from, log_time("01/Nov/2026:12:00:00 +0000"));
+		std::fs::remove_dir_all(&dir).unwrap();
 	}
 
 	#[test]

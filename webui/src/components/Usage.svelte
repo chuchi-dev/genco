@@ -7,6 +7,7 @@
 		type Stats,
 	} from '@/lib/api';
 	import LineChart, { type Series } from './LineChart.svelte';
+	import TopPages from './TopPages.svelte';
 
 	// usage over time of the server, a group or a domain
 	let {
@@ -195,6 +196,13 @@
 			</tbody>
 		</table>
 	</div>
+{/if}
+
+{#if kind === 'domain'}
+	<TopPages
+		domainId={Number(scope.split(':')[1])}
+		hours={(RANGES.find(r => r[0] === range)?.[2] ?? HOUR) / HOUR}
+	/>
 {/if}
 
 <style lang="scss">
