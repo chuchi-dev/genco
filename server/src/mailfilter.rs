@@ -139,19 +139,35 @@ CHROOT=/var/lib/postsrsd
 }
 
 /// Postfix's settings for the filter and SRS, empty values remove them.
+/// The canonical classes go back to postfix's defaults instead: postfix
+/// 3.10 (Debian 13) refuses an empty one and its cleanup dies on every
+/// mail.
 pub fn postfix_settings(on: bool) -> Vec<(&'static str, String)> {
 	let v = |s: &str| if on { s.to_string() } else { String::new() };
+	let or = |s: &str, default: &str| {
+		if on {
+			s.to_string()
+		} else {
+			default.to_string()
+		}
+	};
 	vec![
 		("smtpd_milters", v("inet:127.0.0.1:11332")),
 		("non_smtpd_milters", v("inet:127.0.0.1:11332")),
 		("milter_default_action", "accept".into()),
 		("milter_protocol", "6".into()),
 		("sender_canonical_maps", v("tcp:127.0.0.1:10001")),
-		("sender_canonical_classes", v("envelope_sender")),
+		(
+			"sender_canonical_classes",
+			or("envelope_sender", "envelope_sender, header_sender"),
+		),
 		("recipient_canonical_maps", v("tcp:127.0.0.1:10002")),
 		(
 			"recipient_canonical_classes",
-			v("envelope_recipient,header_recipient"),
+			or(
+				"envelope_recipient,header_recipient",
+				"envelope_recipient, header_recipient",
+			),
 		),
 	]
 }
@@ -224,6 +240,17 @@ pub async fn dkim_record(domain: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn canonical_classes_are_never_empty() {
+		for on in [true, false] {
+			for (name, value) in postfix_settings(on) {
+				if name.ends_with("_classes") {
+					assert!(!value.is_empty(), "{name} empty with on={on}");
+				}
+			}
+		}
+	}
 
 	#[test]
 	fn filter_settings_go_away_without_mail() {
