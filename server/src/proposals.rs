@@ -41,6 +41,11 @@ pub struct Proposal {
 	/// the agent's name
 	pub from: String,
 	pub text: String,
+	/// invisible and control characters removed from the text
+	pub removed_chars: i64,
+	/// the text has letters outside the Latin script, look-alikes of
+	/// Latin ones (Cyrillic а) may hide in names and addresses
+	pub mixed_scripts: bool,
 	/// the admin who got the mail, `None` for every admin
 	pub approver: Option<String>,
 	pub approver_email: Option<String>,
@@ -56,7 +61,8 @@ pub struct Proposal {
 }
 
 const SELECT: &str = "SELECT r.id, p.name, r.text, r.status, r.decided_by,
-	r.conversation_id, r.answer, r.created_at, r.peer_id, u.name, u.email
+	r.conversation_id, r.answer, r.created_at, r.peer_id, u.name, u.email,
+	r.removed_chars
 	FROM proposals r JOIN peers p ON p.id = r.peer_id
 	LEFT JOIN users u ON u.id = r.approver_id";
 
@@ -64,10 +70,13 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Proposal> {
 	let status: String = row.get(3)?;
 	let created_at: i64 = row.get(7)?;
 	let expired = status == "pending" && created_at + VALID_MS < now();
+	let text: String = row.get(2)?;
 	Ok(Proposal {
 		id: row.get(0)?,
 		from: row.get(1)?,
-		text: row.get(2)?,
+		mixed_scripts: non_latin(&text),
+		text,
+		removed_chars: row.get(11)?,
 		status: if expired { "expired".into() } else { status },
 		decided_by: row.get(4)?,
 		conversation_id: row.get(5)?,
@@ -76,6 +85,69 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Proposal> {
 		peer_id: row.get(8)?,
 		approver: row.get(9)?,
 		approver_email: row.get(10)?,
+	})
+}
+
+/// The text as the admin reads it: line breaks are `\n`, other whitespace
+/// is a plain space, and invisible characters (zero-width ones, soft
+/// hyphens, bidi controls that reorder what is shown) and control
+/// characters are removed. Returns the text and how many were removed.
+fn clean_text(text: &str) -> (String, usize) {
+	let mut removed = 0;
+	let mut out = String::with_capacity(text.len());
+	for c in text.replace("\r\n", "\n").chars() {
+		match c {
+			'\n' | '\t' => out.push(c),
+			'\r' | '\u{2028}' | '\u{2029}' => out.push('\n'),
+			c if invisible(c) || (c.is_control() && !c.is_whitespace()) => {
+				removed += 1;
+			}
+			c if c.is_whitespace() => out.push(' '),
+			c => out.push(c),
+		}
+	}
+	(out, removed)
+}
+
+/// The format characters (Unicode category Cf): shown as nothing, or they
+/// change the order or joining of the characters around them.
+fn invisible(c: char) -> bool {
+	matches!(
+		c,
+		'\u{AD}'
+			| '\u{600}'..='\u{605}'
+			| '\u{61C}' | '\u{6DD}'
+			| '\u{70F}' | '\u{890}'
+			| '\u{891}' | '\u{8E2}'
+			| '\u{180E}' | '\u{200B}'..='\u{200F}'
+			| '\u{202A}'..='\u{202E}'
+			| '\u{2060}'..='\u{2064}'
+			| '\u{2066}'..='\u{206F}'
+			| '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+			| '\u{110BD}' | '\u{110CD}'
+			| '\u{13430}'..='\u{1343F}'
+			| '\u{1BCA0}'..='\u{1BCA3}'
+			| '\u{1D173}'..='\u{1D17A}'
+			| '\u{E0001}' | '\u{E0020}'..='\u{E007F}'
+	)
+}
+
+/// Whether the text has a letter outside the Latin script (Cyrillic,
+/// Greek, fullwidth Latin, ...). Umlauts and accents are Latin.
+fn non_latin(text: &str) -> bool {
+	text.chars().any(|c| {
+		c.is_alphabetic()
+			&& !matches!(
+				c,
+				'a'..='z'
+					| 'A'..='Z' | '\u{AA}'
+					| '\u{B5}' | '\u{BA}'
+					| '\u{C0}'..='\u{24F}'
+					| '\u{1E00}'..='\u{1EFF}'
+					| '\u{2C60}'..='\u{2C7F}'
+					| '\u{A720}'..='\u{A7FF}'
+					| '\u{AB30}'..='\u{AB6F}'
+			)
 	})
 }
 
@@ -108,6 +180,7 @@ fn insert(
 	text: &str,
 	approver_id: Option<i64>,
 ) -> Result<i64> {
+	let (text, removed) = clean_text(text);
 	if text.trim().is_empty() {
 		return Err(Error::Invalid("the proposal has no text".into()));
 	}
@@ -129,8 +202,8 @@ fn insert(
 	}
 	conn.execute(
 		"INSERT INTO proposals (peer_id, text, approver_id, status,
-		created_at) VALUES (?1, ?2, ?3, 'pending', ?4)",
-		params![peer_id, text.trim(), approver_id, now()],
+		created_at, removed_chars) VALUES (?1, ?2, ?3, 'pending', ?4, ?5)",
+		params![peer_id, text.trim(), approver_id, now(), removed],
 	)?;
 	Ok(conn.last_insert_rowid())
 }
@@ -575,6 +648,36 @@ mod tests {
 		let p = peer(&conn);
 		assert!(insert(&conn, p, "  ", None).is_err());
 		assert!(insert(&conn, p, &"x".repeat(MAX_TEXT + 1), None).is_err());
+	}
+
+	#[test]
+	fn invisible_characters_are_removed() {
+		let (text, removed) = clean_text(
+			"Pay\u{200B} Grüße\u{AD}\r\nto \u{202E}evil\u{202C}\u{2066}x\u{2069}\
+			\u{0}\u{7F}\u{9B}\u{FEFF}\ta\u{A0}b\u{3000}c\u{2028}d\re",
+		);
+		assert_eq!(text, "Pay Grüße\nto evilx\ta b c\nd\ne");
+		assert_eq!(removed, 10);
+		assert_eq!(
+			clean_text("Café à la carte"),
+			("Café à la carte".into(), 0)
+		);
+	}
+
+	#[test]
+	fn non_latin_letters_are_marked() {
+		assert!(!non_latin("Grüße, Sören! Ça coûte 5 µs × 2 — ok ✓ 🙂"));
+		assert!(non_latin("send it to аdmin@example.ch")); // Cyrillic а
+		assert!(non_latin("ΑΒΓ"));
+		assert!(non_latin("Ｐay"));
+
+		let db = Db::memory();
+		let conn = db.conn();
+		let id =
+			insert(&conn, peer(&conn), "Upd\u{200D}ate Сraft", None).unwrap();
+		let p = get_one(&conn, id).unwrap();
+		assert_eq!((p.text.as_str(), p.removed_chars), ("Update Сraft", 1));
+		assert!(p.mixed_scripts);
 	}
 
 	#[test]

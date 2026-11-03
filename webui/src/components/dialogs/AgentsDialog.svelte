@@ -175,7 +175,7 @@
 			code: `${auth} ${location.origin}/api/databases/<name>/dump -o db.sql.gz`,
 		},
 		{
-			text: 'Propose a task to the server agent: the admin of "approver" gets the mail (left out: every admin), any admin decides; the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
+			text: 'Propose a task to the server agent: "text" is Markdown, a title line, then sections or lists (what and why, the steps, what changes, risks); the admin of "approver" gets the mail (left out: every admin), any admin decides; the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
 			code: `${auth} -H "Content-Type: application/json" \\\n  -d '{"text": "…", "approver": "admin@example.ch", "mailDelay": 10}' \\\n  ${location.origin}/api/proposals`,
 		},
 		{
@@ -312,6 +312,23 @@
 			</ListView>
 			{#if proposal}
 				<p><b>{proposal.from}</b> proposes:</p>
+				{#if proposal.mixedScripts}
+					<p class="error">
+						Contains non-Latin letters (e.g. Cyrillic) — check names
+						and addresses carefully.
+					</p>
+				{/if}
+				{#if proposal.removedChars}
+					<p class="hint">
+						{proposal.removedChars} invisible character{proposal.removedChars ===
+						1
+							? ''
+							: 's'} removed.
+					</p>
+				{/if}
+				{#if !proposal.text.includes('\n') && proposal.text.length > 400}
+					<p class="hint">The agent sent one long paragraph.</p>
+				{/if}
 				<div class="text selectable">
 					<Markdown text={proposal.text} />
 				</div>

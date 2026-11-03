@@ -330,6 +330,10 @@ export type Proposal = {
 	id: number;
 	from: string;
 	text: string;
+	/** invisible and control characters removed from the text */
+	removedChars: number;
+	/** letters outside the Latin script, look-alikes may hide in it */
+	mixedScripts: boolean;
 	/** the admin who decides, null for any */
 	approver: string | null;
 	approverEmail: string | null;

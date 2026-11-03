@@ -482,6 +482,14 @@ agent may:
   webhook (kind `proposal`) and `GET /api/proposals/<id>` shows the
   status and `answer`.
 
+  `text` is Markdown the admin reads before approving: a short title
+  line, then short sections or lists (what and why, the steps, what
+  changes, risks), not one long paragraph. genco removes invisible
+  characters (zero-width, bidi controls) and control characters from
+  it and turns other whitespace into spaces; the panel says how many
+  were removed and warns when the text has non-Latin letters (e.g.
+  Cyrillic look-alikes in a name or address).
+
 An admin's own token that downloads every database is in Start → API
 Tokens; deploy tokens are in a group's Deploy tab.
 

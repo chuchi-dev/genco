@@ -402,6 +402,9 @@ const MIGRATIONS: &[&str] = &[
 		until INTEGER
 	);
 "#,
+	r#"
+	ALTER TABLE proposals ADD COLUMN removed_chars INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly
