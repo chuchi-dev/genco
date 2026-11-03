@@ -43,8 +43,9 @@ pub struct Proposal {
 	pub text: String,
 	/// invisible and control characters removed from the text
 	pub removed_chars: i64,
-	/// the text has letters outside the Latin script, look-alikes of
-	/// Latin ones (Cyrillic а) may hide in names and addresses
+	/// the text has letters, digits or punctuation outside ASCII and the
+	/// common European letters: look-alikes of ASCII ones (Cyrillic а,
+	/// U+2215 ∕) may hide in names, addresses and commands
 	pub mixed_scripts: bool,
 	/// the admin who got the mail, `None` for every admin
 	pub approver: Option<String>,
@@ -74,7 +75,7 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Proposal> {
 	Ok(Proposal {
 		id: row.get(0)?,
 		from: row.get(1)?,
-		mixed_scripts: non_latin(&text),
+		mixed_scripts: look_alike(&text),
 		text,
 		removed_chars: row.get(11)?,
 		status: if expired { "expired".into() } else { status },
@@ -90,8 +91,9 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Proposal> {
 
 /// The text as the admin reads it: line breaks are `\n`, other whitespace
 /// is a plain space, and invisible characters (zero-width ones, soft
-/// hyphens, bidi controls that reorder what is shown) and control
-/// characters are removed. Returns the text and how many were removed.
+/// hyphens, bidi controls that reorder what is shown, variation selectors,
+/// blank letters, private-use characters) and control characters are
+/// removed. Returns the text and how many were removed.
 fn clean_text(text: &str) -> (String, usize) {
 	let mut removed = 0;
 	let mut out = String::with_capacity(text.len());
@@ -109,46 +111,103 @@ fn clean_text(text: &str) -> (String, usize) {
 	(out, removed)
 }
 
-/// The format characters (Unicode category Cf): shown as nothing, or they
-/// change the order or joining of the characters around them.
+/// All format characters (Unicode category Cf): shown as nothing, or they
+/// change the order or joining of the characters around them. And what
+/// else shows as nothing: variation selectors, fillers and blanks that
+/// count as letters, and private-use characters (any glyph a font likes).
 fn invisible(c: char) -> bool {
 	matches!(
 		c,
 		'\u{AD}'
-			| '\u{600}'..='\u{605}'
+			| '\u{34F}' | '\u{600}'..='\u{605}'
 			| '\u{61C}' | '\u{6DD}'
 			| '\u{70F}' | '\u{890}'
 			| '\u{891}' | '\u{8E2}'
-			| '\u{180E}' | '\u{200B}'..='\u{200F}'
+			| '\u{115F}' | '\u{1160}'
+			| '\u{17B4}' | '\u{17B5}'
+			| '\u{180B}'..='\u{180F}'
+			| '\u{200B}'..='\u{200F}'
 			| '\u{202A}'..='\u{202E}'
 			| '\u{2060}'..='\u{2064}'
 			| '\u{2066}'..='\u{206F}'
-			| '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+			| '\u{2800}' | '\u{3164}'
+			| '\u{E000}'..='\u{F8FF}'
+			| '\u{FE00}'..='\u{FE0F}'
+			| '\u{FEFF}' | '\u{FFA0}'
+			| '\u{FFF9}'..='\u{FFFB}'
 			| '\u{110BD}' | '\u{110CD}'
 			| '\u{13430}'..='\u{1343F}'
 			| '\u{1BCA0}'..='\u{1BCA3}'
 			| '\u{1D173}'..='\u{1D17A}'
 			| '\u{E0001}' | '\u{E0020}'..='\u{E007F}'
+			| '\u{E0100}'..='\u{E01EF}'
+			| '\u{F0000}'..='\u{10FFFF}'
 	)
 }
 
-/// Whether the text has a letter outside the Latin script (Cyrillic,
-/// Greek, fullwidth Latin, ...). Umlauts and accents are Latin.
-fn non_latin(text: &str) -> bool {
+/// Whether the text has a character that may pass for an ASCII one: a
+/// letter outside ASCII, Latin-1 and the common European letters
+/// (Cyrillic а, Greek ο, dotless ı, fullwidth Ｐ), a digit outside them
+/// (Arabic-Indic ٣, bold 𝟏) or punctuation like a dot, slash, colon or
+/// hyphen that isn't one (U+2024, U+2215, U+A789, U+2010).
+fn look_alike(text: &str) -> bool {
 	text.chars().any(|c| {
-		c.is_alphabetic()
-			&& !matches!(
-				c,
-				'a'..='z'
-					| 'A'..='Z' | '\u{AA}'
-					| '\u{B5}' | '\u{BA}'
-					| '\u{C0}'..='\u{24F}'
-					| '\u{1E00}'..='\u{1EFF}'
-					| '\u{2C60}'..='\u{2C7F}'
-					| '\u{A720}'..='\u{A7FF}'
-					| '\u{AB30}'..='\u{AB6F}'
-			)
+		if c.is_ascii() || matches!(c, '\u{A0}'..='\u{FF}') {
+			return false;
+		}
+		if c.is_alphabetic() || c.is_numeric() {
+			return !european_letter(c);
+		}
+		matches!(
+			c,
+			'\u{2010}'..='\u{2012}'
+				| '\u{2024}' | '\u{2025}'
+				| '\u{2027}' | '\u{2043}'
+				| '\u{2044}' | '\u{2212}'
+				| '\u{2215}' | '\u{2236}'
+				| '\u{2E3A}' | '\u{2E3B}'
+				| '\u{3002}' | '\u{A789}'
+				| '\u{FE50}'..='\u{FE6F}'
+				| '\u{FF00}'..='\u{FFEF}'
+		)
 	})
+}
+
+/// The letters of Latin Extended-A that German, French, Nordic, Polish,
+/// Czech, Hungarian, Baltic, Croatian, Romanian and Turkish words use,
+/// without the dotless ı, kra ĸ, ŉ and the long ſ.
+fn european_letter(c: char) -> bool {
+	matches!(
+		c,
+		'\u{100}'..='\u{130}'
+			| '\u{132}'..='\u{137}'
+			| '\u{139}'..='\u{148}'
+			| '\u{14A}'..='\u{17E}'
+			| '\u{218}'..='\u{21B}'
+	)
+}
+
+/// Cleans the proposals that still wait and came before the cleaning
+/// was complete, so none goes to the agent with characters the admin
+/// didn't see.
+pub fn clean_pending(db: &Db) -> rusqlite::Result<()> {
+	let conn = db.conn();
+	let pending = conn
+		.prepare("SELECT id, text FROM proposals WHERE status = 'pending'")?
+		.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+		.collect::<rusqlite::Result<Vec<_>>>()?;
+	for (id, text) in pending {
+		let (clean, removed) = clean_text(&text);
+		if removed == 0 && clean == text {
+			continue;
+		}
+		conn.execute(
+			"UPDATE proposals SET text = ?1,
+			removed_chars = removed_chars + ?2 WHERE id = ?3",
+			params![clean.trim(), removed, id],
+		)?;
+	}
+	Ok(())
 }
 
 fn list(conn: &Connection) -> rusqlite::Result<Vec<Proposal>> {
@@ -665,11 +724,31 @@ mod tests {
 	}
 
 	#[test]
-	fn non_latin_letters_are_marked() {
-		assert!(!non_latin("Grüße, Sören! Ça coûte 5 µs × 2 — ok ✓ 🙂"));
-		assert!(non_latin("send it to аdmin@example.ch")); // Cyrillic а
-		assert!(non_latin("ΑΒΓ"));
-		assert!(non_latin("Ｐay"));
+	fn hidden_characters_are_removed() {
+		let (text, removed) = clean_text(
+			"a\u{FE0F}b\u{E0101}c\u{34F}d\u{180B}e\u{17B4}f\u{2800}g\
+			\u{E000}h\u{F0001}i\u{10FFFD}j\u{3164}k\u{115F}l",
+		);
+		assert_eq!((text.as_str(), removed), ("abcdefghijkl", 11));
+	}
+
+	#[test]
+	fn look_alikes_are_marked() {
+		assert!(!look_alike(
+			"Grüße, Sören! Ça coûte 5 µs × 2 — ok ✓ 🙂 m² Łódź Dvořák \
+			Ærøskøbing Şişli Ţară …"
+		));
+		assert!(look_alike("send it to аdmin@example.ch")); // Cyrillic а
+		assert!(look_alike("ΑΒΓ"));
+		assert!(look_alike("Ｐay"));
+		assert!(look_alike("adm\u{131}n")); // dotless ı
+		assert!(look_alike("port ٣")); // Arabic-Indic 3
+		assert!(look_alike("example\u{2024}com"));
+		assert!(look_alike("/etc\u{2215}passwd"));
+		assert!(look_alike("host\u{A789}22"));
+		assert!(look_alike("rm \u{2010}rf"));
+		assert!(look_alike("a\u{1C3}b"));
+		assert!(look_alike("𝐚dmin"));
 
 		let db = Db::memory();
 		let conn = db.conn();
@@ -678,6 +757,31 @@ mod tests {
 		let p = get_one(&conn, id).unwrap();
 		assert_eq!((p.text.as_str(), p.removed_chars), ("Update Сraft", 1));
 		assert!(p.mixed_scripts);
+	}
+
+	#[test]
+	fn waiting_proposals_are_cleaned() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let p = peer(&conn);
+		for (text, status) in
+			[("a\u{FE0F}b", "pending"), ("c\u{FE0F}", "rejected")]
+		{
+			conn.execute(
+				"INSERT INTO proposals (peer_id, text, status, created_at,
+				removed_chars) VALUES (?1, ?2, ?3, ?4, 1)",
+				params![p, text, status, now()],
+			)
+			.unwrap();
+		}
+		drop(conn);
+		clean_pending(&db).unwrap();
+		let all = list(&db.conn()).unwrap();
+		let texts: Vec<_> = all
+			.iter()
+			.map(|p| (p.text.as_str(), p.removed_chars))
+			.collect();
+		assert_eq!(texts, [("c\u{FE0F}", 1), ("ab", 2)]);
 	}
 
 	#[test]

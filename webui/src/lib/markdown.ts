@@ -3,6 +3,9 @@
 // logs and sites). Paragraphs, headings, lists, code blocks, `code`,
 // **bold**, *italic* and [links](https://…) or to the panel's pages
 // ([the password](/passwords/7)), nothing else (no javascript:).
+// No text of the source is dropped: a proposal is approved as the admin
+// reads it, so what follows a code fence stays as the block's label and a
+// fence line with more text isn't a closing one.
 
 export type Inline =
 	| { t: 'text'; text: string }
@@ -26,7 +29,8 @@ export type Block =
 				inline: Inline[];
 			}[];
 	  }
-	| { t: 'code'; text: string };
+	/** `label`: the text after the opening fence, like `bash` */
+	| { t: 'code'; label: string; text: string };
 
 const LIST = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 
@@ -46,16 +50,14 @@ export function parse(md: string): Block[] {
 
 		if (line.trimStart().startsWith('```')) {
 			flush();
+			const label = line.trim().slice(3).trim();
 			const code: string[] = [];
 			i++;
-			while (
-				i < lines.length &&
-				!lines[i].trimStart().startsWith('```')
-			) {
+			while (i < lines.length && lines[i].trim() !== '```') {
 				code.push(lines[i]);
 				i++;
 			}
-			blocks.push({ t: 'code', text: code.join('\n') });
+			blocks.push({ t: 'code', label, text: code.join('\n') });
 			continue;
 		}
 

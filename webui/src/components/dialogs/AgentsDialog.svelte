@@ -25,6 +25,8 @@
 	let peers = $state<Peer[]>([]);
 	let selected = $state<number | null>(null);
 	let selectedProposal = $state<number | null>(null);
+	// the text exactly as stored, what the server agent gets
+	let raw = $state(false);
 	// the form: null is the list, 0 a new agent
 	let editing = $state<number | null>(null);
 	let form = $state({ name: '', webhookUrl: '', webhookAll: false });
@@ -314,8 +316,9 @@
 				<p><b>{proposal.from}</b> proposes:</p>
 				{#if proposal.mixedScripts}
 					<p class="error">
-						Contains non-Latin letters (e.g. Cyrillic) — check names
-						and addresses carefully.
+						Contains letters, digits or punctuation outside the
+						usual European ones (e.g. Cyrillic а, ∕ for /) — check
+						names, addresses and commands carefully.
 					</p>
 				{/if}
 				{#if proposal.removedChars}
@@ -330,7 +333,11 @@
 					<p class="hint">The agent sent one long paragraph.</p>
 				{/if}
 				<div class="text selectable">
-					<Markdown text={proposal.text} />
+					{#if raw}
+						<pre class="raw">{proposal.text}</pre>
+					{:else}
+						<Markdown text={proposal.text} hrefs />
+					{/if}
 				</div>
 				{#if proposal.status === 'pending'}
 					<p class="hint">
@@ -372,6 +379,9 @@
 					disabled={proposal?.status !== 'pending'}
 				>
 					Reject
+				</Button>
+				<Button onclick={() => (raw = !raw)} disabled={!proposal}>
+					{raw ? 'Show Formatted' : 'Show Raw Text'}
 				</Button>
 				<Button
 					onclick={() => proposal && setChat(proposal.conversationId)}
@@ -416,6 +426,13 @@
 		overflow: auto;
 		padding: 4px 8px;
 		background: #fff;
+	}
+
+	.raw {
+		margin: 0;
+		font-family: $mono;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
 
 	.task {

@@ -1,10 +1,14 @@
 <script lang="ts">
 	import { parse, type Inline } from '@/lib/markdown';
 
-	// the agent's text with its formatting, see lib/markdown
-	let { text }: { text: string } = $props();
+	// the agent's text with its formatting, see lib/markdown; `hrefs`
+	// shows where every link goes next to its text (a proposal)
+	let { text, hrefs = false }: { text: string; hrefs?: boolean } = $props();
 
 	const blocks = $derived(parse(text));
+
+	const plain = (nodes: Inline[]): string =>
+		nodes.map(n => ('children' in n ? plain(n.children) : n.text)).join('');
 </script>
 
 {#snippet spans(nodes: Inline[])}
@@ -19,6 +23,10 @@
 				href={n.href}
 				target="_blank"
 				rel="noreferrer noopener">{@render spans(n.children)}</a
+			>{/if}{#if n.t === 'a' && hrefs && plain(n.children) !== n.href}<span
+				class="href hint"
+			>
+				({n.href})</span
 			>{/if}
 	{/each}
 {/snippet}
@@ -30,6 +38,7 @@
 		{:else if b.t === 'h'}
 			<p class="h">{@render spans(b.inline)}</p>
 		{:else if b.t === 'code'}
+			{#if b.label}<div class="label hint">{b.label}</div>{/if}
 			<pre>{b.text}</pre>
 		{:else if b.t === 'list'}
 			<svelte:element this={b.ordered ? 'ol' : 'ul'}>
@@ -52,6 +61,8 @@
 
 	.md {
 		white-space: normal;
+		// nothing is pushed out of sight by long lines or spaces
+		overflow-wrap: anywhere;
 
 		p {
 			margin: 0 0 6px;
@@ -94,8 +105,13 @@
 			background: #f0f0f0;
 			padding: 4px 6px;
 			margin: 0 0 6px;
-			overflow-x: auto;
-			white-space: pre;
+			white-space: pre-wrap;
+		}
+
+		.label,
+		.href {
+			font-family: $mono;
+			font-size: 0.92em;
 		}
 
 		> :last-child {
