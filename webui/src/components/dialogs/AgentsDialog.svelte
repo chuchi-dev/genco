@@ -343,7 +343,11 @@
 						Rewritten for readability by {proposal.rewrittenBy}.
 					</p>
 				{:else if proposal.rewriteTried}
-					<p class="hint">Not rewritten (model unavailable).</p>
+					<p class="hint">
+						Not rewritten{proposal.rewriteNote
+							? `: ${proposal.rewriteNote}`
+							: '.'}
+					</p>
 				{/if}
 				<div class="text selectable">
 					{#if view === 'original'}

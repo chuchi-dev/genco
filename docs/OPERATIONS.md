@@ -586,12 +586,18 @@ agent may:
   title line, then what and why, the steps at a high level, what
   changes, risks), so the request may take up to 30 seconds. The admin
   approves that version and genco's agent gets it; the panel shows the
-  original too. A rewrite that has a name, address or number the
-  original doesn't have is dropped, and without a key, on an error or
-  a timeout the original goes as it is. genco removes invisible
-  characters (zero-width, bidi controls) and control characters from
-  the text and turns other whitespace into spaces; the panel says how
-  many were removed and warns when the original or the rewrite has
+  original too. A rewrite is dropped when it has a word with a digit,
+  dot, slash, @ or colon the original doesn't have as a whole word,
+  `code` that isn't in the original as it is, or none of the
+  original's negations and warnings ("not", "don't", "only", "keep",
+  "risk", "nicht", ...); then, and without a key, on an error or a
+  timeout, the original goes as it is and the panel says why ("Not
+  rewritten: timeout"). An agent has at most 10 undecided proposals,
+  those still being rewritten count too, so parallel requests can't
+  run up the model's bill. genco removes invisible characters
+  (zero-width, bidi controls) and control characters from the text
+  and turns other whitespace into spaces; the panel says how many were
+  removed and warns (the mail too) when the original or the rewrite has
   non-Latin letters (e.g. Cyrillic look-alikes in a name or address).
 
 An admin's own token that downloads every database is in Start → API

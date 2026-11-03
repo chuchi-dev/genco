@@ -354,8 +354,10 @@ export type Proposal = {
 	originalText: string;
 	/** the model that rewrote the text, null when it wasn't rewritten */
 	rewrittenBy: string | null;
-	/** false for proposals from before the rewrite */
+	/** created since rewrites exist, false for older proposals */
 	rewriteTried: boolean;
+	/** why it wasn't rewritten, e.g. "timeout" */
+	rewriteNote: string | null;
 	/** invisible and control characters removed from the original */
 	removedChars: number;
 	/** letters outside the Latin script, look-alikes may hide in it */

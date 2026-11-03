@@ -26,7 +26,7 @@ const MODELS: &[(&str, &str)] = &[
 ];
 
 /// Whether a key in the config reaches the model.
-fn reachable(cfg: &Config, id: &str) -> bool {
+pub(crate) fn reachable(cfg: &Config, id: &str) -> bool {
 	cfg.openrouter_key.is_some()
 		|| (cfg.anthropic_key.is_some() && id.starts_with("anthropic/"))
 }

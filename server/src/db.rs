@@ -434,6 +434,10 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE domain_groups ADD COLUMN cpu_percent INTEGER;
 	ALTER TABLE domain_groups ADD COLUMN tasks_max INTEGER;
 "#,
+	// why a proposal wasn't rewritten, shown in the panel (proposals.rs)
+	r#"
+	ALTER TABLE proposals ADD COLUMN rewrite_note TEXT;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

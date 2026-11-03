@@ -71,6 +71,11 @@ impl Runner {
 		}))
 	}
 
+	/// The llm client, shared with the proposals' rewrite.
+	pub fn llm(&self) -> &Llm {
+		&self.0.llm
+	}
+
 	/// Starts the loop for a conversation if it is not already running. A
 	/// running loop picks up new messages by itself.
 	pub fn start(&self, id: i64) {
