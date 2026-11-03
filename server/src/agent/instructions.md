@@ -103,6 +103,14 @@ field in the panel.
   web server with the domain as Host and X-Forwarded-Proto: a site that
   still runs elsewhere (a container, the old server) until it moves into
   genco, then `genco domain set <d> --kind php ...` switches it.
+- `--zero-downtime true` (Node and Rust, off by default, only when the
+  admin asks): a deploy or rollback starts the new process as
+  `genco-<group>-<domain>_b.service` on port 30000 + id (or back on
+  slot A), switches nginx once it listens and then stops the old one;
+  if it doesn't listen within 60 s the old one stays and the deploy
+  fails. The catch: both run for a few seconds, so migrations must suit
+  the old code too, jobs inside the app may run twice, SQLite may lock
+  briefly. Apply Changes still restarts the live process in place.
 - `--www true` makes www.<domain> redirect to the domain (its own
   certificate once its DNS points here); use it for top level domains
   instead of a second domain for www.
@@ -111,7 +119,7 @@ field in the panel.
   port of its own): `genco worker add <name> --group <g> --dir
   current/craft --command "php craft queue/listen --verbose" [--port
   5426]`. With `--port` the port is open to the internet (not 20000 to
-  29999, nor genco's own) and the worker gets `PORT`; without, it may
+  39999, nor genco's own) and the worker gets `PORT`; without, it may
   not listen at all. They restart when they stop and after every
   deploy. `genco worker list|set|delete`.
 - Schedules run a command at times like cron, as

@@ -13,6 +13,7 @@ mod build;
 mod config;
 mod routes;
 mod shell;
+mod slot;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -382,7 +383,7 @@ async fn run_rollback(ctx: &Ctx, id: i64, group: &Group) {
 			));
 		}
 		switch(log, &base, &release, &render::group_user(&group.name)).await?;
-		restart(log, group).await;
+		restart(ctx, log, group).await?;
 		Ok("rolled back, the database stays as it is")
 	})
 	.await;

@@ -388,6 +388,10 @@ const MIGRATIONS: &[&str] = &[
 	r#"
 	ALTER TABLE domains ADD COLUMN www INTEGER NOT NULL DEFAULT 0;
 "#,
+	r#"
+	ALTER TABLE domains ADD COLUMN zero_downtime INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE domains ADD COLUMN slot_b INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

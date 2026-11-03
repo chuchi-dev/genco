@@ -22,11 +22,12 @@ pub const PANEL: &str = "panel";
 pub const REPO: &str = "repo";
 
 /// Ports a worker may not take: genco's panel, the databases, Redis,
-/// Rspamd, postsrsd and the apps' (20000 + domain id).
+/// Rspamd, postsrsd and the apps' (20000 + domain id, 30000 + id for the
+/// second slot of one that restarts without downtime).
 const TAKEN: &[u16] = &[
 	3306, 4100, 4190, 5432, 6379, 10001, 10002, 11332, 11333, 11334,
 ];
-const APP_PORTS: std::ops::RangeInclusive<u16> = 20000..=29999;
+const APP_PORTS: std::ops::RangeInclusive<u16> = 20000..=39999;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,7 +139,7 @@ fn check_port(port: u16) -> Result<()> {
 	if port < 1024 || TAKEN.contains(&port) || APP_PORTS.contains(&port) {
 		return Err(Error::Invalid(format!(
 			"port {port} isn't free for a worker: 1024 to 65535, not 20000 \
-			to 29999 (the apps') and not genco's own"
+			to 39999 (the apps') and not genco's own"
 		)));
 	}
 	Ok(())
@@ -617,6 +618,7 @@ mod tests {
 		assert!(check_port(5426).is_ok());
 		assert!(check_port(80).is_err());
 		assert!(check_port(20005).is_err());
+		assert!(check_port(30005).is_err());
 		assert!(check_port(3306).is_err());
 		assert!(check_command("a\nExecStartPre=x").is_err());
 		assert!(check_every_chars("Mon *-*-* 03:00").is_ok());

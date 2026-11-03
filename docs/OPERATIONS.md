@@ -102,6 +102,7 @@ into the server's config, and the CLI does the same:
 | Back up now | `genco backup` |
 | Add a client, group, domain or database | `genco client add`, `genco group add`, `genco domain add`, `genco database add` (see `--help`) |
 | Change a domain | `genco domain set <name> --php 8.4` |
+| Restart a Node or Rust app without downtime | `genco domain set <name> --zero-downtime true`, then `genco apply` (see below) |
 | Which sender domains apps may use (SPF) | `genco mail senders` |
 | DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
 | A PostgreSQL database | `genco database add <name> --group <g> --postgres`, then `genco apply` (installs PostgreSQL the first time) |
@@ -131,6 +132,22 @@ The sites don't depend on genco running. nginx, php-fpm, the apps and
 MariaDB are normal systemd services:
 - the apps run as `genco-<group>-<domain>.service`;
 - PHP runs as `genco-<group>-php<version>.service`.
+
+- an app with "Restart without downtime" has a second unit
+  `genco-<group>-<domain>_b.service` on port 30000 + domain id; the
+  two take turns, only the live one is enabled.
+
+Restart without downtime (a domain option for Node and Rust apps, off
+by default): a deploy or rollback starts the new release in the slot
+that isn't live, waits up to 60 s until it accepts connections on its
+port, points nginx at it (`nginx -t`, reload) and then stops the old
+process. If the new one never listens it is stopped, the old one stays
+live and the deploy fails. Apply Changes (a new environment variable)
+still restarts the live process in place. It is opt-in because old and
+new process run at the same time for a few seconds: migrations must
+work with the old code for that moment, background jobs inside the app
+may run twice and SQLite apps may see a short lock. Switching it off
+goes back to slot A with the next `genco apply`.
 
 `systemctl list-units 'genco-*'` shows them. A broken genco binary only
 stops the panel and new changes. To get a working binary back, run the

@@ -117,6 +117,10 @@ pub struct DomainOpts {
 	/// www.<domain> redirects to the domain: true or false
 	#[clap(long)]
 	www: Option<bool>,
+	/// node or rust: a restart starts the new process beside the old one
+	/// and switches over once it listens: true or false
+	#[clap(long)]
+	zero_downtime: Option<bool>,
 }
 
 #[derive(Debug, Parser)]
@@ -353,6 +357,7 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 					nginx_extra: opts.nginx_extra.unwrap_or_default(),
 					upstream: opts.upstream,
 					www: opts.www.unwrap_or(false),
+					zero_downtime: opts.zero_downtime.unwrap_or(false),
 				},
 			};
 			let id = hosting::insert_domain(conn, &req)?;
@@ -400,6 +405,9 @@ pub fn domain(conn: &Connection, cmd: DomainCmd) -> Result<String> {
 					_ => None,
 				},
 				www: opts.www.unwrap_or(d.www),
+				zero_downtime: opts.zero_downtime.unwrap_or(
+					d.zero_downtime && matches!(kind, Kind::Node | Kind::Rust),
+				),
 			};
 			hosting::set_domain(conn, d.id, &req)?;
 			Ok("changed, run genco apply".into())

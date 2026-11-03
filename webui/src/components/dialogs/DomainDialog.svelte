@@ -24,6 +24,7 @@
 	let command = $state<string | null>(null);
 	let publicDir = $state<string | null>(null);
 	let upstream = $state<string | null>(null);
+	let zeroDowntime = $state(false);
 	// on for a top level domain (example.ch), not for admin.example.ch,
 	// until the admin sets it
 	let wwwSet = $state<boolean | null>(null);
@@ -41,6 +42,7 @@
 				publicDir,
 				upstream,
 				www,
+				zeroDowntime,
 			}),
 		);
 	}
@@ -70,6 +72,7 @@
 			bind:publicDir
 			bind:upstream
 			bind:www={() => www, v => (wwwSet = v)}
+			bind:zeroDowntime
 			name={name.trim()}
 		/>
 	</Form>

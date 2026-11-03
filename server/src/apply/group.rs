@@ -37,7 +37,14 @@ pub(super) async fn start_units(
 	}
 
 	for d in g.domains.iter().filter(|d| render::has_app(d)) {
-		let unit = render::app_unit(&g.name, &d.name);
+		let unit = render::live_unit(&g.name, d);
+		// only the live slot starts at boot, a deploy enables the other
+		// when it switches (and holds the apply lock meanwhile)
+		let idle = render::live_slot(d).other();
+		if render::slots(d).contains(&idle) {
+			let idle = render::slot_unit(&g.name, &d.name, idle);
+			r.run(&["systemctl", "disable", "-q", &idle]).await;
+		}
 		let script = render::app_script(&d.name);
 		let restart = changed.contains(&render::unit_path(&unit))
 			|| changed.contains(&script)

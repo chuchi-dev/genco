@@ -162,6 +162,12 @@ pub struct Domain {
 	pub upstream: Option<String>,
 	/// www.<name> redirects here
 	pub www: bool,
+	/// of a Node or Rust app: a restart starts the new process beside the
+	/// old one and switches nginx over once it listens, see render::Slot
+	pub zero_downtime: bool,
+	/// slot B's unit and port are the live ones (only with zero_downtime)
+	#[serde(skip)]
+	pub slot_b: bool,
 	/// of a Node or Rust app, never to the browser (secrets), see appenv
 	#[serde(skip)]
 	pub env: Vec<crate::appenv::EnvVar>,
@@ -220,7 +226,8 @@ impl Engine {
 pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 	let mut stmt = conn.prepare(
 		"SELECT id, group_id, name, kind, php_version, root, command,
-		nginx_extra, public_dir, env, upstream, www FROM domains
+		nginx_extra, public_dir, env, upstream, www, zero_downtime, slot_b
+		FROM domains
 		ORDER BY name",
 	)?;
 	let domains: Vec<Domain> = stmt
@@ -238,6 +245,8 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 				env: crate::appenv::parse(&row.get::<_, String>(9)?),
 				upstream: row.get(10)?,
 				www: row.get(11)?,
+				zero_downtime: row.get(12)?,
+				slot_b: row.get(13)?,
 			})
 		})?
 		.collect::<rusqlite::Result<_>>()?;
@@ -715,6 +724,9 @@ pub struct DomainSettings {
 	/// www.<name> redirects to the domain
 	#[serde(default)]
 	pub www: bool,
+	/// Node and Rust: restarts without downtime
+	#[serde(default)]
+	pub zero_downtime: bool,
 }
 
 impl DomainSettings {
@@ -724,6 +736,11 @@ impl DomainSettings {
 		check_command(self.kind, &self.command)?;
 		check_upstream(self.kind, &self.upstream)?;
 		check_root(&self.root)?;
+		if self.zero_downtime && !matches!(self.kind, Kind::Node | Kind::Rust) {
+			return Err(Error::Invalid(
+				"only Node and Rust apps restart without downtime".into(),
+			));
+		}
 		public_dir(self.kind, &self.public_dir)
 	}
 }
@@ -781,8 +798,9 @@ pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 
 	conn.execute(
 		"INSERT INTO domains (group_id, name, kind, php_version, root,
-		command, nginx_extra, created_at, public_dir, upstream, www)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+		command, nginx_extra, created_at, public_dir, upstream, www,
+		zero_downtime)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
 		params![
 			req.group_id,
 			name,
@@ -794,7 +812,8 @@ pub fn insert_domain(conn: &Connection, req: &DomainReq) -> Result<i64> {
 			now(),
 			public_dir,
 			upstream(s),
-			s.www
+			s.www,
+			s.zero_downtime
 		],
 	)?;
 	Ok(conn.last_insert_rowid())
@@ -826,7 +845,9 @@ pub fn set_domain(
 	let n = conn.execute(
 		"UPDATE domains SET kind = ?1, php_version = ?2, root = ?3,
 		command = ?4, nginx_extra = ?5, public_dir = ?6, upstream = ?7,
-		www = ?8 WHERE id = ?9",
+		www = ?8, zero_downtime = ?9,
+		-- switched off, slot A is the live one again (apply starts it)
+		slot_b = slot_b AND ?9 WHERE id = ?10",
 		params![
 			req.kind.as_str(),
 			req.php_version,
@@ -836,6 +857,7 @@ pub fn set_domain(
 			public_dir,
 			upstream(req),
 			req.www,
+			req.zero_downtime,
 			id
 		],
 	)?;
@@ -994,6 +1016,46 @@ mod tests {
 		assert!(check_www(&conn, "blog.ch", true).is_err());
 		assert!(check_www(&conn, "blog.ch", false).is_ok());
 		assert!(check_www(&conn, "other.ch", true).is_ok());
+	}
+
+	#[test]
+	fn zero_downtime_only_for_apps_and_off_goes_back_to_slot_a() {
+		let db = Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+			VALUES ('g', 1, 0);
+			INSERT INTO domains (group_id, name, kind, created_at,
+			command, zero_downtime, slot_b)
+			VALUES (1, 'shop.ch', 'node', 0, 'node index.js', 1, 1);",
+		)
+		.unwrap();
+		let mut s = DomainSettings {
+			kind: Kind::Php,
+			php_version: Some("8.4".into()),
+			root: "public".into(),
+			command: None,
+			public_dir: None,
+			nginx_extra: String::new(),
+			upstream: None,
+			www: false,
+			zero_downtime: true,
+		};
+		assert!(set_domain(&conn, 1, &s).is_err());
+
+		s.kind = Kind::Node;
+		s.php_version = None;
+		s.command = Some("node index.js".into());
+		set_domain(&conn, 1, &s).unwrap();
+		let slot = |conn: &Connection| -> bool {
+			conn.query_row("SELECT slot_b FROM domains", [], |r| r.get(0))
+				.unwrap()
+		};
+		assert!(slot(&conn));
+		s.zero_downtime = false;
+		set_domain(&conn, 1, &s).unwrap();
+		assert!(!slot(&conn));
 	}
 
 	#[test]

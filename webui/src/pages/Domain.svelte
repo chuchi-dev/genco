@@ -32,6 +32,7 @@
 	let publicDir = $state(start.publicDir);
 	let upstream = $state(start.upstream);
 	let www = $state(start.www);
+	let zeroDowntime = $state(start.zeroDowntime);
 	let nginxExtra = $state(start.nginxExtra);
 	let files = $state<ConfigFile[] | null>(null);
 
@@ -46,7 +47,8 @@
 					f.path.endsWith(`/${name}.conf`) ||
 					f.path.endsWith(`/www.${name}.conf`) ||
 					f.path.endsWith(`/${name}.sh`) ||
-					f.path.endsWith(`-${name}.service`),
+					f.path.endsWith(`-${name}.service`) ||
+					f.path.endsWith(`-${name}_b.service`),
 			);
 		});
 	});
@@ -60,6 +62,7 @@
 			publicDir,
 			upstream,
 			www,
+			zeroDowntime,
 			nginxExtra,
 		});
 	}
@@ -99,6 +102,11 @@
 		<dt>Port:</dt>
 		<dd>
 			<code>127.0.0.1:{20000 + domain.id}</code>
+			{#if domain.zeroDowntime}
+				or
+				<code>{30000 + domain.id}</code>
+				(the slots take turns)
+			{/if}
 			(<code>PORT</code>
 			and
 			<code>HOST</code>
@@ -116,6 +124,7 @@
 		bind:publicDir
 		bind:upstream
 		bind:www
+		bind:zeroDowntime
 		name={domain.name}
 	/>
 	<label for="d-extra">Extra nginx:</label>

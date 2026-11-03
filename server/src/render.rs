@@ -38,6 +38,87 @@ pub fn app_unit(group: &str, domain: &str) -> String {
 	format!("genco-{group}-{domain}.service")
 }
 
+/// An app that restarts without downtime has two units: A is the usual
+/// one, B its twin on another port. A restart starts the one that
+/// doesn't run, nginx switches to it once it listens, then the old one
+/// stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slot {
+	A,
+	B,
+}
+
+impl Slot {
+	pub fn other(self) -> Self {
+		match self {
+			Self::A => Self::B,
+			Self::B => Self::A,
+		}
+	}
+}
+
+/// The slot nginx proxies to; always A without zero downtime.
+pub fn live_slot(domain: &Domain) -> Slot {
+	if domain.zero_downtime && domain.slot_b {
+		Slot::B
+	} else {
+		Slot::A
+	}
+}
+
+/// The slots that have a unit.
+pub fn slots(domain: &Domain) -> &'static [Slot] {
+	if domain.zero_downtime {
+		&[Slot::A, Slot::B]
+	} else {
+		&[Slot::A]
+	}
+}
+
+/// `_` can't be in a domain name: no other domain's unit has this name.
+pub fn slot_unit(group: &str, domain: &str, slot: Slot) -> String {
+	match slot {
+		Slot::A => app_unit(group, domain),
+		Slot::B => format!("genco-{group}-{domain}_b.service"),
+	}
+}
+
+/// The unit of the app that runs now.
+pub fn live_unit(group: &str, domain: &Domain) -> String {
+	slot_unit(group, &domain.name, live_slot(domain))
+}
+
+/// How a deploy restarts an app.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Restart {
+	InPlace {
+		unit: String,
+	},
+	/// start `start`, wait for `port`, point nginx at `to`, stop `stop`
+	Switch {
+		start: String,
+		port: u16,
+		to: Slot,
+		stop: String,
+	},
+}
+
+pub fn restart(group: &str, domain: &Domain) -> Restart {
+	let live = live_slot(domain);
+	if !domain.zero_downtime {
+		return Restart::InPlace {
+			unit: slot_unit(group, &domain.name, live),
+		};
+	}
+	let to = live.other();
+	Restart::Switch {
+		start: slot_unit(group, &domain.name, to),
+		port: slot_port(domain, to),
+		to,
+		stop: slot_unit(group, &domain.name, live),
+	}
+}
+
 pub fn worker_unit(group: &str, name: &str) -> String {
 	format!("genco-{group}-worker-{name}.service")
 }
@@ -126,9 +207,14 @@ pub fn unit_path(unit: &str) -> PathBuf {
 
 pub const FIREWALL: &str = "/etc/genco/nftables.conf";
 
-/// Node and Rust apps listen on 127.0.0.1 on this port, see `firewall`.
-fn app_port(domain: &Domain) -> u16 {
-	20000 + domain.id as u16
+/// Node and Rust apps listen on 127.0.0.1 on this port, see `firewall`;
+/// slot B on its own (workers can't take either, see procs).
+pub fn slot_port(domain: &Domain, slot: Slot) -> u16 {
+	let base = match slot {
+		Slot::A => 20000,
+		Slot::B => 30000,
+	};
+	base + domain.id as u16
 }
 
 /// The public ports of the workers, open in the firewall.
@@ -222,11 +308,13 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 				content: crate::appenv::file(&d.env, smtp(group)),
 				private_to: Some("root".into()),
 			});
-			files.push(File {
-				path: unit_path(&app_unit(g, &d.name)),
-				content: app_service(group, d),
-				private_to: None,
-			});
+			for &slot in slots(d) {
+				files.push(File {
+					path: unit_path(&slot_unit(g, &d.name, slot)),
+					content: app_service(group, d, slot),
+					private_to: None,
+				});
+			}
 		}
 	}
 
@@ -420,7 +508,7 @@ fn nginx_site(group: &Group, d: &Domain, cert: bool) -> String {
 ",
 			public_files(group, d),
 			if d.public_dir.is_some() { "@app" } else { "/" },
-			app_port(d)
+			slot_port(d, live_slot(d))
 		)),
 		Kind::Proxy => {
 			let upstream = d.upstream.as_deref().unwrap_or("http://127.0.0.1");
@@ -611,8 +699,9 @@ WantedBy=multi-user.target
 	)
 }
 
-fn app_service(group: &Group, d: &Domain) -> String {
+fn app_service(group: &Group, d: &Domain, slot: Slot) -> String {
 	let g = &group.name;
+	let port = slot_port(d, slot);
 	let kind = if d.kind == Kind::Node { "Node" } else { "Rust" };
 	let node = if d.kind == Kind::Node {
 		"Environment=NODE_ENV=production\n"
@@ -638,10 +727,9 @@ WantedBy=multi-user.target
 ",
 		name = d.name,
 		dir = group_dir(g).join(&d.root).display(),
-		port = app_port(d),
 		script = app_script(&d.name).display(),
 		env = app_env(&d.name).display(),
-		sandbox = sandbox(g, Some(app_port(d))),
+		sandbox = sandbox(g, Some(port)),
 	)
 }
 
@@ -767,13 +855,15 @@ flush set inet filter genco_public
 	}
 	for g in groups {
 		for d in g.domains.iter().filter(|d| has_app(d)) {
-			// nft resolves the user names when it loads the file
-			rules.push_str(&format!(
-				"\t\ttcp dport {} meta skuid != {{ 0, www-data, {} }} \
-				reject with tcp reset\n",
-				app_port(d),
-				group_user(&g.name),
-			));
+			for &slot in slots(d) {
+				// nft resolves the user names when it loads the file
+				rules.push_str(&format!(
+					"\t\ttcp dport {} meta skuid != {{ 0, www-data, {} }} \
+					reject with tcp reset\n",
+					slot_port(d, slot),
+					group_user(&g.name),
+				));
+			}
 		}
 	}
 
@@ -813,6 +903,8 @@ mod tests {
 			upstream: (kind == Kind::Proxy)
 				.then(|| "http://127.0.0.1:8081".into()),
 			www: false,
+			zero_downtime: false,
+			slot_b: false,
 		}
 	}
 
@@ -920,6 +1012,72 @@ mod tests {
 		assert!(fw.contains(
 			"meta skuid { g-shop } ip daddr 127.0.0.0/8 tcp dport { 4100, 6379"
 		));
+	}
+
+	#[test]
+	fn zero_downtime_adds_slot_b_and_nginx_follows_the_live_slot() {
+		let mut d = domain(5, "shop.ch", Kind::Node);
+		d.zero_downtime = true;
+		let g = group(vec![d.clone()]);
+		let files = group_files(&g, &HashSet::new());
+
+		let site = find(&files, "/etc/nginx/genco/shop.ch.conf");
+		assert!(site.contains("proxy_pass http://127.0.0.1:20005;"));
+		let a = find(&files, "/etc/systemd/system/genco-shop-shop.ch.service");
+		assert!(a.contains("PORT=20005"));
+		let b =
+			find(&files, "/etc/systemd/system/genco-shop-shop.ch_b.service");
+		assert!(b.contains("PORT=30005"));
+		assert!(b.contains("SocketBindAllow=tcp:30005\nSocketBindDeny=any"));
+		let fw = firewall(std::slice::from_ref(&g), 4100);
+		assert!(fw.contains("tcp dport 20005 meta skuid"));
+		assert!(fw.contains("tcp dport 30005 meta skuid"));
+
+		d.slot_b = true;
+		let files = group_files(&group(vec![d.clone()]), &HashSet::new());
+		let site = find(&files, "/etc/nginx/genco/shop.ch.conf");
+		assert!(site.contains("proxy_pass http://127.0.0.1:30005;"));
+
+		// switched off, slot B is gone and nginx is back at A
+		d.zero_downtime = false;
+		let g = group(vec![d]);
+		let files = group_files(&g, &HashSet::new());
+		let site = find(&files, "/etc/nginx/genco/shop.ch.conf");
+		assert!(site.contains("proxy_pass http://127.0.0.1:20005;"));
+		assert!(!files.iter().any(|f| f.path.ends_with("shop.ch_b.service")));
+		assert!(!firewall(&[g], 4100).contains("30005"));
+	}
+
+	#[test]
+	fn restart_switches_slots_only_with_zero_downtime() {
+		let mut d = domain(5, "shop.ch", Kind::Rust);
+		assert_eq!(
+			restart("shop", &d),
+			Restart::InPlace {
+				unit: "genco-shop-shop.ch.service".into()
+			}
+		);
+
+		d.zero_downtime = true;
+		assert_eq!(
+			restart("shop", &d),
+			Restart::Switch {
+				start: "genco-shop-shop.ch_b.service".into(),
+				port: 30005,
+				to: Slot::B,
+				stop: "genco-shop-shop.ch.service".into(),
+			}
+		);
+		d.slot_b = true;
+		assert_eq!(
+			restart("shop", &d),
+			Restart::Switch {
+				start: "genco-shop-shop.ch.service".into(),
+				port: 20005,
+				to: Slot::A,
+				stop: "genco-shop-shop.ch_b.service".into(),
+			}
+		);
 	}
 
 	#[test]

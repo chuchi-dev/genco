@@ -3,6 +3,7 @@
 //! runner), check the binaries, switch `current`, restart, prune.
 
 use super::*;
+use crate::render::Restart;
 
 pub(super) async fn deploy(ctx: &Ctx, id: i64, log: &mut Log) -> Res<()> {
 	let (d, group) = {
@@ -55,7 +56,7 @@ pub(super) async fn deploy(ctx: &Ctx, id: i64, log: &mut Log) -> Res<()> {
 			group
 		}
 	};
-	restart(log, &group).await;
+	after = after.and(restart(ctx, log, &group).await);
 	prune(&shell, log, &base).await;
 	after.map_err(|e| format!("{e}, the new release is live, check the site"))
 }
@@ -426,20 +427,58 @@ async fn sync_procs(
 	hosting::find_group(&ctx.db.conn(), group.id).map_err(|e| e.to_string())
 }
 
-/// PHP drops its cached code, the apps start with the new release.
-pub(super) async fn restart(log: &mut Log, group: &Group) {
+/// PHP drops its cached code, the apps start with the new release. Fails
+/// when an app that restarts without downtime didn't come up, its old
+/// process stays live.
+pub(super) async fn restart(
+	ctx: &Ctx,
+	log: &mut Log,
+	group: &Group,
+) -> Res<()> {
 	for v in render::php_versions(group) {
 		let unit = render::php_unit(&group.name, v);
 		systemctl(log, "reload", &unit).await;
 	}
+
+	let mut res = Ok(());
 	for d in group.domains.iter().filter(|d| render::has_app(d)) {
-		let unit = render::app_unit(&group.name, &d.name);
-		systemctl(log, "restart", &unit).await;
+		match render::restart(&group.name, d) {
+			Restart::InPlace { unit } => {
+				systemctl(log, "restart", &unit).await;
+			}
+			Restart::Switch { start, stop, .. }
+				if !render::unit_path(&start).exists() =>
+			{
+				log.line(&format!(
+					"{start} isn't there yet (Apply Changes writes it), \
+					restarting in place"
+				))
+				.await;
+				systemctl(log, "restart", &stop).await;
+			}
+			Restart::Switch {
+				start,
+				port,
+				to,
+				stop,
+			} => {
+				let switch = slot::Switch {
+					domain: d,
+					start: &start,
+					port,
+					to,
+					stop: &stop,
+				};
+				res = res.and(switch.run(ctx, log).await);
+			}
+		}
 	}
+
 	for w in &group.workers {
 		let unit = render::worker_unit(&group.name, &w.name);
 		systemctl(log, "restart", &unit).await;
 	}
+	res
 }
 
 pub(super) async fn systemctl(log: &mut Log, action: &str, unit: &str) {

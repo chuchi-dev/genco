@@ -110,6 +110,8 @@ export type Domain = {
 	upstream: string | null;
 	/** www.<name> redirects to it */
 	www: boolean;
+	/** of an app: restarts start the new process beside the old one */
+	zeroDowntime: boolean;
 };
 
 /** 'repo': from genco.toml, changes only with the repository */

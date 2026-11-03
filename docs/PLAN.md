@@ -315,8 +315,9 @@ Still open:
   (.env) too. Narrower (ACLs on the web roots only) breaks uploads in
   `shared/` behind links (Craft's web/assets): needs a model per shared
   folder first.
-- An app restart (deploy, rollback) answers 502 for about a second; no
-  downtime would need the new process to start before the old one stops.
+- An app restart (deploy, rollback) answers 502 for about a second
+  unless the domain has "Restart without downtime" (opt-in, two slots);
+  Apply Changes still restarts in place.
 - Drop-down menus (Start, Run, conversations) could share one component.
 - A group's PostgreSQL role sees the names of the other databases
   (pg_database), not their content.

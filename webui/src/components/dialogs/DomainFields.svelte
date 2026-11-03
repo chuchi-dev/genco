@@ -10,6 +10,7 @@
 		publicDir = $bindable(),
 		upstream = $bindable(),
 		www = $bindable(),
+		zeroDowntime = $bindable(),
 		name,
 	}: {
 		kind: Kind;
@@ -19,6 +20,7 @@
 		publicDir: string | null;
 		upstream: string | null;
 		www: boolean;
+		zeroDowntime: boolean;
 		/** the domain's name, for the www option */
 		name: string;
 	} = $props();
@@ -31,7 +33,10 @@
 		const isApp = k === 'node' || k === 'rust';
 		if (isApp && !command)
 			command = k === 'node' ? 'node build/index.js' : './server';
-		if (!isApp) command = publicDir = null;
+		if (!isApp) {
+			command = publicDir = null;
+			zeroDowntime = false;
+		}
 		upstream = k === 'proxy' ? (upstream ?? 'http://127.0.0.1:8080') : null;
 	}
 </script>
@@ -84,6 +89,16 @@
 	<input type="checkbox" bind:checked={www} />
 	Also www.{name || 'example.ch'}, redirects here
 </label>
+{#if app}
+	<span></span>
+	<label
+		class="check"
+		title="starts the new process beside the old one and switches once it listens; both run for a few seconds"
+	>
+		<input type="checkbox" bind:checked={zeroDowntime} />
+		Restart without downtime
+	</label>
+{/if}
 
 <style lang="scss">
 	@use 'styles/win' as *;

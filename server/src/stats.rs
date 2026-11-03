@@ -146,7 +146,7 @@ impl Collector {
 				if render::has_app(d) {
 					let unit = PathBuf::from(CGROUPS)
 						.join(slice(&g.name))
-						.join(render::app_unit(&g.name, &d.name));
+						.join(render::live_unit(&g.name, d));
 					(domain.cpu, domain.memory) = self.cgroup(&unit);
 				}
 				group.requests = add(group.requests, domain.requests);

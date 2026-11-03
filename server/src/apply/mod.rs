@@ -27,8 +27,9 @@ use group::*;
 use mail::*;
 use system::*;
 
-/// One apply at a time, the panel, the agent and the CLI may all start one.
-const LOCK: &str = "/var/lib/genco/apply.lock";
+/// One apply at a time, the panel, the agent and the CLI may all start one;
+/// a deploy that switches an app's slot holds it too.
+pub const LOCK: &str = "/var/lib/genco/apply.lock";
 
 /// Units of genco itself, `genco setup` writes them, they belong to no
 /// group. Their names are reserved, see `hosting::RESERVED`.
