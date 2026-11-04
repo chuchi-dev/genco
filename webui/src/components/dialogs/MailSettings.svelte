@@ -16,8 +16,8 @@
 	let relayPassword = $state('');
 	let hasPassword = $state(false);
 	let sender = $state('');
-	// mail domains on this server, its own switch: with "off" nothing
-	// could send, so it shows off
+	// mail domains on this server, its own switch as saved: with "off"
+	// nothing could send, so it can't be changed then
 	let hosting = $state(true);
 	let error = $state<string | null>(null);
 	let testTo = $state(session.user?.email ?? '');
@@ -41,18 +41,20 @@
 	// write the defaults over them
 	let loaded = $state(false);
 
-	get('/settings/mail')
-		.then(s => {
-			loaded = true;
-			mode = s.mode;
-			relayHost = s.relayHost;
-			relayPort = s.relayPort || 587;
-			relayUser = s.relayUser;
-			hasPassword = s.hasPassword;
-			sender = s.sender;
-			hosting = s.hosting;
-		})
-		.catch(e => (error = e.message));
+	async function load() {
+		const s = await get('/settings/mail');
+		loaded = true;
+		mode = s.mode;
+		relayHost = s.relayHost;
+		relayPort = s.relayPort || 587;
+		relayUser = s.relayUser;
+		hasPassword = s.hasPassword;
+		sender = s.sender;
+		hosting = s.hosting;
+		mail.mode = s.mode;
+		mail.hosting = s.hosting;
+	}
+	load().catch(e => (error = e.message));
 
 	async function save() {
 		// a stolen session mustn't send the mails through its own relay
@@ -70,9 +72,8 @@
 			sender,
 			...auth,
 		});
-		if (relayPassword) hasPassword = true;
 		relayPassword = '';
-		mail.mode = mode;
+		await load();
 	}
 
 	async function saveHosting() {
@@ -178,11 +179,11 @@
 		<Form onsubmit={saveHosting} ok="Save" done="Saved">
 			<span></span>
 			<label class="check">
-				{#if mode === 'off'}
-					<input type="checkbox" checked={false} disabled />
-				{:else}
-					<input type="checkbox" bind:checked={hosting} />
-				{/if}
+				<input
+					type="checkbox"
+					bind:checked={hosting}
+					disabled={mode === 'off'}
+				/>
 				Host mail on this server
 			</label>
 		</Form>

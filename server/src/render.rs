@@ -287,11 +287,7 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 		let cert = certs.contains(&d.name);
 		files.push(File {
 			path: nginx_config(&d.name),
-			content: if d.kind == Kind::Redirect {
-				redirect_site(d, &d.name, cert)
-			} else {
-				nginx_site(group, d, cert)
-			},
+			content: nginx_site(group, d, cert),
 			private_to: None,
 		});
 		if d.www {
@@ -299,11 +295,7 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 			let cert = certs.contains(&www);
 			files.push(File {
 				path: nginx_config(&www),
-				content: if d.kind == Kind::Redirect {
-					redirect_site(d, &www, cert)
-				} else {
-					www_redirect(&www, &d.name, cert)
-				},
+				content: www_redirect(d, &www, cert),
 				private_to: None,
 			});
 		}
@@ -487,7 +479,8 @@ fn blocks(domain: &str, cert: bool, body: &str, http_body: &str) -> String {
 	listen [::]:80;
 	server_name {domain};
 
-	location /.well-known/acme-challenge/ {{
+	# ^~: no regex location of the extra config takes the challenges
+	location ^~ /.well-known/acme-challenge/ {{
 		root /var/lib/genco-acme;
 	}}
 "
@@ -515,10 +508,15 @@ server {{
 }
 
 /// www.<domain> sends every request to the domain (308 like the https
-/// redirect), over https once the www name has its certificate.
-fn www_redirect(www: &str, domain: &str, cert: bool) -> String {
+/// redirect), over https once the www name has its certificate; a
+/// redirect domain's straight to its target.
+fn www_redirect(d: &Domain, www: &str, cert: bool) -> String {
+	if d.kind == Kind::Redirect {
+		return redirect_site(d, www, cert);
+	}
 	let body = format!(
-		"\tlocation / {{\n\t\treturn 308 https://{domain}$request_uri;\n\t}}\n"
+		"\tlocation / {{\n\t\treturn 308 https://{}$request_uri;\n\t}}\n",
+		d.name
 	);
 	server_blocks(www, cert, &body)
 }
@@ -526,27 +524,37 @@ fn www_redirect(www: &str, domain: &str, cert: bool) -> String {
 /// A redirect domain (or its www name) sends every request but the ACME
 /// challenges to its target, over http too: one hop. With the path kept
 /// the request's comes after the target, without its trailing slash.
+/// The extra config only goes where other kinds have it: the domain's
+/// https server, or its port 80 one while there is no certificate.
 fn redirect_site(d: &Domain, name: &str, cert: bool) -> String {
-	let target = d.target.as_deref().unwrap_or("https://localhost/");
-	let target = if d.keep_path {
-		format!("{}$request_uri", target.trim_end_matches('/'))
-	} else {
-		target.to_string()
+	let ret = match d.target.as_deref() {
+		Some(t) if d.keep_path => format!(
+			"return {} {}$request_uri;",
+			d.redirect_status,
+			t.trim_end_matches('/')
+		),
+		Some(t) => format!("return {} {t};", d.redirect_status),
+		// set_domain refuses that, a broken row answers instead of
+		// sending the requests somewhere made up
+		None => {
+			tracing::error!("redirect domain {} has no target", d.name);
+			"return 503;".into()
+		}
 	};
-	let mut body = format!(
+	let http = format!(
 		"\taccess_log /var/log/nginx/genco/{name}.access.log;
 	error_log /var/log/nginx/genco/{name}.error.log;
 
 	location / {{
-		return {} {target};
+		{ret}
 	}}
-",
-		d.redirect_status
+"
 	);
+	let mut body = http.clone();
 	if name == d.name {
 		push_extra(&mut body, d);
 	}
-	blocks(name, cert, &body, &body)
+	blocks(name, cert, &body, &http)
 }
 
 fn push_extra(body: &mut String, d: &Domain) {
@@ -658,7 +666,8 @@ fn nginx_site(group: &Group, d: &Domain, cert: bool) -> String {
 "
 			));
 		}
-		Kind::Redirect => unreachable!("redirect_site renders them"),
+		// no files, no logs of the site's own besides its redirect
+		Kind::Redirect => return redirect_site(d, name, cert),
 	}
 
 	push_extra(&mut body, d);
@@ -1451,9 +1460,11 @@ mod tests {
 		// on http and https, no hop over https://s-me.ch
 		assert_eq!(site.matches(ret).count(), 2, "{site}");
 		assert!(!site.contains("$host"));
-		assert!(site.contains("location /.well-known/acme-challenge/ {"));
+		assert!(site.contains("location ^~ /.well-known/acme-challenge/ {"));
 		assert!(site.contains("listen 443 ssl;"));
-		assert!(site.contains("add_header X-Test 1;"));
+		// the extra config only in the https server, like other kinds
+		let (http, https) = site.split_once("listen 443").unwrap();
+		assert!(!http.contains("X-Test") && https.contains("X-Test 1;"));
 		assert!(!site.contains("root /srv"));
 		assert!(!site.contains("fastcgi"));
 		assert!(!site.contains("proxy_pass"));
@@ -1470,13 +1481,40 @@ mod tests {
 		assert!(site.contains("return 308 https://example.ch/new/;"));
 		assert!(!site.contains("$request_uri"));
 
+		// without a certificate the port 80 server has it
+		assert!(site.contains("X-Test 1;"));
+
 		d.keep_path = true;
-		let files = group_files(&group(vec![d]), &HashSet::new());
+		let files = group_files(&group(vec![d.clone()]), &HashSet::new());
 		let site = find(&files, "/etc/nginx/genco/s-me.ch.conf");
 		assert!(
 			site.contains("return 308 https://example.ch/new$request_uri;")
 		);
 		assert!(site.contains("acme-challenge"));
+
+		// a row without target answers 503 instead of a made up address
+		d.target = None;
+		let files = group_files(&group(vec![d]), &HashSet::new());
+		let site = find(&files, "/etc/nginx/genco/s-me.ch.conf");
+		assert!(site.contains("return 503;") && !site.contains("localhost"));
+	}
+
+	#[test]
+	fn extra_regex_locations_cant_take_the_acme_challenges() {
+		let mut d = domain(1, "shop.ch", Kind::Php);
+		d.www = true;
+		let g = group(vec![d]);
+		let certs = HashSet::from(["shop.ch".into(), "www.shop.ch".into()]);
+		for f in group_files(&g, &certs)
+			.iter()
+			.filter(|f| f.path.starts_with("/etc/nginx"))
+		{
+			let acme = "location ^~ /.well-known/acme-challenge/ {";
+			assert_eq!(f.content.matches(acme).count(), 1, "{}", f.content);
+			assert!(!f.content.contains("location /.well-known"));
+		}
+		let panel = panel_file("panel.ch", "127.0.0.1:4100", true).content;
+		assert!(panel.contains("location ^~ /.well-known/acme-challenge/"));
 	}
 
 	#[test]

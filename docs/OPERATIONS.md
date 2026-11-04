@@ -139,7 +139,14 @@ A domain's kind (`genco domain add|set --kind`) says what serves it:
 the domain, a redirect's www straight to its target in one hop. Use the
 redirect kind for redirects, not a `return` in `--nginx-extra` or a
 domain of its own for www. Changing the kind removes what the old one
-had (units, ports) with the next `genco apply`; the group's files stay.
+had (units, ports, a redirect's target and options) with the next
+`genco apply`; the group's files stay.
+
+`--nginx-extra` goes into the domain's https server block, and into the
+port 80 one only until the domain has its certificate; the www name never
+gets it. On a redirect domain that is beside the `location /` with the
+redirect, e.g. a header or a `location = /robots.txt`. ACME challenges
+are a `^~` location, a regex location there can't take them.
 
 Delete commands only send the admins a confirmation mail; the deletion
 happens when someone opens the link. With mail off they print the link

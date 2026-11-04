@@ -41,13 +41,13 @@ pub struct MailSettings {
 	#[serde(default)]
 	pub sender: String,
 	/// mail domains with mailboxes, forwards and send-only addresses on
-	/// this server; off keeps genco's own mails, "off" mode implies it
-	#[serde(default = "yes")]
+	/// this server; off keeps genco's own mails. As saved, kept while
+	/// mail is off
+	#[serde(default = "crate::util::yes")]
 	pub hosting: bool,
-}
-
-fn yes() -> bool {
-	true
+	/// whether hosting is on now: saved on and mail not off
+	#[serde(default, skip_deserializing)]
+	pub hosting_on: bool,
 }
 
 impl Default for MailSettings {
@@ -61,6 +61,7 @@ impl Default for MailSettings {
 			has_password: false,
 			sender: String::new(),
 			hosting: true,
+			hosting_on: false,
 		}
 	}
 }
@@ -70,13 +71,18 @@ fn stored(conn: &rusqlite::Connection) -> MailSettings {
 	crate::db::get_json(conn, "mail").unwrap_or_default()
 }
 
+/// Whether mail domains can be added: hosting on and mail not off.
+fn hosting_on(s: &MailSettings) -> bool {
+	s.mode != "off" && s.hosting
+}
+
 pub fn settings(db: &Db) -> Result<MailSettings> {
 	let mut s = stored(&db.conn());
 	if s.mode.is_empty() {
 		s.mode = "direct".into();
 	}
 	s.has_password = !s.relay_password.is_empty();
-	s.hosting &= s.mode != "off";
+	s.hosting_on = hosting_on(&s);
 	Ok(s)
 }
 
@@ -97,8 +103,7 @@ pub fn off_error(what: &str) -> Error {
 /// Whether no new mail domains, mailboxes, forwards or send-only
 /// addresses can be made here, also with mail off: nothing could send.
 pub fn hosting_off(conn: &rusqlite::Connection) -> bool {
-	let s = stored(conn);
-	s.mode == "off" || !s.hosting
+	!hosting_on(&stored(conn))
 }
 
 /// The error of what needs mail hosting while it is off.
@@ -445,6 +450,9 @@ async fn get_settings(
 struct SaveReq {
 	#[serde(flatten)]
 	settings: MailSettings,
+	/// hosting has its own route, here it is refused instead of ignored
+	#[serde(default)]
+	hosting: Option<serde_json::Value>,
 	/// the admin's password and code: a relay of a stolen session would
 	/// get the mails that confirm deletions
 	#[serde(flatten)]
@@ -456,6 +464,11 @@ async fn save_settings(
 	State(db): State<Db>,
 	Json(req): Json<SaveReq>,
 ) -> Result<Json<()>> {
+	if req.hosting.is_some() {
+		return Err(Error::Invalid(
+			"hosting is switched with POST /settings/mail/hosting".into(),
+		));
+	}
 	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
 		.await?;
 	let mut new = req.settings;
@@ -492,6 +505,16 @@ async fn save_settings(
 	}
 
 	configure_postfix(&new).await?;
+	store_settings(&db.conn(), &new)?;
+	Ok(Json(()))
+}
+
+/// Saves all but hosting, read and written under one lock: hosting is
+/// switched on its own and mustn't be lost in between.
+fn store_settings(
+	conn: &rusqlite::Connection,
+	new: &MailSettings,
+) -> Result<()> {
 	// with the password, the struct skips it only when serializing for
 	// the browser
 	let stored = serde_json::json!({
@@ -502,10 +525,10 @@ async fn save_settings(
 		"relayPassword": new.relay_password,
 		"sender": new.sender,
 		// its own switch, kept also while mail is off
-		"hosting": stored(&db.conn()).hosting,
+		"hosting": stored(conn).hosting,
 	});
-	set_setting(&db.conn(), "mail", &stored.to_string())?;
-	Ok(Json(()))
+	set_setting(conn, "mail", &stored.to_string())?;
+	Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -741,6 +764,55 @@ mod tests {
 		set_hosting(&conn, false).unwrap();
 		drop(conn);
 		assert!(!settings(&db).unwrap().hosting);
+	}
+
+	#[test]
+	fn the_browser_gets_saved_and_effective_hosting() {
+		let db = Db::memory();
+		set_setting(&db.conn(), "mail", r#"{"mode":"off","hosting":true}"#)
+			.unwrap();
+		let json = serde_json::to_value(settings(&db).unwrap()).unwrap();
+		assert_eq!(json["hosting"], true);
+		assert_eq!(json["hostingOn"], false);
+
+		// mail back on: saving the mode keeps the saved hosting
+		let direct = MailSettings {
+			mode: "direct".into(),
+			..Default::default()
+		};
+		store_settings(&db.conn(), &direct).unwrap();
+		let json = serde_json::to_value(settings(&db).unwrap()).unwrap();
+		assert_eq!(
+			(&json["hosting"], &json["hostingOn"]),
+			(&true.into(), &true.into())
+		);
+		assert!(!hosting_off(&db.conn()));
+	}
+
+	#[tokio::test]
+	async fn the_general_save_refuses_hosting() {
+		let db = Db::memory();
+		set_setting(&db.conn(), "mail", r#"{"mode":"direct","hosting":true}"#)
+			.unwrap();
+		let req: SaveReq = serde_json::from_value(serde_json::json!({
+			"mode": "direct",
+			"hosting": false,
+			"password": "x",
+		}))
+		.unwrap();
+		let hash = crate::users::hash_password("admin password").unwrap();
+		let user = crate::users::create(&db.conn(), "m@example.ch", "A", &hash)
+			.unwrap();
+		let authed = Authed {
+			token: String::new(),
+			user,
+		};
+		let err = save_settings(authed, State(db.clone()), Json(req))
+			.await
+			.unwrap_err()
+			.to_string();
+		assert!(err.contains("/settings/mail/hosting"), "{err}");
+		assert!(settings(&db).unwrap().hosting);
 	}
 
 	#[test]

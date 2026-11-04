@@ -8,6 +8,11 @@ use tokio::process::Command;
 pub const MARIADB_DUMP: &str =
 	"mariadb-dump --single-transaction --routines --triggers --events";
 
+/// serde's default of switches that are on unless turned off.
+pub fn yes() -> bool {
+	true
+}
+
 /// Runs a bash script, its trimmed stdout or its stderr as error.
 pub async fn sh(script: &str) -> Result<String, String> {
 	let out = Command::new("bash")

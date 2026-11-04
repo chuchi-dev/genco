@@ -440,7 +440,7 @@ map $http_upgrade $connection_upgrade {
 server {
 	listen 80 default_server;
 	listen [::]:80 default_server;
-	location /.well-known/acme-challenge/ {
+	location ^~ /.well-known/acme-challenge/ {
 		root /var/lib/genco-acme;
 	}
 	location / {

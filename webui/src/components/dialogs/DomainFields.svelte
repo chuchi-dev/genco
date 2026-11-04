@@ -51,6 +51,10 @@
 		}
 		upstream = k === 'proxy' ? (upstream ?? 'http://127.0.0.1:8080') : null;
 		target = k === 'redirect' ? (target ?? '') : null;
+		if (k !== 'redirect') {
+			keepPath = true;
+			redirectStatus = 301;
+		}
 	}
 </script>
 

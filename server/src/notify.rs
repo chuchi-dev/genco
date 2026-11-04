@@ -18,12 +18,8 @@ use crate::users::Authed;
 #[serde(rename_all = "camelCase")]
 pub struct NotifySettings {
 	/// reports that need attention go to every admin by mail
-	#[serde(default = "yes")]
+	#[serde(default = "crate::util::yes")]
 	pub mail: bool,
-}
-
-fn yes() -> bool {
-	true
 }
 
 impl Default for NotifySettings {

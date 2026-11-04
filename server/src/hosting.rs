@@ -605,11 +605,23 @@ fn check_upstream(kind: Kind, upstream: &Option<String>) -> Result<()> {
 	}
 }
 
-/// Where a redirect domain sends its requests, as stored: an absolute
-/// http(s) URL, re-serialized by the url crate (IDN to punycode) and then
-/// only of characters that are plain in nginx's config. Not the domain
+/// The redirect fields as a domain stores them; other kinds get the
+/// defaults, so nothing of an earlier redirect stays after a kind change.
+#[derive(Debug, PartialEq)]
+struct Redirect {
+	target: Option<String>,
+	keep_path: bool,
+	status: u16,
+}
+
+/// Where a redirect domain sends its requests and how. Not the domain
 /// itself (or its www name), that would loop.
-fn check_target(s: &DomainSettings, name: &str) -> Result<Option<String>> {
+fn check_target(s: &DomainSettings, name: &str) -> Result<Redirect> {
+	if !REDIRECT_STATUSES.contains(&s.redirect_status) {
+		return Err(Error::Invalid(
+			"a redirect answers 301, 302, 307 or 308".into(),
+		));
+	}
 	let target = s.target.as_deref().map(str::trim).filter(|t| !t.is_empty());
 	let t = match (s.kind, target) {
 		(Kind::Redirect, Some(t)) => t,
@@ -623,14 +635,42 @@ fn check_target(s: &DomainSettings, name: &str) -> Result<Option<String>> {
 				"only redirect domains redirect".into(),
 			));
 		}
-		(_, None) => return Ok(None),
+		(_, None) => {
+			return Ok(Redirect {
+				target: None,
+				keep_path: true,
+				status: 301,
+			});
+		}
 	};
-	if !REDIRECT_STATUSES.contains(&s.redirect_status) {
+
+	let url = parse_redirect_url(t)?;
+	if s.keep_path && url.query().is_some() {
 		return Err(Error::Invalid(
-			"a redirect answers 301, 302, 307 or 308".into(),
+			"with the path kept the target can't have a query, the \
+			request's comes after it"
+				.into(),
 		));
 	}
 
+	// every path of the domain redirects, any address on it loops, on
+	// any port: nginx may listen there too
+	let host = url.host_str().unwrap_or("").trim_end_matches('.');
+	let www = format!("www.{name}");
+	if host == name || (s.www && host == www) {
+		return Err(Error::Invalid(format!("{name} can't redirect to itself")));
+	}
+	Ok(Redirect {
+		target: Some(url.to_string()),
+		keep_path: s.keep_path,
+		status: s.redirect_status,
+	})
+}
+
+/// A redirect target: an absolute http(s) URL, re-serialized by the url
+/// crate (IDN to punycode) and then only of characters that are plain in
+/// nginx's config.
+fn parse_redirect_url(t: &str) -> Result<reqwest::Url> {
 	let invalid = || {
 		Error::Invalid(format!(
 			"{t} is no address like https://example.ch/ (http or https, \
@@ -646,36 +686,21 @@ fn check_target(s: &DomainSettings, name: &str) -> Result<Option<String>> {
 		return Err(invalid());
 	}
 	let url = reqwest::Url::parse(t).map_err(|_| invalid())?;
-	let host = url.host_str().unwrap_or("");
 	if !matches!(url.scheme(), "http" | "https")
-		|| host.is_empty()
+		|| url.host_str().is_none_or(str::is_empty)
 		|| !url.username().is_empty()
 		|| url.password().is_some()
 		|| url.fragment().is_some()
 	{
 		return Err(invalid());
 	}
-	let out = url.as_str();
-	let plain = out.chars().all(|c| {
+	let plain = url.as_str().chars().all(|c| {
 		c.is_ascii_alphanumeric() || "-._~:/?&=%+,!*@[]()".contains(c)
 	});
 	if !plain {
 		return Err(invalid());
 	}
-	if s.keep_path && url.query().is_some() {
-		return Err(Error::Invalid(
-			"with the path kept the target can't have a query, the \
-			request's comes after it"
-				.into(),
-		));
-	}
-
-	// every path of the domain redirects, any address on it loops
-	let www = format!("www.{name}");
-	if url.port().is_none() && (host == name || (s.www && host == www)) {
-		return Err(Error::Invalid(format!("{name} can't redirect to itself")));
-	}
-	Ok(Some(out.to_string()))
+	Ok(url)
 }
 
 fn check_php(kind: Kind, php: &Option<String>) -> Result<()> {
@@ -885,11 +910,12 @@ pub struct DomainSettings {
 	pub upstream: Option<String>,
 	#[serde(default)]
 	pub target: Option<String>,
-	#[serde(default = "yes")]
+	#[serde(default = "crate::util::yes")]
 	pub keep_path: bool,
 	#[serde(default = "moved")]
 	pub redirect_status: u16,
-	/// www.<name> redirects to the domain
+	/// www.<name> redirects to the domain, a redirect domain's straight
+	/// to its target
 	#[serde(default)]
 	pub www: bool,
 	/// Node and Rust: restarts without downtime
@@ -913,10 +939,6 @@ impl DomainSettings {
 	}
 }
 
-fn yes() -> bool {
-	true
-}
-
 fn moved() -> u16 {
 	301
 }
@@ -928,6 +950,13 @@ pub struct DomainReq {
 	pub name: String,
 	#[serde(flatten)]
 	pub settings: DomainSettings,
+}
+
+/// Only apps have one, a proxy or redirect that was one doesn't keep it.
+fn command(s: &DomainSettings) -> Option<String> {
+	s.command
+		.clone()
+		.filter(|_| matches!(s.kind, Kind::Node | Kind::Rust))
 }
 
 /// Trimmed, only for proxies.
@@ -1001,7 +1030,7 @@ pub fn insert_domain(
 	check_domain_name(&name)?;
 	let s = &req.settings;
 	let public_dir = s.check()?;
-	let target = check_target(s, &name)?;
+	let redirect = check_target(s, &name)?;
 	check_www(conn, &name, s.www)?;
 	check_panel_names(cfg, conn, &name, s.www)?;
 
@@ -1017,16 +1046,16 @@ pub fn insert_domain(
 			s.kind.as_str(),
 			s.php_version,
 			s.root,
-			s.command,
+			command(s),
 			s.nginx_extra,
 			now(),
 			public_dir,
 			upstream(s),
 			s.www,
 			s.zero_downtime,
-			target,
-			s.keep_path,
-			s.redirect_status
+			redirect.target,
+			redirect.keep_path,
+			redirect.status
 		],
 	)?;
 	let id = conn.last_insert_rowid();
@@ -1064,7 +1093,7 @@ pub fn set_domain(
 		conn.query_row("SELECT name FROM domains WHERE id = ?1", [id], |r| {
 			r.get(0)
 		})?;
-	let target = check_target(req, &name)?;
+	let redirect = check_target(req, &name)?;
 	check_www(conn, &name, req.www)?;
 	check_panel_names(cfg, conn, &name, req.www)?;
 
@@ -1079,16 +1108,16 @@ pub fn set_domain(
 			req.kind.as_str(),
 			req.php_version,
 			req.root,
-			req.command,
+			command(req),
 			req.nginx_extra,
 			public_dir,
 			upstream(req),
 			req.www,
 			req.zero_downtime,
 			id,
-			target,
-			req.keep_path,
-			req.redirect_status
+			redirect.target,
+			redirect.keep_path,
+			redirect.status
 		],
 	)?;
 	if n == 0 {
@@ -1403,7 +1432,8 @@ mod tests {
 
 	#[test]
 	fn redirect_targets_are_plain_urls() {
-		let ok = |t: &str| check_target(&redirect(t), "s-me.ch").unwrap();
+		let ok =
+			|t: &str| check_target(&redirect(t), "s-me.ch").unwrap().target;
 		assert_eq!(
 			ok("https://soerenmeier.ch").unwrap(),
 			"https://soerenmeier.ch/"
@@ -1449,7 +1479,12 @@ mod tests {
 		let mut s = redirect("https://www.s-me.ch/");
 		s.www = true;
 		assert!(check_target(&s, "s-me.ch").is_err());
-		assert!(ok("https://s-me.ch:8443/").is_some());
+		// a trailing dot or a port is the same host
+		assert!(bad("https://s-me.ch./"));
+		assert!(bad("https://s-me.ch:8443/"));
+		assert!(check_target(&s, "s-me.ch").is_err());
+		s.target = Some("https://www.s-me.ch.:444/".into());
+		assert!(check_target(&s, "s-me.ch").is_err());
 
 		let mut s = redirect("https://example.ch/");
 		s.redirect_status = 200;
@@ -1458,8 +1493,19 @@ mod tests {
 		assert!(check_target(&s, "s-me.ch").is_ok());
 		s.kind = Kind::Static;
 		assert!(check_target(&s, "s-me.ch").is_err());
+		// other kinds store the defaults, a wrong status is still wrong
 		s.target = None;
-		assert!(check_target(&s, "s-me.ch").unwrap().is_none());
+		s.keep_path = false;
+		assert_eq!(
+			check_target(&s, "s-me.ch").unwrap(),
+			Redirect {
+				target: None,
+				keep_path: true,
+				status: 301
+			}
+		);
+		s.redirect_status = 200;
+		assert!(check_target(&s, "s-me.ch").is_err());
 		let mut s = redirect("");
 		assert!(check_target(&s, "s-me.ch").is_err());
 		s.target = None;
@@ -1500,6 +1546,16 @@ mod tests {
 		let (_, d) = find_domain(&conn, |d| d.id == 1).unwrap();
 		assert_eq!(d.kind, Kind::Static);
 		assert!(d.target.is_none());
+		// the redirect's options are gone with it
+		assert_eq!((d.keep_path, d.redirect_status), (true, 301));
+
+		// a command only stays with an app
+		s.kind = Kind::Proxy;
+		s.upstream = Some("http://127.0.0.1:8080".into());
+		s.command = Some("node index.js".into());
+		set_domain(&cfg(), &conn, 1, &s).unwrap();
+		let (_, d) = find_domain(&conn, |d| d.id == 1).unwrap();
+		assert!(d.command.is_none());
 	}
 
 	#[test]

@@ -542,9 +542,11 @@ pub fn domain(
 				(Kind::Php, None) => d.php_version,
 				_ => None,
 			};
+			// a new option the kind doesn't have is refused like on add,
+			// only the stored ones of another kind go
 			let command = match kind {
 				Kind::Node | Kind::Rust => opts.command.or(d.command),
-				_ => None,
+				_ => opts.command,
 			};
 			let req = hosting::DomainSettings {
 				kind,
@@ -559,7 +561,7 @@ pub fn domain(
 				},
 				target: match kind {
 					Kind::Redirect => opts.target.or(d.target),
-					_ => None,
+					_ => opts.target,
 				},
 				keep_path: opts.keep_path.unwrap_or(d.keep_path),
 				redirect_status: opts.status.unwrap_or(d.redirect_status),
@@ -821,6 +823,38 @@ mod tests {
 		assert!(group(&conn, set).is_err());
 		let g = hosting::group_by_name(&conn, "shop").unwrap().unwrap();
 		assert_ne!(g.branch, "next");
+	}
+
+	#[test]
+	fn set_refuses_a_target_on_a_static_domain() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.ch\"").unwrap();
+		let db = crate::db::Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('acme', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+				VALUES ('shop', 1, 0);
+			INSERT INTO domains (group_id, name, kind, created_at)
+				VALUES (1, 'shop.ch', 'static', 0);",
+		)
+		.unwrap();
+		let run = |args: &[&str]| {
+			let cmd = DomainCmd::try_parse_from(
+				["domain", "set", "shop.ch"].iter().chain(args),
+			)
+			.unwrap();
+			domain(&cfg, &conn, cmd)
+		};
+
+		let err = run(&["--target", "https://example.ch/"]).unwrap_err();
+		assert!(err.to_string().contains("only redirect"), "{err}");
+		run(&["--kind", "redirect", "--target", "https://example.ch/"])
+			.unwrap();
+		// back to static: the stored target goes without a word
+		run(&["--kind", "static"]).unwrap();
+		let (_, d) = hosting::find_domain(&conn, |d| d.id == 1).unwrap();
+		assert!(d.kind == Kind::Static && d.target.is_none());
 	}
 
 	#[test]

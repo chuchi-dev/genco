@@ -317,10 +317,14 @@ pub async fn add_mailbox(
 ) -> Result<i64> {
 	let local = local.trim().to_lowercase();
 	check_local_part(&local)?;
+	{
+		let conn = db.conn();
+		check_hosting(&conn, "no new mailboxes")?;
+		check_receiving(&conn, domain_id)?;
+	}
 	let hash = hash(password).await?;
+
 	let conn = db.conn();
-	check_hosting(&conn, "no new mailboxes")?;
-	check_receiving(&conn, domain_id)?;
 	if let Some(kind) = address_in_use(&conn, domain_id, &local)? {
 		return Err(Error::Invalid(format!("{local}@ is a {kind} already")));
 	}
