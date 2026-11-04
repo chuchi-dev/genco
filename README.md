@@ -41,7 +41,8 @@ genco is young and runs our own servers. Expect rough edges, and read
   (SnappyMail), spam filter and DKIM (Rspamd), SRS for forwards, and a
   DNS helper that compares the records a domain needs with what it has.
 - **Backups**: restic every night, per group (files, databases, SQLite
-  files, mail) and for the server's config.
+  files, mail) and for the server's config, with a copy to Backblaze B2
+  or S3-compatible storage off the server.
 - **The agent**: a chat in the panel or in the terminal (`genco chat`).
   It runs routines (a daily health check, a weekly update round, a
   weekly security review) and looks into problems the minute checks

@@ -112,11 +112,19 @@ pub(crate) enum Cmd {
 		#[clap(long)]
 		artifact: Option<PathBuf>,
 	},
-	/// Back up every group (files and databases) and the server's config
-	Backup,
+	/// Back up every group (files and databases) and the server's config;
+	/// list and restore snapshots, the copy off the server
+	Backup {
+		#[clap(subcommand)]
+		cmd: Option<backup::BackupCmd>,
+	},
 	/// Run restic with genco's repository and password, e.g.
-	/// `genco restic snapshots --tag group:shop`
+	/// `genco restic snapshots --tag group:shop`; `--remote` first for
+	/// the copy off the server
 	Restic {
+		/// the remote repository (`genco backup remote`)
+		#[clap(long)]
+		remote: bool,
 		#[clap(trailing_var_arg = true, allow_hyphen_values = true)]
 		args: Vec<String>,
 	},
@@ -203,7 +211,7 @@ impl Cmd {
 				| Cmd::Runner(_)
 				| Cmd::Setup { .. }
 				| Cmd::Apply | Cmd::Deploy { .. }
-				| Cmd::Backup
+				| Cmd::Backup { .. }
 				| Cmd::Restic { .. }
 				| Cmd::Update { .. }
 				| Cmd::Panel(_)
@@ -235,6 +243,15 @@ impl Cmd {
 				| Cmd::Update { .. }
 				| Cmd::Runners(RunnersCmd::List)
 				| Cmd::Group(cli::GroupCmd::DeployKey { .. })
+				| Cmd::Backup {
+					cmd: Some(
+						backup::BackupCmd::Snapshots { .. }
+							| backup::BackupCmd::Remote(
+								backup::remote::RemoteCmd::Show
+									| backup::remote::RemoteCmd::Test
+							)
+					)
+				}
 		)
 	}
 }
@@ -344,9 +361,26 @@ async fn run(args: Args) -> Result<(), String> {
 		Cmd::Runners(cmd) => runners_cmd(&cfg, cmd).await,
 		Cmd::Panel(cmd) => panel::main(&args.config, cfg, cmd).await,
 		Cmd::Runner(_) => unreachable!(),
-		Cmd::Backup => backup_cmd(cfg).await,
-		Cmd::Restic { args } => {
-			let status = backup::restic()
+		Cmd::Backup { cmd: None } => backup_cmd(cfg).await,
+		Cmd::Backup { cmd: Some(cmd) } => {
+			let db = Db::open(&cfg.db_path())?;
+			let msg = backup::cli(&cfg, &db, cmd, read_password)
+				.await
+				.map_err(|e| e.to_string())?;
+			println!("{msg}");
+			Ok(())
+		}
+		Cmd::Restic { remote, args } => {
+			let mut cmd = if remote {
+				let db = Db::open(&cfg.db_path())?;
+				backup::remote::open(&db.conn(), secrets::key_file())
+					.map_err(|e| e.to_string())?
+					.ok_or("no remote backup is set up")?
+					.restic()
+			} else {
+				backup::restic()
+			};
+			let status = cmd
 				.args(args)
 				.stdin(std::process::Stdio::inherit())
 				.status()

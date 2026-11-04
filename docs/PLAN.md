@@ -105,7 +105,11 @@ terminal.
 - [x] backup runs with log on the server page, snapshots per group,
       `genco backup`, `genco restic ...` for restores
 - [x] restore test: files, a database into a new one, genco's database
-- [ ] offsite: AWS S3 with versioning and a key that can't delete
+- [x] offsite: a remote copy to Backblaze B2 or S3-compatible storage
+      (`restic copy` after each full backup, own retention, Settings →
+      Backups and `genco backup remote`), restores with `--remote`
+- [ ] offsite: a key that can't delete (bucket versioning instead of
+      restic's prune on the server)
 
 ### 5. Safety and polish
 - [x] postfix on localhost for genco and the sites (PHP mail() via

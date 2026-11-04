@@ -21,12 +21,19 @@
 	let error = $state<string | null>(null);
 	// a backup of this group started here, its log shows below
 	let run = $state<Backup | null>(null);
+	// the snapshots here or in the copy off the server, when there is one
+	let hasRemote = $state(false);
+	let remote = $state(false);
+	get('/settings/backup')
+		.then(s => (hasRemote = !!s.remote))
+		.catch(() => {});
 
 	// the tree gives a new group object on every change, only its id
 	// decides
 	const groupId = $derived(group.id);
 	function load() {
-		get(`/groups/${groupId}/snapshots`)
+		snapshots = null;
+		get(`/groups/${groupId}/snapshots` + (remote ? '?remote=true' : ''))
 			.then(s => (snapshots = s))
 			.catch(e => (error = e.message));
 	}
@@ -66,6 +73,12 @@
 	<Button onclick={backupNow} disabled={run?.status === 'running'}>
 		Back Up Now
 	</Button>
+	{#if hasRemote}
+		<select aria-label="Repository" bind:value={remote} onchange={load}>
+			<option value={false}>On this server</option>
+			<option value={true}>Remote copy</option>
+		</select>
+	{/if}
 	{#if run}
 		<span class="status {run.status}">
 			{run.status === 'running' ? 'Backing up…' : run.status}
@@ -102,9 +115,10 @@
 </ListView>
 {#if error}<p class="error">{error}</p>{/if}
 <p class="hint">
-	Kept: the last 3, 7 daily, 4 weekly and 6 monthly. To restore files or a
-	database, ask the agent, e.g. "restore the database {group.databases[0]
-		?.name ?? group.name} of yesterday into a new database".
+	Kept here: the last 3, 7 daily, 4 weekly and 6 monthly{hasRemote
+		? ', the remote copy keeps its own history'
+		: ''}. To restore files or a database, ask the agent, e.g. "restore the
+	database {group.databases[0]?.name ?? group.name} of yesterday into a new database".
 </p>
 
 <style lang="scss">

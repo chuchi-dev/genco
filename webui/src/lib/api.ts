@@ -519,6 +519,31 @@ export type Snapshot = {
 	bytes: number;
 };
 
+/** the copy of the backups off the server, GET /settings/backup */
+export type BackupSettings = {
+	remote: {
+		provider: 'b2' | 's3';
+		bucket: string;
+		path: string;
+		endpoint: string;
+		region: string;
+		keyId: string;
+		keep: { daily: number; weekly: number; monthly: number };
+		/** KiB/s */
+		limitUpload: number | null;
+		configuredAt: number;
+		location: string;
+	} | null;
+	state: {
+		lastOk: number | null;
+		lastError: string | null;
+		lastErrorAt: number | null;
+		size: number | null;
+		sizeAt: number | null;
+	};
+	defaultPath: string;
+};
+
 /** what a snapshot holds: files, database x or system */
 export function snapshotKind(s: Snapshot): string {
 	const db = s.tags.find(t => t.startsWith('db:'));

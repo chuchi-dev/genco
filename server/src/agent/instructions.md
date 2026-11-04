@@ -277,6 +277,14 @@ field in the panel.
   admin confirmed it: `genco restic restore <id|latest> --tag ...
   --target /tmp/restore-x`, a database with `genco restic dump latest
   --tag group:g,db:x /x.sql | mariadb x_restored` (create it first).
+- Remote copy: when set up (Settings → Backups, `genco backup remote
+  show`), each good full backup is copied to Backblaze B2 or S3 with its
+  own history. Restore from it with `--remote` (`genco backup snapshots
+  --remote`, `genco backup restore <id> --target /tmp/x --remote`,
+  `genco restic --remote dump ...`), e.g. when the local repository is
+  damaged. The admin sets it up (password, 2FA); its key and repository
+  password stay secret: never print, log or pass them as arguments, never
+  read them from genco's database.
 - Mail: postfix listens on localhost only and delivers directly or
   through the relay of Start → Settings (`postconf relayhost`). This
   server's mode: {{mail_mode}}. PHP's

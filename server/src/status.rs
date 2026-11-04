@@ -25,6 +25,8 @@ struct Status {
 	/// the newest backup run and when everything was last backed up
 	last_backup: Option<Run>,
 	last_full_backup: Option<i64>,
+	/// the copy off the server, when there is one
+	remote_backup: Option<crate::backup::remote::Summary>,
 	/// what the minute check sees right now
 	problems: Vec<Problem>,
 	/// routines and alerts that wait for an admin
@@ -150,6 +152,7 @@ struct Stored {
 	groups: Vec<(hosting::Group, String, Option<Run>)>,
 	last_backup: Option<Run>,
 	last_full_backup: Option<i64>,
+	remote_backup: Option<crate::backup::remote::Summary>,
 	problems: Vec<Problem>,
 	attention: Vec<Attention>,
 }
@@ -220,6 +223,7 @@ fn stored(conn: &Connection) -> rusqlite::Result<Stored> {
 		groups,
 		last_backup,
 		last_full_backup,
+		remote_backup: crate::backup::remote::summary(conn),
 		problems,
 		attention,
 	})
@@ -264,6 +268,7 @@ async fn status(
 		groups,
 		last_backup: s.last_backup,
 		last_full_backup: s.last_full_backup,
+		remote_backup: s.remote_backup,
 		problems,
 		attention,
 	}))

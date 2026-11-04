@@ -2,6 +2,7 @@
 	import Dialog from '../win/Dialog.svelte';
 	import Tabs from '../win/Tabs.svelte';
 	import AgentSettings from './AgentSettings.svelte';
+	import BackupSettings from './BackupSettings.svelte';
 	import FirewallSettings from './FirewallSettings.svelte';
 	import MailSettings from './MailSettings.svelte';
 	import NotifySettings from './NotifySettings.svelte';
@@ -13,6 +14,7 @@
 	const TABS = [
 		{ id: 'mail', label: 'Mail' },
 		{ id: 'notify', label: 'Notifications' },
+		{ id: 'backup', label: 'Backups' },
 		{ id: 'agent', label: 'Agent' },
 		{ id: 'update', label: 'Updates' },
 		{ id: 'runners', label: 'Runners' },
@@ -27,6 +29,7 @@
 		switch -->
 		<div class="tab" hidden={tab !== 'mail'}><MailSettings /></div>
 		<div class="tab" hidden={tab !== 'notify'}><NotifySettings /></div>
+		<div class="tab" hidden={tab !== 'backup'}><BackupSettings /></div>
 		<div class="tab" hidden={tab !== 'agent'}><AgentSettings /></div>
 		<div class="tab" hidden={tab !== 'update'}><UpdateSettings /></div>
 		<div class="tab" hidden={tab !== 'runners'}><RunnerSettings /></div>

@@ -5,6 +5,7 @@
 		get,
 		post,
 		type Backup,
+		type BackupSettings,
 		type Snapshot,
 	} from '@/lib/api';
 	import { listen } from '@/lib/events.svelte';
@@ -18,14 +19,18 @@
 	let system = $state<Snapshot[]>([]);
 	let selected = $state<number | null>(null);
 	let error = $state<string | null>(null);
+	let settings = $state<BackupSettings | null>(null);
+	// the server config's snapshots here or in the remote copy
+	let remote = $state(false);
 
 	const shown = $derived(runs.find(r => r.id === selected) ?? null);
 
 	async function load() {
 		try {
-			[runs, system] = await Promise.all([
+			[runs, system, settings] = await Promise.all([
 				get('/backups'),
-				get('/backups/system'),
+				get('/backups/system' + (remote ? '?remote=true' : '')),
+				get('/settings/backup'),
 			]);
 		} catch (e: any) {
 			error = e.message;
@@ -56,8 +61,21 @@
 <p>
 	Every night genco backs up the files and databases of every group and the
 	server's config (<code>/etc</code>, genco's database) with restic, on this
-	server for now.
+	server{settings?.remote
+		? ' and as a copy in ' + settings.remote.location
+		: ' only (a copy off the server: Start → Settings → Backups)'}.
 </p>
+{#if settings?.remote}
+	<p class:error={!!settings.state.lastErrorAt}>
+		Last remote copy: {settings.state.lastOk
+			? formatTime(settings.state.lastOk)
+			: 'never'}{settings.state.size !== null
+			? ', ' + formatBytes(settings.state.size) + ' in the bucket'
+			: ''}{settings.state.lastErrorAt
+			? '; the last one failed: ' + settings.state.lastError
+			: ''}
+	</p>
+{/if}
 <div class="row-buttons top">
 	<Button onclick={backupNow} disabled={shown?.status === 'running'}>
 		Back Up Now
@@ -92,7 +110,15 @@
 	<LogView url="/backups/{shown.id}/log" {live} height={200} />
 {/if}
 
-<h4>Server config</h4>
+<div class="config">
+	<h4>Server config</h4>
+	{#if settings?.remote}
+		<select aria-label="Repository" bind:value={remote} onchange={load}>
+			<option value={false}>On this server</option>
+			<option value={true}>Remote copy</option>
+		</select>
+	{/if}
+</div>
 <ListView
 	items={system}
 	key={s => s.id}
@@ -119,8 +145,15 @@
 		margin: 0 0 8px;
 	}
 
-	h4 {
+	.config {
+		display: flex;
+		gap: 8px;
+		align-items: center;
 		margin: 14px 0 6px;
+	}
+
+	h4 {
+		margin: 0;
 		font-size: 12px;
 	}
 </style>

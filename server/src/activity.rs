@@ -151,6 +151,8 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("DELETE", "/firewall/blocks/*", "Unblock address"),
 		("POST", "/tokens", "Create API token"),
 		("DELETE", "/tokens/*", "Delete API token"),
+		("POST", "/settings/backup", "Change the remote backup"),
+		("POST", "/settings/backup/test", "Test the remote backup"),
 		("POST", "/settings/mail", "Change mail settings"),
 		("POST", "/settings/mail/test", "Send test mail"),
 		("POST", "/settings/mail/hosting", "Change mail hosting"),

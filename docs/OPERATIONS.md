@@ -14,10 +14,12 @@ need neither the panel nor an LLM.
 
 **Do this today, not on the day you need it:** keep a copy of
 `/etc/genco/restic-password` outside the server, for example in your
-password manager. Without it nobody can read the backups. Also note that
-the backups are currently only on the server's own disk
-(`/var/backups/genco/restic`). If the disk dies, they are gone too, so
-until offsite backups exist, copy the repository away now and then:
+password manager. Without it nobody can read the backups. The backups
+are on the server's own disk (`/var/backups/genco/restic`): if the disk
+dies, they are gone too. Set up the remote copy (Settings → Backups,
+[below](#the-remote-copy-backblaze-b2-s3)) and keep its bucket key and
+repository password outside the server too. Without a remote copy,
+copy the repository away now and then:
 
 ```sh
 rsync -a --delete root@server:/var/backups/genco/restic/ ~/genco-restic/
@@ -101,6 +103,8 @@ into the server's config, and the CLI does the same:
 | Make a box a runner | on it: `genco runner install`, `genco runner register https://<panel> <token>`, `systemctl restart genco-runner` |
 | Update a runner | on it: `genco runner update` (a daily timer of `genco runner install` does it; Settings → Runners warns when a runner runs another version) |
 | Back up now | `genco backup` |
+| Copy the backups off the server (Backblaze B2, S3) | Settings → Backups, or `genco backup remote set --b2 --key-id <keyID> --bucket <bucket> [--path genco/<panel>]` (the application key on stdin; see "The remote copy" below); `genco backup remote show`, `genco backup remote test`, `genco backup remote off` |
+| List and restore snapshots | `genco backup snapshots [--tag group:shop] [--remote]`, `genco backup restore latest --tag group:shop,files --target /tmp/restore [--remote]`; anything else with `genco restic [--remote] ...` |
 | Add a client, group, domain or database | `genco client add`, `genco group add`, `genco domain add`, `genco database add` (see `--help`) |
 | Change a domain | `genco domain set <name> --php 8.4` |
 | Give a group more memory, CPU or tasks | `genco group set <g> --memory 2.5G --cpu 200% --tasks 1024`, then `genco apply` (see "Group limits" below) |
@@ -453,6 +457,60 @@ the snapshot stay.
 The file name inside the snapshot is always `/<database>.sql`. For a
 Craft site, run `php craft clear-caches/all` as the group user afterwards.
 
+### The remote copy (Backblaze B2, S3)
+
+After each good full backup (the nightly one or Back Up Now) genco copies
+the new snapshots with `restic copy` into a second repository off the
+server, then removes old ones there (by default it keeps 14 daily, 8
+weekly and 12 monthly per group and kind). Everything is in the backup's
+log. A failed copy doesn't fail the backup but is a problem of its own,
+like no successful copy for more than 2 days.
+
+Set it up in Settings → Backups (your password and 2FA code) or as root:
+
+```sh
+# Backblaze B2: a bucket and an application key for it (read, write, delete)
+genco backup remote set --b2 --key-id 0051234abcd --bucket acme-backups
+# then paste the applicationKey, Enter, Ctrl-D
+# S3-compatible storage
+genco backup remote set --s3 --endpoint https://s3.example.com --region eu-1 \
+	--key-id AKIA... --bucket acme-backups [--path genco/panel] \
+	[--keep-daily 14 --keep-weekly 8 --keep-monthly 12] [--limit-upload 2048]
+genco backup remote test    # connects, creates the repository if there is none
+```
+
+The path in the bucket is `genco/<panel name>` by default. The key and
+the repository password are stored encrypted with
+`/etc/genco/secrets.key` and go to restic only in its environment; the
+panel shows neither.
+
+genco makes the remote repository's own password and shows it **once**,
+when you save. Keep it outside the server with the bucket's key, in your
+password manager: if the server is lost, the remote copy is useless
+without it. To take over an existing remote repository (a new server, see
+[section 4](#4-moving-or-rebuilding-the-whole-server)), enter its password
+in "Repository password", or as the second line of stdin of `genco backup
+remote set`.
+
+The server's key may delete (restic removes old snapshots), so a
+compromised server can delete the copy too. Against that, let the bucket
+keep deleted files for a while: at Backblaze B2 the lifecycle setting
+"Keep prior versions for this number of days", at S3 versioning with a
+lifecycle rule.
+
+Restoring from the remote copy works like from the local one, with
+`--remote`:
+
+```sh
+genco backup snapshots --remote --tag group:shop
+genco backup restore latest --tag group:shop,files --target /tmp/restore --remote
+genco restic --remote dump latest --tag group:shop,db:shop /shop.sql | mariadb shop_restored
+```
+
+The panel's snapshot lists switch between "On this server" and "Remote
+copy". Needs restic 0.14 or newer (`restic copy --from-repo`): Debian 12
+has 0.14, Debian 13 0.18.
+
 ## 4. Moving or rebuilding the whole server
 
 The same steps work for a server that died and for moving to a new one.
@@ -530,6 +588,66 @@ You need:
 7. **Shut the old server down only after** the first nightly backup has
    run on the new one: `genco restic snapshots --tag system` shows
    today's date.
+
+### From the remote copy only
+
+When the server and its disk are gone, the remote copy is enough. You
+need the bucket's key (B2 keyID and applicationKey, or the S3 access and
+secret key), the bucket and path, and the remote repository's password.
+
+1. **Prepare the new server** as in section 1, steps 2 and 3.
+2. **Read the remote copy with plain restic:**
+
+   ```sh
+   apt install -y restic
+   export RESTIC_REPOSITORY=b2:acme-backups:genco/panel.example.com
+   export B2_ACCOUNT_ID=0051234abcd
+   read -rs B2_ACCOUNT_KEY && export B2_ACCOUNT_KEY       # the applicationKey
+   read -rs RESTIC_PASSWORD && export RESTIC_PASSWORD     # the remote repository's password
+   restic snapshots --tag system
+   ```
+
+   For S3: `RESTIC_REPOSITORY=s3:https://s3.example.com/acme-backups/genco/panel.example.com`
+   with `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and
+   `AWS_DEFAULT_REGION`).
+3. **Restore genco's config, database and certificates** as in step 3
+   above, with `restic restore latest --tag system --target /tmp/sys`,
+   and also the old local repository's password, so the new local
+   backups use the same:
+
+   ```sh
+   mkdir -p /etc/genco && cp -a /tmp/sys/etc/genco/restic-password /etc/genco/
+   ```
+
+   genco's database holds the remote settings, encrypted with the
+   restored `secrets.key`: the new server copies to the same remote.
+4. **Install genco** as in step 4 above, then check the remote:
+   `genco backup remote show` and `genco backup remote test`. If the
+   restored settings don't work (another bucket key), set them again
+   with the password as the second line:
+   `printf '%s\n%s\n' "$B2_ACCOUNT_KEY" "$RESTIC_PASSWORD" | genco backup remote set --b2 --key-id ... --bucket ... --path ...`.
+5. **Restore every group** as in step 5 above, from the remote:
+
+   ```sh
+   genco backup restore latest --tag group:shop,files --target /tmp/restore --remote
+   rsync -a /tmp/restore/srv/genco/shop/ /srv/genco/shop/
+   chown -R g-shop:g-shop /srv/genco/shop
+   genco restic --remote dump latest --tag group:shop,db:shop /shop.sql | mariadb shop
+   ```
+
+   Mail of a group's mail domains is in its own snapshot:
+   `genco backup restore latest --tag group:shop,mail --target /tmp/mail --remote`,
+   then `rsync -a /tmp/mail/var/vmail/ /var/vmail/` and `genco apply`.
+6. Steps 6 and 7 above (test, DNS, the first nightly backup).
+
+What this doesn't cover: there is no one-command restore of the whole
+server, each group is restored by hand as above; what changed after the
+last nightly copy is lost; usage stats (`stats.db`), `node_modules`,
+caches and git mirrors were never backed up (a deploy brings them back);
+nothing outside the groups, `/etc` and `/var/lib/genco` is in the backup
+(software installed by hand, root's files, databases genco doesn't
+manage); and the old `/etc` beyond genco's files belongs to the old
+machine. The restored certificates renew as usual once DNS points here.
 
 ## 5. Renaming the panel
 

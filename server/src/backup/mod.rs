@@ -1,12 +1,15 @@
 //! Daily backups with restic: per group its files and a dump of every
 //! database, and the server's config (/etc, genco's database). Snapshots
 //! are tagged `group:<name>` and `files`, `db:<name>` or `system`, each
-//! kind keeps its own history. The repository is local for now.
+//! kind keeps its own history. The repository is local, a copy can go
+//! off the server (`remote`).
+
+pub mod remote;
 
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::routing;
 use axum::{Json, Router};
 use rusqlite::{Connection, params};
@@ -264,6 +267,14 @@ async fn backup(ctx: &Ctx, log: &mut Log, only: Option<i64>) {
 	];
 	args.extend(KEEP);
 	restic_log(log, &args).await;
+
+	// off the server only what is good here; a failed copy is a problem
+	// of its own, not a failed backup
+	if log.ok {
+		remote::copy(&ctx.db, log).await;
+	} else if remote::view(&ctx.db.conn()).is_some() {
+		log.line("no remote copy after a failed backup").await;
+	}
 }
 
 /// Where the consistent copies of a group's SQLite files go for the
@@ -435,22 +446,66 @@ pub struct Snapshot {
 	pub bytes: u64,
 }
 
-/// The snapshots with this tag, newest first.
-pub async fn snapshots(tag: &str) -> Result<Vec<Snapshot>> {
-	if !PathBuf::from(REPOSITORY).join("config").exists() {
-		return Ok(vec![]);
-	}
-	let out = restic()
+/// The snapshots with this tag, newest first, of the local repository or
+/// the remote one.
+pub async fn snapshots(
+	remote: Option<&remote::Opened>,
+	tag: &str,
+) -> Result<Vec<Snapshot>> {
+	let mut cmd = match remote {
+		Some(r) => r.restic(),
+		None if !PathBuf::from(REPOSITORY).join("config").exists() => {
+			return Ok(vec![]);
+		}
+		None => restic(),
+	};
+	let out = cmd
 		.args(["snapshots", "--json", "--no-lock", "--tag", tag])
 		.output()
 		.await
 		.map_err(|e| Error::Internal(format!("restic: {e}")))?;
 	if !out.status.success() {
-		return Err(Error::Internal(
-			String::from_utf8_lossy(&out.stderr).trim().to_string(),
-		));
+		let err = restic_error(&out.stderr);
+		let err = match remote {
+			Some(r) => r.hide(&err),
+			None => err,
+		};
+		return Err(Error::Internal(err));
 	}
 	parse_snapshots(&out.stdout)
+}
+
+/// restic's error as text, with `--json` it is JSON.
+fn restic_error(stderr: &[u8]) -> String {
+	#[derive(Deserialize)]
+	struct Message {
+		message: String,
+	}
+	let text = String::from_utf8_lossy(stderr);
+	text.lines()
+		.rev()
+		.find_map(|l| serde_json::from_str::<Message>(l).ok())
+		.map(|m| m.message)
+		.unwrap_or_else(|| text.trim().to_string())
+}
+
+/// The remote when `?remote=true` asks for it.
+#[derive(Debug, Deserialize)]
+struct Which {
+	#[serde(default)]
+	remote: bool,
+}
+
+impl Which {
+	fn open(&self, db: &Db) -> Result<Option<remote::Opened>> {
+		if !self.remote {
+			return Ok(None);
+		}
+		let opened = remote::open(&db.conn(), crate::secrets::key_file())?;
+		opened
+			.ok_or_else(|| Error::Invalid("no remote backup is set up".into()))
+			.map(Some)
+	}
 }
 
 fn parse_snapshots(json: &[u8]) -> Result<Vec<Snapshot>> {
@@ -535,13 +590,21 @@ async fn group_snapshots(
 	_authed: Authed,
 	State(db): State<Db>,
 	UrlPath(id): UrlPath<i64>,
+	Query(which): Query<Which>,
 ) -> Result<Json<Vec<Snapshot>>> {
 	let group = hosting::find_group(&db.conn(), id)?;
-	Ok(Json(snapshots(&format!("group:{}", group.name)).await?))
+	let remote = which.open(&db)?;
+	let tag = format!("group:{}", group.name);
+	Ok(Json(snapshots(remote.as_ref(), &tag).await?))
 }
 
-async fn system_snapshots(_authed: Authed) -> Result<Json<Vec<Snapshot>>> {
-	Ok(Json(snapshots("system").await?))
+async fn system_snapshots(
+	_authed: Authed,
+	State(db): State<Db>,
+	Query(which): Query<Which>,
+) -> Result<Json<Vec<Snapshot>>> {
+	let remote = which.open(&db)?;
+	Ok(Json(snapshots(remote.as_ref(), "system").await?))
 }
 
 pub fn routes() -> Router<AppState> {
@@ -551,6 +614,113 @@ pub fn routes() -> Router<AppState> {
 		.route("/backups/{id}/log", routing::get(backup_log))
 		.route("/groups/{id}/snapshots", routing::get(group_snapshots))
 		.route("/groups/{id}/backup", routing::post(backup_group))
+		.merge(remote::routes())
+}
+
+// -------------------------------------------------------------------- cli
+
+#[derive(Debug, clap::Subcommand)]
+pub enum BackupCmd {
+	/// The snapshots, newest first
+	Snapshots {
+		/// tags that must all match, e.g. group:shop,files
+		#[clap(long, default_value = "genco")]
+		tag: String,
+		/// of the copy off the server
+		#[clap(long)]
+		remote: bool,
+	},
+	/// Restore a snapshot into a new directory, never over the live data
+	Restore {
+		/// its ID or latest
+		snapshot: String,
+		/// an empty or new directory
+		#[clap(long)]
+		target: PathBuf,
+		/// tags that must all match, e.g. group:shop,files
+		#[clap(long)]
+		tag: Option<String>,
+		/// only this path of the snapshot
+		#[clap(long)]
+		include: Vec<String>,
+		/// from the copy off the server
+		#[clap(long)]
+		remote: bool,
+	},
+	/// The copy off the server at Backblaze B2 or an S3-compatible storage
+	#[clap(subcommand)]
+	Remote(remote::RemoteCmd),
+}
+
+fn repo(db: &Db, remote: bool) -> Result<Option<remote::Opened>> {
+	Which { remote }.open(db)
+}
+
+pub async fn cli(
+	cfg: &crate::config::Config,
+	db: &Db,
+	cmd: BackupCmd,
+	stdin: impl FnOnce() -> std::result::Result<String, String>,
+) -> Result<String> {
+	match cmd {
+		BackupCmd::Snapshots { tag, remote } => {
+			let remote = repo(db, remote)?;
+			let lines: Vec<String> = snapshots(remote.as_ref(), &tag)
+				.await?
+				.iter()
+				.map(|s| {
+					format!(
+						"{}\t{}\t{}\t{} MiB",
+						s.id,
+						s.time,
+						s.tags.join(","),
+						s.bytes / (1024 * 1024)
+					)
+				})
+				.collect();
+			Ok(lines.join("\n"))
+		}
+		BackupCmd::Restore {
+			snapshot,
+			target,
+			tag,
+			include,
+			remote,
+		} => {
+			let busy = std::fs::read_dir(&target)
+				.is_ok_and(|mut d| d.next().is_some());
+			if busy || target == std::path::Path::new("/") {
+				return Err(Error::Invalid(format!(
+					"{} is not empty: restore into a new directory and \
+					copy what you need from there",
+					target.display()
+				)));
+			}
+			let remote = repo(db, remote)?;
+			let mut cmd = match &remote {
+				Some(r) => r.restic(),
+				None => restic(),
+			};
+			cmd.args(["restore", &snapshot, "--target"]).arg(&target);
+			if let Some(tag) = &tag {
+				cmd.args(["--tag", tag]);
+			}
+			for path in &include {
+				cmd.args(["--include", path]);
+			}
+			let status = cmd
+				.status()
+				.await
+				.map_err(|e| Error::Internal(format!("restic: {e}")))?;
+			if !status.success() {
+				return Err(Error::Internal(format!(
+					"restic restore {status}"
+				)));
+			}
+			Ok(format!("restored into {}", target.display()))
+		}
+		BackupCmd::Remote(cmd) => remote::cli(cfg, db, cmd, stdin).await,
+	}
 }
 
 #[cfg(test)]
@@ -568,5 +738,12 @@ mod tests {
 		assert_eq!(snaps[0].id, "bbb");
 		assert_eq!(snaps[0].tags, ["group:shop", "db:shop"]);
 		assert_eq!(snaps[1].bytes, 100);
+	}
+
+	#[test]
+	fn restic_errors_with_json_are_text() {
+		let json = br#"{"message_type":"exit_error","code":1,"message":"Fatal: no key"}"#;
+		assert_eq!(restic_error(json), "Fatal: no key");
+		assert_eq!(restic_error(b"Fatal: plain\n"), "Fatal: plain");
 	}
 }

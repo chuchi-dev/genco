@@ -335,7 +335,8 @@ async fn certificates(groups: &[Group]) -> Vec<Problem> {
 	found
 }
 
-/// The last backup failed or is more than a day old, deploys that failed
+/// The last backup failed or is more than a day old, the same for the
+/// copy off the server (two days), deploys that failed
 /// in the last day without a good one after them.
 fn jobs(conn: &Connection) -> rusqlite::Result<Vec<Problem>> {
 	let mut found = vec![];
@@ -367,6 +368,9 @@ fn jobs(conn: &Connection) -> rusqlite::Result<Vec<Problem>> {
 			Problem::new("backup:old", "no full backup for more than a day")
 				.minutes(1),
 		);
+	}
+	if let Some((key, detail)) = crate::backup::remote::problem(conn, now()) {
+		found.push(Problem::new(key, detail).minutes(1));
 	}
 
 	let mut stmt = conn.prepare(
