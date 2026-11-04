@@ -44,6 +44,7 @@
 							key: '/domains/' + d.id,
 							label: d.name,
 							icon: 'domain' as const,
+							link: d.kind === 'redirect',
 						})),
 						...g.databases.map(d => ({
 							key: '/databases/' + d.id,

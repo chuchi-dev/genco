@@ -5,6 +5,8 @@
 		key: string;
 		label: string;
 		icon: IconName;
+		/** the shortcut arrow over the icon */
+		link?: boolean;
 		/** shown on hover */
 		title?: string;
 		/** a dot after the label: running, failed or stopped */
@@ -71,7 +73,7 @@
 						oncontext(item.key, e);
 					}}
 				>
-					<Icon name={item.icon} />
+					<Icon name={item.icon} link={item.link} />
 					<span>{item.label}</span>
 					{#if item.state}
 						<i class="dot {item.state}"></i>

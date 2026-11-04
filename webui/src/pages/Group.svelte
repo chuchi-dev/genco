@@ -226,7 +226,11 @@
 							</td>
 							<td>
 								<code>
-									{d.kind === 'proxy' ? d.upstream : d.root}
+									{d.kind === 'proxy'
+										? d.upstream
+										: d.kind === 'redirect'
+											? d.target
+											: d.root}
 								</code>
 							</td>
 						</tr>

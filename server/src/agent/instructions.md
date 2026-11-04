@@ -120,6 +120,12 @@ field in the panel.
 - `--www true` makes www.<domain> redirect to the domain (its own
   certificate once its DNS points here); use it for top level domains
   instead of a second domain for www.
+- Redirects are domains of the kind redirect (`genco domain add <d>
+  --group <g> --kind redirect --target https://example.ch/ --www true`,
+  `--keep-path false` for always the target itself, `--status 308` to
+  keep POSTs); a redirect's www goes straight to the target. Use it (or
+  `genco domain set <d> --kind redirect --target ...`) instead of a
+  `return` in nginx_extra or separate www.* domains.
 - Workers run a group's command all the time as
   `genco-<group>-worker-<name>.service` (Craft's queue, a server on a
   port of its own): `genco worker add <name> --group <g> --dir

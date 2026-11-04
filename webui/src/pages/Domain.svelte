@@ -30,6 +30,9 @@
 	let command = $state(live.current.command);
 	let publicDir = $state(live.current.publicDir);
 	let upstream = $state(live.current.upstream);
+	let target = $state(live.current.target);
+	let keepPath = $state(live.current.keepPath);
+	let redirectStatus = $state(live.current.redirectStatus);
 	let www = $state(live.current.www);
 	let zeroDowntime = $state(live.current.zeroDowntime);
 	let nginxExtra = $state(live.current.nginxExtra);
@@ -60,6 +63,9 @@
 			command,
 			publicDir,
 			upstream,
+			target,
+			keepPath,
+			redirectStatus,
 			www,
 			zeroDowntime,
 			nginxExtra,
@@ -80,6 +86,11 @@
 	<dd>
 		{#if domain.kind === 'proxy'}
 			Forwards to <code>{domain.upstream}</code>
+		{:else if domain.kind === 'redirect'}
+			Redirects ({domain.redirectStatus}) to
+			<code>{domain.target}</code>{domain.keepPath
+				? ', with the path'
+				: ''}
 		{:else}
 			{KIND_NAMES[domain.kind]}{domain.phpVersion
 				? ' ' + domain.phpVersion
@@ -122,6 +133,9 @@
 		bind:command
 		bind:publicDir
 		bind:upstream
+		bind:target
+		bind:keepPath
+		bind:redirectStatus
 		bind:www
 		bind:zeroDowntime
 		name={domain.name}
@@ -135,8 +149,8 @@
 		bind:value={nginxExtra}
 	></textarea>
 	{#snippet extra()}
-		<!-- a proxy has no files here -->
-		{#if domain.kind !== 'proxy'}
+		<!-- a proxy or a redirect has no files here -->
+		{#if domain.kind !== 'proxy' && domain.kind !== 'redirect'}
 			<Button
 				onclick={() => go(`/groups/${group.id}/files/${domain.root}`)}
 			>

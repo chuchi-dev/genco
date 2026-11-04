@@ -24,6 +24,9 @@
 	let command = $state<string | null>(null);
 	let publicDir = $state<string | null>(null);
 	let upstream = $state<string | null>(null);
+	let target = $state<string | null>(null);
+	let keepPath = $state(true);
+	let redirectStatus = $state(301);
 	let zeroDowntime = $state(false);
 	// on for a top level domain (example.ch), not for admin.example.ch,
 	// until the admin sets it
@@ -41,6 +44,9 @@
 				command,
 				publicDir,
 				upstream,
+				target,
+				keepPath,
+				redirectStatus,
 				www,
 				zeroDowntime,
 			}),
@@ -71,6 +77,9 @@
 			bind:command
 			bind:publicDir
 			bind:upstream
+			bind:target
+			bind:keepPath
+			bind:redirectStatus
 			bind:www={() => www, v => (wwwSet = v)}
 			bind:zeroDowntime
 			name={name.trim()}

@@ -26,6 +26,10 @@ pub const RESERVED: &[&str] = &["backup"];
 
 pub const PHP_VERSIONS: &[&str] = &["8.2", "8.3", "8.4", "8.5"];
 
+/// What a redirect domain answers: 301 and 302 may turn a POST into a GET,
+/// 308 and 307 keep it; 302 and 307 are temporary.
+pub const REDIRECT_STATUSES: &[u16] = &[301, 302, 307, 308];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -36,6 +40,8 @@ pub enum Kind {
 	/// forwards to another web server (`upstream`), e.g. one that runs
 	/// until the site moves into genco
 	Proxy,
+	/// sends every request to another address (`target`), www.<name> too
+	Redirect,
 }
 
 impl Kind {
@@ -46,6 +52,7 @@ impl Kind {
 			Self::Node => "node",
 			Self::Rust => "rust",
 			Self::Proxy => "proxy",
+			Self::Redirect => "redirect",
 		}
 	}
 
@@ -55,6 +62,7 @@ impl Kind {
 			"node" => Self::Node,
 			"rust" => Self::Rust,
 			"proxy" => Self::Proxy,
+			"redirect" => Self::Redirect,
 			_ => Self::Static,
 		}
 	}
@@ -164,7 +172,14 @@ pub struct Domain {
 	pub nginx_extra: String,
 	/// where a proxy domain forwards to, `http://127.0.0.1:8080`
 	pub upstream: Option<String>,
-	/// www.<name> redirects here
+	/// where a redirect domain sends its requests, `https://example.ch/`
+	pub target: Option<String>,
+	/// a redirect appends the request's path and query to the target
+	pub keep_path: bool,
+	/// of a redirect: 301, 302, 307 or 308
+	pub redirect_status: u16,
+	/// www.<name> redirects here (a redirect domain's straight to its
+	/// target)
 	pub www: bool,
 	/// of a Node or Rust app: a restart starts the new process beside the
 	/// old one and switches nginx over once it listens, see render::Slot
@@ -230,7 +245,8 @@ impl Engine {
 pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 	let mut stmt = conn.prepare(
 		"SELECT id, group_id, name, kind, php_version, root, command,
-		nginx_extra, public_dir, env, upstream, www, zero_downtime, slot_b
+		nginx_extra, public_dir, env, upstream, www, zero_downtime, slot_b,
+		target, keep_path, redirect_status
 		FROM domains
 		ORDER BY name",
 	)?;
@@ -251,6 +267,9 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 				www: row.get(11)?,
 				zero_downtime: row.get(12)?,
 				slot_b: row.get(13)?,
+				target: row.get(14)?,
+				keep_path: row.get(15)?,
+				redirect_status: row.get(16)?,
 			})
 		})?
 		.collect::<rusqlite::Result<_>>()?;
@@ -586,6 +605,79 @@ fn check_upstream(kind: Kind, upstream: &Option<String>) -> Result<()> {
 	}
 }
 
+/// Where a redirect domain sends its requests, as stored: an absolute
+/// http(s) URL, re-serialized by the url crate (IDN to punycode) and then
+/// only of characters that are plain in nginx's config. Not the domain
+/// itself (or its www name), that would loop.
+fn check_target(s: &DomainSettings, name: &str) -> Result<Option<String>> {
+	let target = s.target.as_deref().map(str::trim).filter(|t| !t.is_empty());
+	let t = match (s.kind, target) {
+		(Kind::Redirect, Some(t)) => t,
+		(Kind::Redirect, None) => {
+			return Err(Error::Invalid(
+				"a redirect domain needs the address it sends to".into(),
+			));
+		}
+		(_, Some(_)) => {
+			return Err(Error::Invalid(
+				"only redirect domains redirect".into(),
+			));
+		}
+		(_, None) => return Ok(None),
+	};
+	if !REDIRECT_STATUSES.contains(&s.redirect_status) {
+		return Err(Error::Invalid(
+			"a redirect answers 301, 302, 307 or 308".into(),
+		));
+	}
+
+	let invalid = || {
+		Error::Invalid(format!(
+			"{t} is no address like https://example.ch/ (http or https, \
+			no spaces, quotes, ; {{ }} or $)"
+		))
+	};
+	// the url crate drops tabs and newlines silently and encodes quotes
+	// and braces, an address with them is a mistake
+	let odd = |c: char| {
+		c.is_whitespace() || c.is_control() || "\"'`{};$\\<>".contains(c)
+	};
+	if t.len() > 2000 || t.chars().any(odd) {
+		return Err(invalid());
+	}
+	let url = reqwest::Url::parse(t).map_err(|_| invalid())?;
+	let host = url.host_str().unwrap_or("");
+	if !matches!(url.scheme(), "http" | "https")
+		|| host.is_empty()
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+		|| url.fragment().is_some()
+	{
+		return Err(invalid());
+	}
+	let out = url.as_str();
+	let plain = out.chars().all(|c| {
+		c.is_ascii_alphanumeric() || "-._~:/?&=%+,!*@[]()".contains(c)
+	});
+	if !plain {
+		return Err(invalid());
+	}
+	if s.keep_path && url.query().is_some() {
+		return Err(Error::Invalid(
+			"with the path kept the target can't have a query, the \
+			request's comes after it"
+				.into(),
+		));
+	}
+
+	// every path of the domain redirects, any address on it loops
+	let www = format!("www.{name}");
+	if url.port().is_none() && (host == name || (s.www && host == www)) {
+		return Err(Error::Invalid(format!("{name} can't redirect to itself")));
+	}
+	Ok(Some(out.to_string()))
+}
+
 fn check_php(kind: Kind, php: &Option<String>) -> Result<()> {
 	match (kind, php) {
 		(Kind::Php, Some(v)) if PHP_VERSIONS.contains(&v.as_str()) => Ok(()),
@@ -791,6 +883,12 @@ pub struct DomainSettings {
 	pub nginx_extra: String,
 	#[serde(default)]
 	pub upstream: Option<String>,
+	#[serde(default)]
+	pub target: Option<String>,
+	#[serde(default = "yes")]
+	pub keep_path: bool,
+	#[serde(default = "moved")]
+	pub redirect_status: u16,
 	/// www.<name> redirects to the domain
 	#[serde(default)]
 	pub www: bool,
@@ -813,6 +911,14 @@ impl DomainSettings {
 		}
 		public_dir(self.kind, &self.public_dir)
 	}
+}
+
+fn yes() -> bool {
+	true
+}
+
+fn moved() -> u16 {
+	301
 }
 
 #[derive(Debug, Deserialize)]
@@ -895,14 +1001,16 @@ pub fn insert_domain(
 	check_domain_name(&name)?;
 	let s = &req.settings;
 	let public_dir = s.check()?;
+	let target = check_target(s, &name)?;
 	check_www(conn, &name, s.www)?;
 	check_panel_names(cfg, conn, &name, s.www)?;
 
 	conn.execute(
 		"INSERT INTO domains (group_id, name, kind, php_version, root,
 		command, nginx_extra, created_at, public_dir, upstream, www,
-		zero_downtime)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+		zero_downtime, target, keep_path, redirect_status)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+		?15)",
 		params![
 			req.group_id,
 			name,
@@ -915,7 +1023,10 @@ pub fn insert_domain(
 			public_dir,
 			upstream(s),
 			s.www,
-			s.zero_downtime
+			s.zero_downtime,
+			target,
+			s.keep_path,
+			s.redirect_status
 		],
 	)?;
 	let id = conn.last_insert_rowid();
@@ -953,6 +1064,7 @@ pub fn set_domain(
 		conn.query_row("SELECT name FROM domains WHERE id = ?1", [id], |r| {
 			r.get(0)
 		})?;
+	let target = check_target(req, &name)?;
 	check_www(conn, &name, req.www)?;
 	check_panel_names(cfg, conn, &name, req.www)?;
 
@@ -961,7 +1073,8 @@ pub fn set_domain(
 		command = ?4, nginx_extra = ?5, public_dir = ?6, upstream = ?7,
 		www = ?8, zero_downtime = ?9,
 		-- switched off, slot A is the live one again (apply starts it)
-		slot_b = slot_b AND ?9 WHERE id = ?10",
+		slot_b = slot_b AND ?9, target = ?11, keep_path = ?12,
+		redirect_status = ?13 WHERE id = ?10",
 		params![
 			req.kind.as_str(),
 			req.php_version,
@@ -972,7 +1085,10 @@ pub fn set_domain(
 			upstream(req),
 			req.www,
 			req.zero_downtime,
-			id
+			id,
+			target,
+			req.keep_path,
+			req.redirect_status
 		],
 	)?;
 	if n == 0 {
@@ -1181,6 +1297,9 @@ mod tests {
 				public_dir: None,
 				nginx_extra: String::new(),
 				upstream: None,
+				target: None,
+				keep_path: true,
+				redirect_status: 301,
 				www: false,
 				zero_downtime: false,
 			},
@@ -1214,6 +1333,9 @@ mod tests {
 			public_dir: None,
 			nginx_extra: String::new(),
 			upstream: None,
+			target: None,
+			keep_path: true,
+			redirect_status: 301,
 			www: false,
 			zero_downtime: true,
 		};
@@ -1260,6 +1382,124 @@ mod tests {
 		assert!(check_upstream(Kind::Proxy, &u("http://a}\nserver{")).is_err());
 		assert!(check_upstream(Kind::Php, &u("http://a")).is_err());
 		assert!(check_upstream(Kind::Php, &None).is_ok());
+	}
+
+	fn redirect(target: &str) -> DomainSettings {
+		DomainSettings {
+			kind: Kind::Redirect,
+			php_version: None,
+			root: "public".into(),
+			command: None,
+			public_dir: None,
+			nginx_extra: String::new(),
+			upstream: None,
+			target: Some(target.into()),
+			keep_path: true,
+			redirect_status: 301,
+			www: false,
+			zero_downtime: false,
+		}
+	}
+
+	#[test]
+	fn redirect_targets_are_plain_urls() {
+		let ok = |t: &str| check_target(&redirect(t), "s-me.ch").unwrap();
+		assert_eq!(
+			ok("https://soerenmeier.ch").unwrap(),
+			"https://soerenmeier.ch/"
+		);
+		assert_eq!(
+			ok(" http://Example.CH:8080/a/b ").unwrap(),
+			"http://example.ch:8080/a/b"
+		);
+		assert_eq!(
+			ok("https://bücher.ch/").unwrap(),
+			"https://xn--bcher-kva.ch/"
+		);
+		assert!(ok("https://[::1]/").is_some());
+
+		let bad = |t: &str| check_target(&redirect(t), "s-me.ch").is_err();
+		assert!(bad(""));
+		assert!(bad("example.ch"));
+		assert!(bad("/path"));
+		assert!(bad("ftp://example.ch/"));
+		assert!(bad("javascript:alert(1)"));
+		assert!(bad("https://example.ch/; return 200"));
+		assert!(bad("https://example.ch/;"));
+		assert!(bad("https://example.ch/$host"));
+		assert!(bad("https://example.ch/\nserver {"));
+		assert!(bad("https://example.ch/a\tb"));
+		assert!(bad("https://example.ch/a'b"));
+		assert!(bad("https://example.ch/a\"b"));
+		assert!(bad("https://example.ch/{x}"));
+		assert!(bad("https://example.ch/a\\b"));
+		assert!(bad("https://user:pw@example.ch/"));
+		assert!(bad("https://example.ch/#top"));
+		assert!(bad(&format!("https://example.ch/{}", "a".repeat(2000))));
+		// the request's query would follow the target's
+		assert!(bad("https://example.ch/?a=1"));
+		let mut s = redirect("https://example.ch/?a=1");
+		s.keep_path = false;
+		assert!(check_target(&s, "s-me.ch").is_ok());
+
+		// loops
+		assert!(bad("https://s-me.ch/"));
+		assert!(bad("http://S-ME.ch/other"));
+		assert!(ok("https://www.s-me.ch/").is_some());
+		let mut s = redirect("https://www.s-me.ch/");
+		s.www = true;
+		assert!(check_target(&s, "s-me.ch").is_err());
+		assert!(ok("https://s-me.ch:8443/").is_some());
+
+		let mut s = redirect("https://example.ch/");
+		s.redirect_status = 200;
+		assert!(check_target(&s, "s-me.ch").is_err());
+		s.redirect_status = 308;
+		assert!(check_target(&s, "s-me.ch").is_ok());
+		s.kind = Kind::Static;
+		assert!(check_target(&s, "s-me.ch").is_err());
+		s.target = None;
+		assert!(check_target(&s, "s-me.ch").unwrap().is_none());
+		let mut s = redirect("");
+		assert!(check_target(&s, "s-me.ch").is_err());
+		s.target = None;
+		assert!(check_target(&s, "s-me.ch").is_err());
+	}
+
+	#[test]
+	fn an_app_becomes_a_redirect_and_then_static() {
+		let db = Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+			VALUES ('g', 1, 0);
+			INSERT INTO domains (group_id, name, kind, created_at, command,
+			zero_downtime, slot_b)
+			VALUES (1, 's-me.ch', 'node', 0, 'node index.js', 1, 1);",
+		)
+		.unwrap();
+		let mut s = redirect("https://soerenmeier.ch");
+		s.redirect_status = 308;
+		s.keep_path = false;
+		s.www = true;
+		set_domain(&cfg(), &conn, 1, &s).unwrap();
+		let (_, d) = find_domain(&conn, |d| d.id == 1).unwrap();
+		assert_eq!(d.kind, Kind::Redirect);
+		assert_eq!(d.target.as_deref(), Some("https://soerenmeier.ch/"));
+		assert_eq!(d.redirect_status, 308);
+		assert!(!d.keep_path && d.www);
+		// the app is gone: no command, slot A, no unit to render
+		assert!(d.command.is_none() && !d.slot_b && !d.zero_downtime);
+		assert!(!render::has_app(&d));
+
+		s.kind = Kind::Static;
+		assert!(set_domain(&cfg(), &conn, 1, &s).is_err());
+		s.target = None;
+		set_domain(&cfg(), &conn, 1, &s).unwrap();
+		let (_, d) = find_domain(&conn, |d| d.id == 1).unwrap();
+		assert_eq!(d.kind, Kind::Static);
+		assert!(d.target.is_none());
 	}
 
 	#[test]

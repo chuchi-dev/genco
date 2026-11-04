@@ -473,6 +473,13 @@ const MIGRATIONS: &[&str] = &[
 	r#"
 	ALTER TABLE proposals ADD COLUMN comment TEXT;
 "#,
+	// a redirect domain sends every request to `target` (hosting::Kind)
+	r#"
+	ALTER TABLE domains ADD COLUMN target TEXT;
+	ALTER TABLE domains ADD COLUMN keep_path INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE domains ADD COLUMN redirect_status INTEGER NOT NULL
+		DEFAULT 301;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

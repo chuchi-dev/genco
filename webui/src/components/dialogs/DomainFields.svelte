@@ -1,5 +1,11 @@
 <script lang="ts">
-	import { KINDS, KIND_NAMES, PHP_VERSIONS, type Kind } from '@/lib/api';
+	import {
+		KINDS,
+		KIND_NAMES,
+		PHP_VERSIONS,
+		REDIRECT_STATUSES,
+		type Kind,
+	} from '@/lib/api';
 
 	// what serves a domain, used to create and to edit one
 	let {
@@ -9,6 +15,9 @@
 		command = $bindable(),
 		publicDir = $bindable(),
 		upstream = $bindable(),
+		target = $bindable(),
+		keepPath = $bindable(),
+		redirectStatus = $bindable(),
 		www = $bindable(),
 		zeroDowntime = $bindable(),
 		name,
@@ -19,6 +28,9 @@
 		command: string | null;
 		publicDir: string | null;
 		upstream: string | null;
+		target: string | null;
+		keepPath: boolean;
+		redirectStatus: number;
 		www: boolean;
 		zeroDowntime: boolean;
 		/** the domain's name, for the www option */
@@ -38,6 +50,7 @@
 			zeroDowntime = false;
 		}
 		upstream = k === 'proxy' ? (upstream ?? 'http://127.0.0.1:8080') : null;
+		target = k === 'redirect' ? (target ?? '') : null;
 	}
 </script>
 
@@ -68,6 +81,31 @@
 		title="nginx passes every request on, with the domain as Host"
 		bind:value={upstream}
 	/>
+{:else if kind === 'redirect'}
+	<label for="d-target">Target:</label>
+	<input
+		id="d-target"
+		class="mono"
+		placeholder="https://example.ch/"
+		title="every request goes there, www too"
+		bind:value={target}
+	/>
+	<label for="d-status">Status:</label>
+	<select id="d-status" bind:value={redirectStatus}>
+		{#each REDIRECT_STATUSES as s (s)}
+			<option value={s}>
+				{s}{s === 301 || s === 308 ? ' permanent' : ' temporary'}
+			</option>
+		{/each}
+	</select>
+	<span></span>
+	<label
+		class="check"
+		title="/a?b=1 goes to the target's /a?b=1, otherwise to the target itself"
+	>
+		<input type="checkbox" bind:checked={keepPath} />
+		Keep path and query
+	</label>
 {:else}
 	<label for="d-root">{app ? 'Directory:' : 'Root:'}</label>
 	<input id="d-root" placeholder="public" bind:value={root} />
@@ -87,7 +125,9 @@
 <span></span>
 <label class="check">
 	<input type="checkbox" bind:checked={www} />
-	Also www.{name || 'example.ch'}, redirects here
+	Also www.{name || 'example.ch'}, redirects {kind === 'redirect'
+		? 'there too'
+		: 'here'}
 </label>
 {#if app}
 	<span></span>

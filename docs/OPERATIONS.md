@@ -125,6 +125,22 @@ into the server's config, and the CLI does the same:
 | A test server: install own builds, never update by itself | `genco update --mode testing`, then `genco update --yes --file ./genco` (unsigned, same backup and rollback) |
 | Go back to an older genco | `genco update --yes --version 0.1.2`, or `cp /usr/local/bin/genco.previous /usr/local/bin/genco && systemctl restart genco` |
 
+A domain's kind (`genco domain add|set --kind`) says what serves it:
+
+| Kind | Serves | Options |
+| --- | --- | --- |
+| `static` | the files in `/srv/genco/<group>/<root>` | `--root` |
+| `php` | the same with PHP-FPM (`genco-<group>-php<version>.service`) | `--root`, `--php 8.4` |
+| `node`, `rust` | an app on port 20000 + domain id (`genco-<group>-<domain>.service`), nginx serves the public folder | `--root`, `--command`, `--public`, `--zero-downtime` |
+| `proxy` | forwards every request to another web server | `--upstream http://127.0.0.1:8081` |
+| `redirect` | sends every request (http and https, ACME challenges excepted) to another address, no files, no units | `--target https://example.ch/`, `--keep-path true` (default; the request's path and query follow the target, which then has no query), `--status 301` (default), 302, 307 or 308 |
+
+`--www true` adds www.<domain> with its own certificate: it redirects to
+the domain, a redirect's www straight to its target in one hop. Use the
+redirect kind for redirects, not a `return` in `--nginx-extra` or a
+domain of its own for www. Changing the kind removes what the old one
+had (units, ports) with the next `genco apply`; the group's files stay.
+
 Delete commands only send the admins a confirmation mail; the deletion
 happens when someone opens the link. With mail off they print the link
 instead, an admin confirms it there with their password.

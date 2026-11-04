@@ -284,9 +284,14 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 	}
 
 	for d in &group.domains {
+		let cert = certs.contains(&d.name);
 		files.push(File {
 			path: nginx_config(&d.name),
-			content: nginx_site(group, d, certs.contains(&d.name)),
+			content: if d.kind == Kind::Redirect {
+				redirect_site(d, &d.name, cert)
+			} else {
+				nginx_site(group, d, cert)
+			},
 			private_to: None,
 		});
 		if d.www {
@@ -294,7 +299,11 @@ pub fn group_files(group: &Group, certs: &HashSet<String>) -> Vec<File> {
 			let cert = certs.contains(&www);
 			files.push(File {
 				path: nginx_config(&www),
-				content: www_redirect(&www, &d.name, cert),
+				content: if d.kind == Kind::Redirect {
+					redirect_site(d, &www, cert)
+				} else {
+					www_redirect(&www, &d.name, cert)
+				},
 				private_to: None,
 			});
 		}
@@ -464,6 +473,14 @@ pub fn panel_redirect_file(
 /// redirects to a 443 server with `body`. 308, not 301: a POST stays a
 /// POST with its body (a server-side GraphQL call to an http:// URL).
 pub fn server_blocks(domain: &str, cert: bool, body: &str) -> String {
+	let https =
+		"\tlocation / {\n\t\treturn 308 https://$host$request_uri;\n\t}\n";
+	blocks(domain, cert, body, https)
+}
+
+/// Like server_blocks, with a certificate the port 80 server has
+/// `http_body` instead.
+fn blocks(domain: &str, cert: bool, body: &str, http_body: &str) -> String {
 	let http = format!(
 		"server {{
 	listen 80;
@@ -482,10 +499,7 @@ pub fn server_blocks(domain: &str, cert: bool, body: &str) -> String {
 
 	format!(
 		"{HEADER}\n{http}
-	location / {{
-		return 308 https://$host$request_uri;
-	}}
-}}
+{http_body}}}
 
 server {{
 	listen 443 ssl;
@@ -507,6 +521,42 @@ fn www_redirect(www: &str, domain: &str, cert: bool) -> String {
 		"\tlocation / {{\n\t\treturn 308 https://{domain}$request_uri;\n\t}}\n"
 	);
 	server_blocks(www, cert, &body)
+}
+
+/// A redirect domain (or its www name) sends every request but the ACME
+/// challenges to its target, over http too: one hop. With the path kept
+/// the request's comes after the target, without its trailing slash.
+fn redirect_site(d: &Domain, name: &str, cert: bool) -> String {
+	let target = d.target.as_deref().unwrap_or("https://localhost/");
+	let target = if d.keep_path {
+		format!("{}$request_uri", target.trim_end_matches('/'))
+	} else {
+		target.to_string()
+	};
+	let mut body = format!(
+		"\taccess_log /var/log/nginx/genco/{name}.access.log;
+	error_log /var/log/nginx/genco/{name}.error.log;
+
+	location / {{
+		return {} {target};
+	}}
+",
+		d.redirect_status
+	);
+	if name == d.name {
+		push_extra(&mut body, d);
+	}
+	blocks(name, cert, &body, &body)
+}
+
+fn push_extra(body: &mut String, d: &Domain) {
+	let extra = d.nginx_extra.trim();
+	if !extra.is_empty() {
+		body.push_str("\n\t# extra config of the domain\n");
+		for line in extra.lines() {
+			body.push_str(&format!("\t{line}\n"));
+		}
+	}
 }
 
 fn nginx_site(group: &Group, d: &Domain, cert: bool) -> String {
@@ -608,16 +658,10 @@ fn nginx_site(group: &Group, d: &Domain, cert: bool) -> String {
 "
 			));
 		}
+		Kind::Redirect => unreachable!("redirect_site renders them"),
 	}
 
-	let extra = d.nginx_extra.trim();
-	if !extra.is_empty() {
-		body.push_str("\n\t# extra config of the domain\n");
-		for line in extra.lines() {
-			body.push_str(&format!("\t{line}\n"));
-		}
-	}
-
+	push_extra(&mut body, d);
 	server_blocks(name, cert, &body)
 }
 
@@ -1056,6 +1100,10 @@ mod tests {
 			public_dir: None,
 			upstream: (kind == Kind::Proxy)
 				.then(|| "http://127.0.0.1:8081".into()),
+			target: (kind == Kind::Redirect)
+				.then(|| "https://soerenmeier.ch/".into()),
+			keep_path: true,
+			redirect_status: 301,
 			www: false,
 			zero_downtime: false,
 			slot_b: false,
@@ -1387,6 +1435,68 @@ mod tests {
 		assert!(site.contains("proxy_set_header Host $host;"));
 		assert!(!site.contains("proxy_ssl_server_name"));
 		assert!(!site.contains("root /srv"));
+	}
+
+	#[test]
+	fn redirect_sends_everything_but_acme_to_the_target() {
+		let mut d = domain(1, "s-me.ch", Kind::Redirect);
+		d.nginx_extra = "add_header X-Test 1;".into();
+		let g = group(vec![d.clone()]);
+		let certs = HashSet::from(["s-me.ch".to_string()]);
+		let files = group_files(&g, &certs);
+		let site = find(&files, "/etc/nginx/genco/s-me.ch.conf");
+
+		let ret = "location / {\n\t\treturn 301 \
+			https://soerenmeier.ch$request_uri;\n\t}";
+		// on http and https, no hop over https://s-me.ch
+		assert_eq!(site.matches(ret).count(), 2, "{site}");
+		assert!(!site.contains("$host"));
+		assert!(site.contains("location /.well-known/acme-challenge/ {"));
+		assert!(site.contains("listen 443 ssl;"));
+		assert!(site.contains("add_header X-Test 1;"));
+		assert!(!site.contains("root /srv"));
+		assert!(!site.contains("fastcgi"));
+		assert!(!site.contains("proxy_pass"));
+		// no app, no unit, no port
+		assert_eq!(files.len(), 3, "slice, site, logrotate");
+		assert!(!firewall(&[g], 4100, &[]).contains("20001"));
+
+		// without the path, 308, a target with a path
+		d.keep_path = false;
+		d.redirect_status = 308;
+		d.target = Some("https://example.ch/new/".into());
+		let files = group_files(&group(vec![d.clone()]), &HashSet::new());
+		let site = find(&files, "/etc/nginx/genco/s-me.ch.conf");
+		assert!(site.contains("return 308 https://example.ch/new/;"));
+		assert!(!site.contains("$request_uri"));
+
+		d.keep_path = true;
+		let files = group_files(&group(vec![d]), &HashSet::new());
+		let site = find(&files, "/etc/nginx/genco/s-me.ch.conf");
+		assert!(
+			site.contains("return 308 https://example.ch/new$request_uri;")
+		);
+		assert!(site.contains("acme-challenge"));
+	}
+
+	#[test]
+	fn a_redirects_www_goes_to_the_target_in_one_hop() {
+		let mut d = domain(1, "s-me.ch", Kind::Redirect);
+		d.www = true;
+		d.nginx_extra = "add_header X-Test 1;".into();
+		let certs = HashSet::from(["www.s-me.ch".to_string()]);
+		let files = group_files(&group(vec![d]), &certs);
+		let www = find(&files, "/etc/nginx/genco/www.s-me.ch.conf");
+		assert!(www.contains("server_name www.s-me.ch;"));
+		assert!(www.contains("/etc/letsencrypt/live/www.s-me.ch/"));
+		assert_eq!(
+			www.matches("return 301 https://soerenmeier.ch$request_uri;")
+				.count(),
+			2
+		);
+		assert!(!www.contains("s-me.ch$request_uri"));
+		assert!(www.contains("acme-challenge"));
+		assert!(!www.contains("X-Test"));
 	}
 
 	#[test]

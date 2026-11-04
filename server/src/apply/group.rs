@@ -232,9 +232,10 @@ pub(super) async fn ensure_dirs(r: &mut Report, g: &Group) {
 
 	let mut dirs = vec![(base.join("logs"), None), (base.join("tmp"), None)];
 	for d in &g.domains {
-		// deploys create current, it links to a release; a proxy has
-		// no files
-		if d.root.split('/').next() == Some("current") || d.kind == Kind::Proxy
+		// deploys create current, it links to a release; a proxy or a
+		// redirect has no files
+		if d.root.split('/').next() == Some("current")
+			|| matches!(d.kind, Kind::Proxy | Kind::Redirect)
 		{
 			continue;
 		}

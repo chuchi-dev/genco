@@ -84,15 +84,25 @@ export type Activity = {
 	ok: boolean | null;
 };
 
-export type Kind = 'static' | 'php' | 'node' | 'rust' | 'proxy';
-export const KINDS: Kind[] = ['static', 'php', 'node', 'rust', 'proxy'];
+export type Kind = 'static' | 'php' | 'node' | 'rust' | 'proxy' | 'redirect';
+export const KINDS: Kind[] = [
+	'static',
+	'php',
+	'node',
+	'rust',
+	'proxy',
+	'redirect',
+];
 export const KIND_NAMES: Record<Kind, string> = {
 	static: 'Static files',
 	php: 'PHP',
 	node: 'Node',
 	rust: 'Rust binary',
 	proxy: 'Proxy',
+	redirect: 'Redirect',
 };
+/** 301 and 308 are permanent, 308 and 307 keep a POST a POST */
+export const REDIRECT_STATUSES = [301, 308, 302, 307];
 export const PHP_VERSIONS = ['8.2', '8.3', '8.4', '8.5'];
 
 export type Domain = {
@@ -108,7 +118,13 @@ export type Domain = {
 	nginxExtra: string;
 	/** of a proxy: where it forwards to */
 	upstream: string | null;
-	/** www.<name> redirects to it */
+	/** of a redirect: where it sends every request */
+	target: string | null;
+	/** of a redirect: the request's path and query follow the target */
+	keepPath: boolean;
+	/** of a redirect: 301, 302, 307 or 308 */
+	redirectStatus: number;
+	/** www.<name> redirects to it (a redirect's to its target) */
 	www: boolean;
 	/** of an app: restarts start the new process beside the old one */
 	zeroDowntime: boolean;

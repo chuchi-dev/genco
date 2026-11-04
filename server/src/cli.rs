@@ -113,7 +113,7 @@ pub enum DomainCmd {
 
 #[derive(Debug, clap::Args)]
 pub struct DomainOpts {
-	/// static, php, node or rust
+	/// static, php, node, rust, proxy or redirect
 	#[clap(long)]
 	kind: Option<String>,
 	/// for php: 8.2, 8.3, 8.4 or 8.5
@@ -136,7 +136,18 @@ pub struct DomainOpts {
 	/// proxy: where it forwards to, e.g. http://127.0.0.1:8081
 	#[clap(long)]
 	upstream: Option<String>,
-	/// www.<domain> redirects to the domain: true or false
+	/// redirect: where it sends every request, e.g. https://example.ch/
+	#[clap(long)]
+	target: Option<String>,
+	/// redirect: append the request's path and query to the target: true
+	/// (default) or false
+	#[clap(long)]
+	keep_path: Option<bool>,
+	/// redirect: 301 (default), 302, 307 or 308
+	#[clap(long)]
+	status: Option<u16>,
+	/// www.<domain> redirects to the domain (a redirect's to its target):
+	/// true or false
 	#[clap(long)]
 	www: Option<bool>,
 	/// node or rust: a restart starts the new process beside the old one
@@ -495,6 +506,9 @@ pub fn domain(
 					public_dir: opts.public,
 					nginx_extra: opts.nginx_extra.unwrap_or_default(),
 					upstream: opts.upstream,
+					target: opts.target,
+					keep_path: opts.keep_path.unwrap_or(true),
+					redirect_status: opts.status.unwrap_or(301),
 					www: opts.www.unwrap_or(false),
 					zero_downtime: opts.zero_downtime.unwrap_or(false),
 				},
@@ -543,6 +557,12 @@ pub fn domain(
 					Kind::Proxy => opts.upstream.or(d.upstream),
 					_ => None,
 				},
+				target: match kind {
+					Kind::Redirect => opts.target.or(d.target),
+					_ => None,
+				},
+				keep_path: opts.keep_path.unwrap_or(d.keep_path),
+				redirect_status: opts.status.unwrap_or(d.redirect_status),
 				www: opts.www.unwrap_or(d.www),
 				zero_downtime: opts.zero_downtime.unwrap_or(
 					d.zero_downtime && matches!(kind, Kind::Node | Kind::Rust),

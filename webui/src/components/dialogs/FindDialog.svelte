@@ -146,7 +146,7 @@
 						open: page(`/groups/${g.id}`),
 					});
 				for (const d of g.domains)
-					if (has(d.name, d.upstream))
+					if (has(d.name, d.upstream, d.target))
 						out.push({
 							key: 'd' + d.id,
 							icon: 'domain',
