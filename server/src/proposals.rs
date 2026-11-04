@@ -1119,12 +1119,13 @@ mod tests {
 		assert!(list(&conn).unwrap().is_empty());
 	}
 
-	#[test]
-	fn the_admin_approves_the_rewrite() {
+	#[tokio::test]
+	async fn the_admin_approves_the_rewrite() {
 		let db = Db::memory();
+		let draft = Draft::new("pls update craft on а.ch").unwrap();
+		let answer = Ok("Update Craft on а.ch");
+		let (draft, _) = rewrite::mocked(draft, &[answer]).await;
 		let conn = db.conn();
-		let mut draft = Draft::new("pls update craft on а.ch").unwrap();
-		draft = draft.rewritten("m", Ok("Update Craft on а.ch".into()));
 		let peer_id = peer(&conn);
 		let flights = in_flight();
 		let slot = flights.reserve(&conn, peer_id).unwrap();
@@ -1209,13 +1210,13 @@ mod tests {
 		assert_eq!(approved_answer(&p, "Done."), "Done.");
 	}
 
-	#[test]
-	fn the_panel_shows_why_it_wasnt_rewritten() {
+	#[tokio::test]
+	async fn the_panel_shows_why_it_wasnt_rewritten() {
 		let db = Db::memory();
+		let draft = Draft::new("Update Craft to 5.8.1").unwrap();
+		let refused = Ok("Update Craft to `5.9`");
+		let (draft, _) = rewrite::mocked(draft, &[refused, refused]).await;
 		let conn = db.conn();
-		let draft = Draft::new("Update Craft to 5.8.1")
-			.unwrap()
-			.rewritten("m", Ok("Update Craft to `5.9`".into()));
 		let peer_id = peer(&conn);
 		let flights = in_flight();
 		let slot = flights.reserve(&conn, peer_id).unwrap();
@@ -1223,7 +1224,7 @@ mod tests {
 		let p = get_one(&conn, id).unwrap();
 		assert_eq!(p.text, "Update Craft to 5.8.1");
 		assert_eq!(p.rewritten_by, None);
-		assert_eq!(p.rewrite_note.as_deref(), Some("dropped: adds 5.9"));
+		assert_eq!(p.rewrite_note.as_deref(), Some("dropped twice: adds 5.9"));
 	}
 
 	#[tokio::test]

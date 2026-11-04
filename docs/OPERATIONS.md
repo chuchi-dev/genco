@@ -647,15 +647,17 @@ agent may:
   it, a small, cheap model (Gemini Flash with an `openrouter-key`,
   else Claude Haiku) rewrites it into a short Markdown version (a
   title line, then what and why, the steps at a high level, what
-  changes, risks), so the request may take up to 30 seconds. The admin
+  changes, risks), so the request may take up to 45 seconds. The admin
   approves that version and genco's agent gets it; the panel shows the
   original too. A rewrite is dropped when it has a word with a digit,
   dot, slash, @ or colon the original doesn't have as a whole word,
   `code` that isn't in the original as it is, or none of the
   original's negations and warnings ("not", "don't", "only", "keep",
-  "risk", "nicht", ...); then, and without a key, on an error or a
+  "risk", "nicht", ...); then the model is told what was refused and
+  asked once more (the panel says "second try" when that one is taken).
+  When it is refused twice, and without a key, on an error or a
   timeout, the original goes as it is and the panel says why ("Not
-  rewritten: timeout"). An agent has at most 10 undecided proposals,
+  rewritten: dropped twice: adds 5.9"). An agent has at most 10 undecided proposals,
   those still being rewritten count too, so parallel requests can't
   run up the model's bill. genco removes invisible characters
   (zero-width, bidi controls) and control characters from the text

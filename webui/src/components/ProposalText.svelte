@@ -42,7 +42,11 @@
 {#if view === 'original'}
 	<p class="hint">The original the agent sent:</p>
 {:else if proposal.rewrittenBy}
-	<p class="hint">Rewritten for readability by {proposal.rewrittenBy}.</p>
+	<p class="hint">
+		Rewritten for readability by {proposal.rewrittenBy}{proposal.rewriteNote
+			? ` (${proposal.rewriteNote})`
+			: ''}.
+	</p>
 {:else if proposal.rewriteTried}
 	<p class="hint">
 		Not rewritten{proposal.rewriteNote ? `: ${proposal.rewriteNote}` : '.'}
