@@ -861,9 +861,11 @@ pub async fn cli(
 			opened.test().await.map_err(Error::Invalid)
 		}
 		RemoteCmd::Show => {
-			let (Some(v), st) = (view(&db.conn()), state(&db.conn())) else {
+			// one lock at a time: both in one expression deadlocks
+			let Some(v) = view(&db.conn()) else {
 				return Ok("no remote backup".into());
 			};
+			let st = state(&db.conn());
 			let time = |t: Option<i64>| async move {
 				match t {
 					Some(t) => crate::util::format_time(t).await,
