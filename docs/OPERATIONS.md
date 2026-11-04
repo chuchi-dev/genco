@@ -637,9 +637,13 @@ agent may:
   that decides without logging in, handy on a phone: it shows the
   proposal as the panel does (with its warnings and the original),
   Approve and Reject… (with the optional reason). Opening it changes
-  nothing (mail scanners open links too); with two-factor login on,
-  Approve asks for the code, which counts toward the login's limit
-  like a wrong one. The links of a proposal stop working once anybody
+  nothing (mail scanners open links too). Approve needs more than the
+  mailbox, the approval and its comment steer the root agent: the 2FA
+  code with two-factor login on, otherwise the admin's password; wrong
+  ones count toward the login's limits. Reject needs neither, it can't
+  make anything run. The mail has the links first and the proposal's
+  text below a line, so a link in the text can't pass for genco's;
+  nginx logs the panel's token links as `/proposal/...`. The links of a proposal stop working once anybody
   decided it, in the panel or by a link, or it expired; they work only
   on the panel's domain, and an address that tries 20 links that don't
   work waits 15 minutes. The activity log names the admin ("Approve

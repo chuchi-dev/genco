@@ -9,7 +9,8 @@
 		proposal: Proposal;
 		/** the admin of the link */
 		name: string;
-		/** approving asks for the code of the authenticator app */
+		/** approving asks for the code of the authenticator app, otherwise
+		 * for the admin's password */
 		totp: boolean;
 	};
 
@@ -41,6 +42,7 @@
 	import Form from '@/components/win/Form.svelte';
 	import Window from '@/components/win/Window.svelte';
 	import ProposalText from '@/components/ProposalText.svelte';
+	import NoteField from '@/components/NoteField.svelte';
 
 	// the link of a proposal's mail: the admin it went to approves or
 	// rejects it without logging in, also on a phone. Opening it changes
@@ -50,12 +52,16 @@
 	// the link's token doesn't stay in the address bar and the history
 	history.replaceState(history.state, '', '/proposal');
 
-	const touch = matchMedia('(pointer: coarse)').matches;
 	let view = $state<'formatted' | 'original'>('formatted');
 	let rejecting = $state(false);
 	let code = $state('');
+	let password = $state('');
 	let reason = $state('');
 	let comment = $state('');
+	// the comment goes back to the proposing agent with the answer too
+	const commentHint = $derived(
+		`optional, genco's agent and ${link?.proposal.from} see it, e.g. keep the old DNS for now`,
+	);
 	// what happened, or that the link doesn't work (anymore)
 	let done = $state<string | null>(null);
 	let gone = $state(false);
@@ -75,7 +81,7 @@
 	const approve = () =>
 		decide(
 			'approve',
-			{ code, comment },
+			link!.totp ? { code, comment } : { password, comment },
 			`Approved: genco's agent works on it, its answer goes back to ${link!.proposal.from}.`,
 		);
 
@@ -105,17 +111,13 @@
 						oncancel={() => (rejecting = false)}
 						ok="Reject"
 					>
-						<label for="pl-reason">Reason:</label>
-						<!-- svelte-ignore a11y_autofocus -->
-						<textarea
+						<NoteField
 							id="pl-reason"
-							rows="4"
-							maxlength="2000"
-							autofocus
+							label="Reason:"
 							placeholder="optional, sent to {link.proposal.from}"
-							spellcheck={!touch}
+							autofocus
 							bind:value={reason}
-						></textarea>
+						/>
 					</Form>
 				{:else}
 					<p class="hint">
@@ -123,15 +125,13 @@
 						asked. Nothing happens without an approval.
 					</p>
 					<Form onsubmit={approve} ok="Approve">
-						<label for="pl-comment">Comment:</label>
-						<textarea
+						<NoteField
 							id="pl-comment"
-							rows="3"
-							maxlength="2000"
-							placeholder="optional, for genco's agent, e.g. keep the old DNS for now"
-							spellcheck={!touch}
+							label="Comment:"
+							placeholder={commentHint}
+							rows={3}
 							bind:value={comment}
-						></textarea>
+						/>
 						{#if link.totp}
 							<label for="pl-code">Two-factor code:</label>
 							<input
@@ -139,6 +139,14 @@
 								inputmode="numeric"
 								autocomplete="one-time-code"
 								bind:value={code}
+							/>
+						{:else}
+							<label for="pl-password">Your password:</label>
+							<input
+								id="pl-password"
+								type="password"
+								autocomplete="current-password"
+								bind:value={password}
 							/>
 						{/if}
 						{#snippet extra()}

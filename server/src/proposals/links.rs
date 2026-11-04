@@ -1,9 +1,12 @@
 //! The personal link of each admin in a proposal's mail: it shows the
-//! proposal without a login and approves (with the code when the admin has
-//! 2FA) or rejects it, easy on a phone. Opening it changes nothing, mail
-//! scanners fetch links. The links of a proposal stop working once it is
-//! decided, any way, or expired. They work only on the panel's domain,
-//! and wrong ones count per address like wrong passwords.
+//! proposal without a login and approves or rejects it, easy on a phone.
+//! Approving needs a second factor besides the mailbox, the approval and
+//! its comment steer genco's agent: the 2FA code, or the admin's password
+//! without 2FA, both counted per account like at the login. Rejecting
+//! needs none, it can't make anything run. Opening a link changes nothing,
+//! mail scanners fetch links. The links of a proposal stop working once it
+//! is decided, any way, or expired. They work only on the panel's domain,
+//! and links that don't work count per client address (`MAX_FAILURES`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,9 +16,9 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension as _, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use super::{ApproveReq, Proposal, RejectReq, approved, get_one, reject_as};
+use super::{Proposal, RejectReq, admin_note, approved, get_one, reject_as};
 use crate::AppState;
 use crate::activity;
 use crate::agent::Runner;
@@ -104,7 +107,8 @@ struct LinkView {
 	proposal: Proposal,
 	/// the admin of the link
 	name: String,
-	/// approving asks for the code of the authenticator app
+	/// approving asks for the code of the authenticator app, otherwise for
+	/// the admin's password
 	totp: bool,
 }
 
@@ -123,7 +127,22 @@ async fn show(
 	}))
 }
 
-/// Approves as the link's admin, returns the conversation for the runner.
+#[derive(Debug, Default, Deserialize)]
+struct ApproveReq {
+	/// the admin's change to the task, empty for none
+	#[serde(default)]
+	comment: String,
+	/// of the authenticator app, when the admin has 2FA
+	#[serde(default)]
+	code: String,
+	/// the admin's own, when the admin has no 2FA
+	#[serde(default)]
+	password: String,
+}
+
+/// Approves as the link's admin with the second factor, returns the
+/// conversation for the runner. The comment is checked first: a comment
+/// too long mustn't use up the code.
 async fn approve_link(
 	cfg: &Config,
 	db: &Db,
@@ -133,14 +152,21 @@ async fn approve_link(
 	req: &ApproveReq,
 ) -> Result<i64> {
 	let (p, user) = check(cfg, db, headers, token).await?;
+	let comment = admin_note(&req.comment)?;
 	let action = "Approve proposal via the mail link";
-	if let Err(e) = users::verify_code(db, &user, &req.code).await {
+	let verified = if user.totp {
+		users::verify_code(db, &user, &req.code).await
+	} else {
+		users::verify_password(db, &user, &req.password).await
+	};
+	if let Err(e) = verified {
 		log(&db.conn(), &user, action, &p, false);
 		return Err(e);
 	}
 
 	let conn = db.conn();
-	let conversation = approved(&conn, events, p.id, &user, &req.comment)?;
+	let conversation =
+		approved(&conn, events, p.id, &user, comment.as_deref())?;
 	log(&conn, &user, action, &p, true);
 	Ok(conversation)
 }
@@ -206,9 +232,10 @@ mod tests {
 	use totp_rs::{Algorithm, Secret, TOTP};
 
 	use super::*;
-	use crate::proposals::{expire, insert, recipients, rewrite::Draft};
+	use crate::proposals::{MAX_NOTE, expire, insert, rewrite::Draft};
 
 	const DOMAIN: &str = "panel.example.ch";
+	const PASSWORD: &str = "the admin's password";
 
 	fn cfg() -> Config {
 		toml::from_str(&format!("domain = \"{DOMAIN}\"")).unwrap()
@@ -223,14 +250,41 @@ mod tests {
 		h
 	}
 
+	/// An admin with `PASSWORD`; tests that count wrong ones use names of
+	/// their own, wrong passwords count per email.
 	fn admin(conn: &Connection, id: i64, name: &str) -> User {
+		// the lowest cost, a test needn't wait for bcrypt
+		let hash = bcrypt::hash(PASSWORD, 4).unwrap();
 		conn.execute(
 			"INSERT INTO users (id, email, name, password_hash, created_at)
-			VALUES (?1, ?2, ?3, '', 0)",
-			params![id, format!("{name}@example.ch"), name],
+			VALUES (?1, ?2, ?3, ?4, 0)",
+			params![id, format!("{name}@links.example.ch"), name, hash],
 		)
 		.unwrap();
 		users::by_id(conn, id).unwrap()
+	}
+
+	/// Turns on 2FA for the admin, returns a function for its codes.
+	fn with_2fa(db: &Db, user: &User) -> impl Fn() -> String + use<> {
+		let secret = Secret::generate_secret().to_encoded().to_string();
+		db.conn()
+			.execute(
+				"UPDATE users SET totp_secret = ?1 WHERE id = ?2",
+				params![secret, user.id],
+			)
+			.unwrap();
+		let bytes = Secret::Encoded(secret).to_bytes().unwrap();
+		let totp = TOTP::new(
+			Algorithm::SHA1,
+			6,
+			1,
+			30,
+			bytes,
+			Some("genco".into()),
+			user.email.clone(),
+		)
+		.unwrap();
+		move || totp.generate((now() / 1000) as u64)
 	}
 
 	/// A waiting proposal of the agent, for `approver` or every admin.
@@ -254,6 +308,13 @@ mod tests {
 		}
 	}
 
+	fn password(password: &str) -> ApproveReq {
+		ApproveReq {
+			password: password.into(),
+			..Default::default()
+		}
+	}
+
 	fn status(db: &Db, id: i64) -> String {
 		get_one(&db.conn(), id).unwrap().status
 	}
@@ -270,13 +331,9 @@ mod tests {
 		let (cfg, h) = (cfg(), headers("10.0.0.1"));
 		let (id, named) = {
 			let conn = db.conn();
-			let (a, b) = (admin(&conn, 801, "a"), admin(&conn, 802, "b"));
-			let all = proposal(&conn, None);
-			let to = recipients(&conn, all).unwrap();
-			assert_eq!(to, [(a.id, a.email), (b.id, b.email.clone())]);
-			let named = proposal(&conn, Some(b.id));
-			assert_eq!(recipients(&conn, named).unwrap(), [(b.id, b.email)]);
-			(all, named)
+			admin(&conn, 801, "a");
+			admin(&conn, 802, "b");
+			(proposal(&conn, None), proposal(&conn, Some(802)))
 		};
 
 		let ta = create(&db.conn(), id, 801).unwrap();
@@ -299,25 +356,6 @@ mod tests {
 		let tn = create(&db.conn(), named, 802).unwrap();
 		let (p, _) = check(&cfg, &db, &h, &tn).await.unwrap();
 		assert_eq!(p.id, named);
-	}
-
-	#[test]
-	fn the_mail_has_the_link_and_the_panel() {
-		let db = Db::memory();
-		let conn = db.conn();
-		let p = get_one(&conn, proposal(&conn, None)).unwrap();
-		let body = super::super::mail_body(
-			&p,
-			Some(format!("https://{DOMAIN}/agents")),
-			Some(format!("https://{DOMAIN}/proposal/abc")),
-		);
-		assert!(body.contains(
-			"Approve or reject: https://panel.example.ch/proposal/abc \
-			(works without logging in, once; shows the proposal first)"
-		));
-		assert!(body.contains("https://panel.example.ch/agents"));
-		let body = super::super::mail_body(&p, None, None);
-		assert!(body.contains("To approve or reject it, open Start"));
 	}
 
 	#[tokio::test]
@@ -355,7 +393,7 @@ mod tests {
 		let ta = create(&db.conn(), id, 821).unwrap();
 		let tb = create(&db.conn(), id, 822).unwrap();
 
-		let c = approve_link(&cfg, &db, &events, &h, &tb, &code(""))
+		let c = approve_link(&cfg, &db, &events, &h, &tb, &password(PASSWORD))
 			.await
 			.unwrap();
 		let p = get_one(&db.conn(), id).unwrap();
@@ -375,13 +413,14 @@ mod tests {
 		// neither link works anymore, nor a decision in the panel
 		for t in [&ta, &tb] {
 			let again =
-				approve_link(&cfg, &db, &events, &h, t, &code("")).await;
+				approve_link(&cfg, &db, &events, &h, t, &password(PASSWORD))
+					.await;
 			assert!(matches!(again, Err(Error::NotFound)));
 			let again = reject_link(&cfg, &db, &events, &h, t, "").await;
 			assert!(matches!(again, Err(Error::NotFound)));
 		}
 		assert_eq!(links(&db), 0);
-		assert!(approved(&db.conn(), &events, id, &a, "").is_err());
+		assert!(approved(&db.conn(), &events, id, &a, None).is_err());
 	}
 
 	#[tokio::test]
@@ -391,7 +430,7 @@ mod tests {
 		let a = admin(&db.conn(), 831, "a");
 		let decided = proposal(&db.conn(), None);
 		let token = create(&db.conn(), decided, 831).unwrap();
-		approved(&db.conn(), &events, decided, &a, "").unwrap();
+		approved(&db.conn(), &events, decided, &a, None).unwrap();
 		assert!(matches!(
 			check(&cfg, &db, &h, &token).await,
 			Err(Error::NotFound)
@@ -404,7 +443,8 @@ mod tests {
 			.execute("UPDATE proposals SET created_at = 0 WHERE id = ?1", [old])
 			.unwrap();
 		let tried =
-			approve_link(&cfg, &db, &events, &h, &token, &code("")).await;
+			approve_link(&cfg, &db, &events, &h, &token, &password(PASSWORD))
+				.await;
 		assert!(matches!(tried, Err(Error::NotFound)));
 		expire(&db.conn()).unwrap();
 		assert_eq!(status(&db, old), "expired");
@@ -429,44 +469,135 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn with_2fa_approving_needs_the_code() {
+	async fn without_2fa_approving_needs_the_password() {
 		let db = Db::memory();
 		let (cfg, h, events) = (cfg(), headers("10.0.0.6"), Events::new());
 		let id = proposal(&db.conn(), None);
-		let a = admin(&db.conn(), 851, "a");
-		let secret = Secret::generate_secret().to_encoded().to_string();
-		db.conn()
-			.execute(
-				"UPDATE users SET totp_secret = ?1 WHERE id = ?2",
-				params![secret, a.id],
-			)
-			.unwrap();
-		let token = create(&db.conn(), id, a.id).unwrap();
+		admin(&db.conn(), 851, "pw");
+		let token = create(&db.conn(), id, 851).unwrap();
 		let (_, user) = check(&cfg, &db, &h, &token).await.unwrap();
-		assert!(user.totp);
+		assert!(!user.totp);
 
-		for wrong in ["", "000000"] {
-			let req = code(wrong);
+		// the mailbox alone doesn't approve
+		for req in [password(""), password("wrong"), code("123456")] {
 			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
 			assert!(tried.await.is_err());
 			assert_eq!(status(&db, id), "pending");
 		}
-		let bytes = Secret::Encoded(secret).to_bytes().unwrap();
-		let totp = TOTP::new(
-			Algorithm::SHA1,
-			6,
-			1,
-			30,
-			bytes,
-			Some("genco".into()),
-			a.email.clone(),
-		)
-		.unwrap();
-		let now_code = totp.generate((now() / 1000) as u64);
-		approve_link(&cfg, &db, &events, &h, &token, &code(&now_code))
+		let failed: i64 = db
+			.conn()
+			.query_row("SELECT count(*) FROM activity WHERE ok = 0", [], |r| {
+				r.get(0)
+			})
+			.unwrap();
+		assert_eq!(failed, 3);
+		approve_link(&cfg, &db, &events, &h, &token, &password(PASSWORD))
 			.await
 			.unwrap();
 		assert_eq!(status(&db, id), "approved");
+	}
+
+	#[tokio::test]
+	async fn wrong_passwords_count_like_at_the_login() {
+		let db = Db::memory();
+		let (cfg, h, events) = (cfg(), headers("10.0.0.10"), Events::new());
+		let id = proposal(&db.conn(), None);
+		let a = admin(&db.conn(), 852, "pw-count");
+		let token = create(&db.conn(), id, a.id).unwrap();
+		let key = format!("password:{}", a.email);
+		for _ in 0..users::MAX_PASSWORD_FAILURES - 2 {
+			users::attempt_failed(&key, users::MAX_PASSWORD_FAILURES);
+		}
+
+		for _ in 0..2 {
+			let req = password("wrong");
+			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
+			assert!(tried.await.is_err());
+		}
+		// the two through the link used up the rest
+		let req = password(PASSWORD);
+		let tried = approve_link(&cfg, &db, &events, &h, &token, &req).await;
+		assert!(
+			matches!(tried, Err(Error::Invalid(e)) if e.contains("too many"))
+		);
+		assert_eq!(status(&db, id), "pending");
+	}
+
+	#[tokio::test]
+	async fn with_2fa_approving_needs_the_code() {
+		let db = Db::memory();
+		let (cfg, h, events) = (cfg(), headers("10.0.0.11"), Events::new());
+		let id = proposal(&db.conn(), None);
+		let a = admin(&db.conn(), 853, "totp");
+		let now_code = with_2fa(&db, &a);
+		let token = create(&db.conn(), id, a.id).unwrap();
+		let (_, user) = check(&cfg, &db, &h, &token).await.unwrap();
+		assert!(user.totp);
+
+		// the password doesn't do instead of the code
+		for req in [code(""), code("000000"), password(PASSWORD)] {
+			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
+			assert!(tried.await.is_err());
+			assert_eq!(status(&db, id), "pending");
+		}
+		approve_link(&cfg, &db, &events, &h, &token, &code(&now_code()))
+			.await
+			.unwrap();
+		assert_eq!(status(&db, id), "approved");
+	}
+
+	#[tokio::test]
+	async fn wrong_codes_count_like_at_the_login() {
+		let db = Db::memory();
+		let (cfg, h, events) = (cfg(), headers("10.0.0.12"), Events::new());
+		let id = proposal(&db.conn(), None);
+		let a = admin(&db.conn(), 854, "totp-count");
+		let now_code = with_2fa(&db, &a);
+		let token = create(&db.conn(), id, a.id).unwrap();
+		let key = format!("code:{}", a.id);
+		for _ in 0..users::MAX_CODE_FAILURES - 2 {
+			users::attempt_failed(&key, users::MAX_CODE_FAILURES);
+		}
+
+		for _ in 0..2 {
+			let req = code("000000");
+			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
+			assert!(tried.await.is_err());
+		}
+		let req = code(&now_code());
+		let tried = approve_link(&cfg, &db, &events, &h, &token, &req).await;
+		assert!(tried.is_err());
+		assert_eq!(status(&db, id), "pending");
+	}
+
+	#[tokio::test]
+	async fn a_long_comment_doesnt_use_up_the_code() {
+		let db = Db::memory();
+		let (cfg, h, events) = (cfg(), headers("10.0.0.13"), Events::new());
+		let id = proposal(&db.conn(), None);
+		let a = admin(&db.conn(), 855, "totp-note");
+		let now_code = with_2fa(&db, &a);
+		let token = create(&db.conn(), id, a.id).unwrap();
+
+		let mut req = ApproveReq {
+			comment: "x".repeat(MAX_NOTE + 1),
+			code: now_code(),
+			..Default::default()
+		};
+		let tried = approve_link(&cfg, &db, &events, &h, &token, &req).await;
+		assert!(
+			matches!(tried, Err(Error::Invalid(e)) if e.contains("characters"))
+		);
+		assert_eq!(status(&db, id), "pending");
+
+		// the same code still works
+		req.comment = "Keep the old DNS.".into();
+		approve_link(&cfg, &db, &events, &h, &token, &req)
+			.await
+			.unwrap();
+		let p = get_one(&db.conn(), id).unwrap();
+		assert_eq!(p.status, "approved");
+		assert_eq!(p.comment.as_deref(), Some("Keep the old DNS."));
 	}
 
 	#[tokio::test]

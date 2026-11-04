@@ -8,10 +8,11 @@
 //! `VALID_DAYS` go to the webhook too.
 //! A small model rewrites the proposal into a short formatted version
 //! first (rewrite.rs): the admin approves that version and genco's agent
-//! gets it. The mail has a personal link for each admin, it approves or
-//! rejects without a login (links.rs).
+//! gets it. The mail (mail.rs) has a personal link for each admin, it
+//! approves or rejects without a login (links.rs).
 
 mod links;
+mod mail;
 mod rewrite;
 
 use std::collections::BTreeMap;
@@ -36,14 +37,17 @@ use crate::peers;
 use crate::tokens::{self, ApiToken, Caller};
 use crate::users::Authed;
 
+pub use self::mail::due_mails;
+
 /// The longest delay of the mail, in minutes.
 const MAX_MAIL_DELAY: i64 = 24 * 60;
 /// A proposal nobody decided on in this time expires.
 const VALID_DAYS: i64 = 7;
 const VALID_MS: i64 = VALID_DAYS * 24 * 60 * 60 * 1000;
 const MAX_TEXT: usize = 20_000;
-/// The longest reason of a rejection, in characters.
-const MAX_REASON: usize = 2000;
+/// The longest note of an admin (the reason of a rejection, the comment
+/// of an approval), in characters.
+const MAX_NOTE: usize = 2000;
 /// More undecided proposals of one agent are refused, a loop mustn't mail
 /// the admins without end. Proposals still being rewritten count too.
 const MAX_PENDING: i64 = 10;
@@ -369,6 +373,12 @@ fn decide(
 	if changed != 1 {
 		return Err(Error::Invalid("the proposal is decided already".into()));
 	}
+	end_links(conn, id)?;
+	Ok(())
+}
+
+/// The links of a decided or expired proposal stop working.
+fn end_links(conn: &Connection, id: i64) -> rusqlite::Result<()> {
 	conn.execute("DELETE FROM proposal_links WHERE proposal_id = ?1", [id])?;
 	Ok(())
 }
@@ -528,138 +538,6 @@ struct Created {
 	note: Option<&'static str>,
 }
 
-/// Mails the proposal to its approver or every admin, each with their
-/// own link that decides without a login; errors are logged. With mail
-/// off it is only in the panel's tray.
-async fn mail(cfg: &Config, db: &Db, id: i64) {
-	if crate::mail::off(db) {
-		return;
-	}
-	let found = (|| -> Result<(Proposal, Vec<(i64, String)>)> {
-		let conn = db.conn();
-		Ok((get_one(&conn, id)?, recipients(&conn, id)?))
-	})();
-	let (p, to) = match found {
-		Ok(found) => found,
-		Err(e) => {
-			tracing::error!("mail about proposal {id}: {e}");
-			return;
-		}
-	};
-
-	let subject = format!(
-		"Proposal from {}: {}",
-		p.from,
-		crate::util::first_line(&p.text, 60)
-	);
-	for (user_id, email) in to {
-		let link = match &cfg.domain {
-			Some(_) => match links::create(&db.conn(), id, user_id) {
-				Ok(token) => cfg.panel_url(&format!("/proposal/{token}")),
-				Err(e) => {
-					tracing::error!("link of proposal {id}: {e}");
-					None
-				}
-			},
-			None => None,
-		};
-		let body = mail_body(&p, cfg.panel_url("/agents"), link);
-		let sent = crate::mail::send(cfg, db, &[email], &subject, &body).await;
-		if let Err(e) = sent {
-			tracing::error!("mail about proposal {id}: {e}");
-		}
-	}
-}
-
-/// The id and email of the proposal's approver, or of every admin.
-fn recipients(conn: &Connection, id: i64) -> Result<Vec<(i64, String)>> {
-	let to = conn
-		.prepare(
-			"SELECT u.id, u.email FROM users u, proposals r
-			WHERE r.id = ?1 AND (r.approver_id IS NULL OR r.approver_id = u.id)
-			ORDER BY u.id",
-		)?
-		.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
-		.collect::<rusqlite::Result<Vec<_>>>()?;
-	Ok(to)
-}
-
-/// The mail about the proposal, with the admin's own link if the panel
-/// has a domain.
-fn mail_body(
-	p: &Proposal,
-	panel: Option<String>,
-	link: Option<String>,
-) -> String {
-	let rewritten = match &p.rewritten_by {
-		Some(model) => format!(
-			"{model} rewrote it for readability, the panel shows the \
-			original too.\n\n"
-		),
-		None => String::new(),
-	};
-	let mut warnings = String::new();
-	if p.mixed_scripts {
-		warnings.push_str(
-			"Warning: the original has letters, digits or punctuation \
-			outside the usual European ones (e.g. Cyrillic а, ∕ for /), \
-			check names, addresses and commands carefully.\n\n",
-		);
-	}
-	if p.rewrite_mixed_scripts {
-		warnings.push_str(
-			"Warning: the rewrite has letters, digits or punctuation \
-			outside the usual European ones, compare it with the original \
-			in the panel.\n\n",
-		);
-	}
-	let link = link
-		.map(|l| {
-			format!(
-				"Approve or reject: {l} (works without logging in, once; \
-				shows the proposal first)\n\nOr "
-			)
-		})
-		.unwrap_or_else(|| "To approve or reject it, ".into());
-	let panel = panel.map(|url| format!("{url}\n\n")).unwrap_or_default();
-	format!(
-		"The AI agent {} proposes this task for genco's agent:\n\n{}\n\n\
-		{rewritten}{warnings}{link}open Start → AI Agents → Proposals:\n\n\
-		{panel}Nothing happens without an approval. It expires in \
-		{VALID_DAYS} days.\n",
-		p.from, p.text
-	)
-}
-
-/// Every minute: the mails of proposals whose delay is over and that
-/// nobody decided on.
-pub async fn due_mails(cfg: &Config, db: &Db) {
-	let due = (|| -> rusqlite::Result<Vec<i64>> {
-		let conn = db.conn();
-		let mut stmt = conn.prepare(
-			"SELECT id FROM proposals
-			WHERE mail_at IS NOT NULL AND mail_at <= ?1",
-		)?;
-		let ids = stmt
-			.query_map([now()], |r| r.get(0))?
-			.collect::<rusqlite::Result<Vec<i64>>>()?;
-		conn.execute(
-			"UPDATE proposals SET mail_at = NULL
-			WHERE mail_at IS NOT NULL AND mail_at <= ?1",
-			[now()],
-		)?;
-		Ok(ids)
-	})();
-	match due {
-		Ok(ids) => {
-			for id in ids {
-				mail(cfg, db, id).await;
-			}
-		}
-		Err(e) => tracing::error!("proposal mails: {e}"),
-	}
-}
-
 /// An agent proposes a task; a small model rewrites it (the agent waits
 /// for that), then its approver or every admin gets a mail, after
 /// `mailDelay` minutes if nobody decided by then.
@@ -708,7 +586,7 @@ async fn propose(
 	// hold its request
 	if req.mail_delay == 0 {
 		let db = db.clone();
-		tokio::spawn(async move { mail(&cfg, &db, id).await });
+		tokio::spawn(async move { mail::mail(&cfg, &db, id).await });
 	}
 	let note = crate::mail::off(&db).then_some(
 		"mail is off on this server: no mail goes to the approver, the \
@@ -743,32 +621,38 @@ async fn list_route(
 	Ok(Json(list(&db.conn())?))
 }
 
-/// The proposal becomes a conversation, with the admin's comment if any;
-/// returns its id, the runner starts it.
+/// The proposal becomes a conversation, with the admin's comment (from
+/// `admin_note`) if any; returns its id, the runner starts it. All of it
+/// or nothing: a failure leaves the proposal pending.
 fn approved(
 	conn: &Connection,
 	events: &Events,
 	id: i64,
 	by: &crate::users::User,
-	comment: &str,
+	comment: Option<&str>,
 ) -> Result<i64> {
-	let comment = reason(comment)?;
-	decide(conn, id, "approved", by)?;
-	conn.execute(
+	let tx = conn.unchecked_transaction()?;
+	decide(&tx, id, "approved", by)?;
+	tx.execute(
 		"UPDATE proposals SET comment = ?1 WHERE id = ?2",
 		params![comment, id],
 	)?;
-	let p = get_one(conn, id)?;
+	let p = get_one(&tx, id)?;
 	let c = convs::create(
-		conn,
+		&tx,
 		&format!("{}: {}", p.from, crate::util::first_line(&p.text, 60)),
 	)?;
-	conn.execute(
+	tx.execute(
 		"UPDATE proposals SET conversation_id = ?1 WHERE id = ?2",
 		params![c, id],
 	)?;
-	for data in task(&p, &by.name) {
-		let message = convs::insert_message(conn, c, data)?;
+	let messages = task(&p, &by.name)
+		.into_iter()
+		.map(|data| convs::insert_message(&tx, c, data))
+		.collect::<rusqlite::Result<Vec<_>>>()?;
+	tx.commit()?;
+
+	for message in messages {
 		events.send(Event::Message { message });
 	}
 	events.send(Event::Proposals);
@@ -780,10 +664,6 @@ struct ApproveReq {
 	/// the admin's change to the task, empty for none
 	#[serde(default)]
 	comment: String,
-	/// of the authenticator app, for the mail's link when the admin has
-	/// 2FA
-	#[serde(default)]
-	code: String,
 }
 
 /// The proposal becomes a conversation, returns its id. The comment is
@@ -796,9 +676,9 @@ async fn approve(
 	Path(id): Path<i64>,
 	req: Option<Json<ApproveReq>>,
 ) -> Result<Json<i64>> {
-	let comment = req.unwrap_or_default().0.comment;
+	let comment = admin_note(&req.unwrap_or_default().0.comment)?;
 	let conversation =
-		approved(&db.conn(), &events, id, &authed.user, &comment)?;
+		approved(&db.conn(), &events, id, &authed.user, comment.as_deref())?;
 	runner.start(conversation);
 	Ok(Json(conversation))
 }
@@ -812,12 +692,12 @@ struct RejectReq {
 
 /// The reason of a rejection or the comment of an approval as the agents
 /// get it, cleaned like a proposal; `None` when there is none.
-fn reason(message: &str) -> Result<Option<String>> {
-	let (text, _) = clean_text(message);
+fn admin_note(note: &str) -> Result<Option<String>> {
+	let (text, _) = clean_text(note);
 	let text = text.trim();
-	if text.chars().count() > MAX_REASON {
+	if text.chars().count() > MAX_NOTE {
 		return Err(Error::Invalid(format!(
-			"a reason or comment has at most {MAX_REASON} characters"
+			"the text has more than {MAX_NOTE} characters"
 		)));
 	}
 	Ok((!text.is_empty()).then(|| text.into()))
@@ -856,7 +736,7 @@ async fn reject_as(
 	by: &crate::users::User,
 	message: &str,
 ) -> Result<()> {
-	let reason = reason(message)?;
+	let reason = admin_note(message)?;
 	let p = rejected(&db.conn(), id, by, reason.as_deref())?;
 	events.send(Event::Proposals);
 	tell(cfg, db, &p, rejected_text(&by.name, reason.as_deref())).await;
@@ -895,10 +775,7 @@ fn expire(conn: &Connection) -> Result<Vec<Proposal>> {
 			[id],
 		)?;
 		if changed == 1 {
-			conn.execute(
-				"DELETE FROM proposal_links WHERE proposal_id = ?1",
-				[id],
-			)?;
+			end_links(conn, id)?;
 			expired.push(get_one(conn, id)?);
 		}
 	}
@@ -944,7 +821,7 @@ pub fn routes() -> Router<AppState> {
 mod tests {
 	use super::*;
 
-	fn peer(conn: &Connection) -> i64 {
+	pub(super) fn peer(conn: &Connection) -> i64 {
 		conn.execute(
 			"INSERT INTO peers (name, key, key_hash, created_at)
 			VALUES ('Corleone', 'k', 'h', 0)",
@@ -959,7 +836,7 @@ mod tests {
 	}
 
 	/// Stores a proposal that wasn't rewritten.
-	fn add(
+	pub(super) fn add(
 		conn: &Connection,
 		peer_id: i64,
 		text: &str,
@@ -970,7 +847,7 @@ mod tests {
 		insert(conn, flights.reserve(conn, peer_id)?, &draft, approver_id)
 	}
 
-	fn admin(conn: &Connection, name: &str) -> crate::users::User {
+	pub(super) fn admin(conn: &Connection, name: &str) -> crate::users::User {
 		conn.execute(
 			"INSERT INTO users (email, name, password_hash, created_at)
 			VALUES (?1, ?2, '', 0)",
@@ -995,20 +872,6 @@ mod tests {
 
 		decide(&conn, id, "approved", &a).unwrap();
 		assert!(decide(&conn, id, "rejected", &b).is_err());
-	}
-
-	#[test]
-	fn a_decision_cancels_the_delayed_mail() {
-		let db = Db::memory();
-		let conn = db.conn();
-		let id = add(&conn, peer(&conn), "Update Craft", None).unwrap();
-		conn.execute("UPDATE proposals SET mail_at = 1", [])
-			.unwrap();
-		decide(&conn, id, "approved", &admin(&conn, "a")).unwrap();
-		let mail_at: Option<i64> = conn
-			.query_row("SELECT mail_at FROM proposals", [], |r| r.get(0))
-			.unwrap();
-		assert_eq!(mail_at, None);
 	}
 
 	#[test]
@@ -1120,16 +983,16 @@ mod tests {
 
 	#[test]
 	fn a_rejection_may_have_a_reason() {
-		assert_eq!(reason("").unwrap(), None);
-		assert_eq!(reason(" \u{200B}\n ").unwrap(), None);
+		assert_eq!(admin_note("").unwrap(), None);
+		assert_eq!(admin_note(" \u{200B}\n ").unwrap(), None);
 		assert_eq!(
-			reason(" Not\u{0} now,\r\nask\u{202E} again\u{7F}. ")
+			admin_note(" Not\u{0} now,\r\nask\u{202E} again\u{7F}. ")
 				.unwrap()
 				.as_deref(),
 			Some("Not now,\nask again.")
 		);
-		assert!(reason(&"ä".repeat(MAX_REASON)).is_ok());
-		assert!(reason(&"ä".repeat(MAX_REASON + 1)).is_err());
+		assert!(admin_note(&"ä".repeat(MAX_NOTE)).is_ok());
+		assert!(admin_note(&"ä".repeat(MAX_NOTE + 1)).is_err());
 
 		assert_eq!(rejected_text("a", None), "a rejected the proposal.");
 		assert_eq!(
@@ -1307,18 +1170,8 @@ mod tests {
 		let a = admin(&conn, "a");
 		let p = peer(&conn);
 		let id = add(&conn, p, "Move DNS to Hetzner", None).unwrap();
-		let long = "x".repeat(MAX_REASON + 1);
-		assert!(approved(&conn, &events, id, &a, &long).is_err());
-		assert_eq!(get_one(&conn, id).unwrap().status, "pending");
-
-		approved(
-			&conn,
-			&events,
-			id,
-			&a,
-			" Yes, but keep\u{200B} the old DNS. ",
-		)
-		.unwrap();
+		let note = admin_note(" Yes, but keep\u{200B} the old DNS. ").unwrap();
+		approved(&conn, &events, id, &a, note.as_deref()).unwrap();
 		let p = get_one(&conn, id).unwrap();
 		assert_eq!(p.comment.as_deref(), Some("Yes, but keep the old DNS."));
 		let [
@@ -1349,7 +1202,7 @@ mod tests {
 		);
 
 		let id = add(&conn, p.peer_id, "Update Craft", None).unwrap();
-		approved(&conn, &events, id, &a, " ").unwrap();
+		approved(&conn, &events, id, &a, None).unwrap();
 		let p = get_one(&conn, id).unwrap();
 		assert_eq!(p.comment, None);
 		assert_eq!(task(&p, "a").len(), 2);

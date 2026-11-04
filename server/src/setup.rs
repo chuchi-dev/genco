@@ -417,6 +417,40 @@ async fn mariadb() -> Result<(), String> {
 	Ok(())
 }
 
+/// nginx's own settings for genco and the hosts it doesn't know.
+const NGINX_CONF: &str = "# written by genco
+# the panel's log leaves out the query, the event stream and downloads send
+# a ticket for the session in it, and the tokens of the links in mails
+log_format genco_panel '$remote_addr [$time_local] \"$request_method $genco_uri\" '
+	'$status $body_bytes_sent \"$http_user_agent\"';
+map $uri $genco_uri {
+	default $uri;
+	\"~^(?<path>/(api/)?(proposal|proposal-links|confirm|actions|invite|users/invite|email|users/email)/)[^/]+(?<rest>.*)$\" \"${path}...${rest}\";
+}
+# password guessing: 10 login attempts per minute and client
+limit_req_zone $binary_remote_addr zone=genco_login:1m rate=10r/m;
+limit_req_status 429;
+
+map $http_upgrade $connection_upgrade {
+	default upgrade;
+	'' close;
+}
+
+# unknown hosts get nothing
+server {
+	listen 80 default_server;
+	listen [::]:80 default_server;
+	location /.well-known/acme-challenge/ {
+		root /var/lib/genco-acme;
+	}
+	location / {
+		return 444;
+	}
+}
+
+include /etc/nginx/genco/*.conf;
+";
+
 /// The domains' nginx logs, rotated like Debian's /var/log/nginx/*.log.
 const NGINX_LOGROTATE: &str = "# written by genco
 /var/log/nginx/genco/*.log {
@@ -449,37 +483,7 @@ async fn nginx() -> Result<(), String> {
 	// config.toml (0600)
 	sh("chmod 755 /etc/genco /etc/genco/php /etc/genco/apps").await?;
 
-	write(
-		"/etc/nginx/conf.d/genco.conf",
-		"# written by genco
-# the panel's log leaves out the query, the event stream and downloads send
-# a ticket for the session in it
-log_format genco_panel '$remote_addr [$time_local] \"$request_method $uri\" '
-	'$status $body_bytes_sent \"$http_user_agent\"';
-# password guessing: 10 login attempts per minute and client
-limit_req_zone $binary_remote_addr zone=genco_login:1m rate=10r/m;
-limit_req_status 429;
-
-map $http_upgrade $connection_upgrade {
-	default upgrade;
-	'' close;
-}
-
-# unknown hosts get nothing
-server {
-	listen 80 default_server;
-	listen [::]:80 default_server;
-	location /.well-known/acme-challenge/ {
-		root /var/lib/genco-acme;
-	}
-	location / {
-		return 444;
-	}
-}
-
-include /etc/nginx/genco/*.conf;
-",
-	)?;
+	write("/etc/nginx/conf.d/genco.conf", NGINX_CONF)?;
 
 	// Debian's rule only rotates /var/log/nginx/*.log
 	write("/etc/logrotate.d/genco", NGINX_LOGROTATE)?;
@@ -671,5 +675,32 @@ mod tests {
 		assert!(conf.contains("rotate 14"));
 		assert!(conf.contains("create 0640 www-data adm"));
 		assert!(conf.contains("invoke-rc.d nginx rotate"));
+	}
+
+	#[test]
+	fn the_panel_log_masks_the_tokens_of_links() {
+		let conf = NGINX_CONF;
+		assert!(conf.contains("\"$request_method $genco_uri\""));
+		assert!(!conf.contains("$request_method $uri"));
+		let map = conf.split("map $uri $genco_uri {").nth(1).unwrap();
+		let map = map.split("\n}").next().unwrap();
+		// every page and API route with a token of a mail in its path
+		for path in [
+			"proposal",
+			"proposal-links",
+			"confirm",
+			"actions",
+			"invite",
+			"users/invite",
+			"email",
+			"users/email",
+		] {
+			assert!(
+				map.contains(&format!("|{path}|"))
+					|| map.contains(&format!("({path}|"))
+					|| map.contains(&format!("|{path})"))
+			);
+		}
+		assert!(map.contains("\"${path}...${rest}\";"));
 	}
 }

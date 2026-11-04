@@ -29,14 +29,15 @@ const SESSION_DURATION_MS: i64 = 1000 * 60 * 60 * 24 * 30;
 /// a session not used for this long ends before its 30 days
 const IDLE_MS: i64 = 1000 * 60 * 60 * 24 * 3;
 /// wrong 2FA codes, or passwords, in a row before the account waits
-const MAX_CODE_FAILURES: u32 = 5;
-const MAX_PASSWORD_FAILURES: u32 = 10;
+pub const MAX_CODE_FAILURES: u32 = 5;
+pub const MAX_PASSWORD_FAILURES: u32 = 10;
 const CODE_LOCK_MS: i64 = 1000 * 60 * 15;
 
-/// wrong 2FA codes (`code:<user id>`), passwords (`password:<email>`)
-/// and links of proposal mails (`proposal-link:<ip>`): how many and when
-/// the last was. nginx limits per IP, this per account, also for a client
-/// that reaches genco without nginx.
+/// wrong 2FA codes (`code:<user id>`) and passwords (`password:<email>`)
+/// per account, links of proposal mails that don't work per client address
+/// (`proposal-link:<ip>`): how many and when the last was. nginx limits
+/// the login per IP, the accounts' limits hold also for a client that
+/// reaches genco without nginx, or changes its address.
 static CODE_FAILURES: LazyLock<Mutex<HashMap<String, (u32, i64)>>> =
 	LazyLock::new(Default::default);
 
@@ -526,7 +527,8 @@ struct PasswordReq {
 }
 
 /// The admin's own password, for what a stolen session alone mustn't do
-/// (two-factor, invites, tokens). It counts against the same limit as the
+/// (two-factor, invites, tokens), and approving through a proposal mail's
+/// link without 2FA. It counts against the same limit as the
 /// login, the try before the check: parallel guesses don't get around it.
 pub async fn verify_password(
 	db: &Db,

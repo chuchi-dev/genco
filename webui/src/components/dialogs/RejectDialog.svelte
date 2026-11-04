@@ -2,12 +2,12 @@
 	import { post, type Proposal } from '@/lib/api';
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
+	import NoteField from '../NoteField.svelte';
 
 	// rejects a proposal, the reason goes to the agent that proposed it
 	let { proposal, onclose }: { proposal: Proposal; onclose: () => void } =
 		$props();
 
-	const touch = matchMedia('(pointer: coarse)').matches;
 	let reason = $state('');
 
 	async function reject() {
@@ -18,16 +18,12 @@
 
 <Dialog title="Reject Proposal" icon="agent" {onclose} width={440}>
 	<Form onsubmit={reject} oncancel={onclose} ok="Reject">
-		<label for="rj-reason">Reason:</label>
-		<!-- svelte-ignore a11y_autofocus -->
-		<textarea
+		<NoteField
 			id="rj-reason"
-			rows="4"
-			maxlength="2000"
-			autofocus
+			label="Reason:"
 			placeholder="optional, sent to {proposal.from}"
-			spellcheck={!touch}
+			autofocus
 			bind:value={reason}
-		></textarea>
+		/>
 	</Form>
 </Dialog>
