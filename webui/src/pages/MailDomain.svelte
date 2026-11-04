@@ -22,8 +22,8 @@
 	import MailboxDialog from '@/components/dialogs/MailboxDialog.svelte';
 	import DnsTable from '@/components/DnsTable.svelte';
 	import ForwardDialog from '@/components/dialogs/ForwardDialog.svelte';
-	import SenderDialog from '@/components/dialogs/SenderDialog.svelte';
-	import SenderSettings from '@/components/SenderSettings.svelte';
+	import SendOnlyDialog from '@/components/dialogs/SendOnlyDialog.svelte';
+	import SendOnlySettings from '@/components/SendOnlySettings.svelte';
 
 	let { id }: { id: string } = $props();
 
@@ -34,10 +34,14 @@
 
 	let selectedBox = $state<number | null>(null);
 	let selectedForward = $state<number | null>(null);
-	let selectedSender = $state<number | null>(null);
+	let selectedSendOnly = $state<number | null>(null);
+	// a new password hides the settings shown with the old one
+	let newPasswords = $state(0);
 	// the dialog that is open: a new mailbox, one to change, a forward, a
 	// send-only address
-	let editing = $state<'new' | Mailbox | 'forward' | 'sender' | null>(null);
+	let editing = $state<'new' | Mailbox | 'forward' | 'send-only' | null>(
+		null,
+	);
 	let modeError = $state<string | null>(null);
 
 	let dns = $state<DnsRecord[] | null>(null);
@@ -49,27 +53,32 @@
 		domain.forwards.find(f => f.id === selectedForward),
 	);
 
-	const sender = $derived(domain.senders.find(s => s.id === selectedSender));
+	const sendOnly = $derived(
+		domain.sendOnlyAddresses.find(s => s.id === selectedSendOnly),
+	);
 
-	async function newSenderPassword() {
+	async function newSendOnlyPassword() {
 		const yes =
-			sender &&
+			sendOnly &&
 			(await message.confirm(
 				'New Password',
-				`Give ${sender.address} a new password? Apps with the old one can't send until they get the new one.`,
+				`Give ${sendOnly.address} a new password? Apps with the old one can't send until they get the new one.`,
 			));
-		if (yes) await post(`/mail-senders/${sender.id}/password`);
+		if (yes) {
+			await post(`/send-only/${sendOnly.id}/password`);
+			newPasswords++;
+		}
 	}
 
-	async function removeSender() {
+	async function removeSendOnly() {
 		const deleted =
-			sender &&
+			sendOnly &&
 			(await confirmDelete({
 				title: 'Delete Send-only Address',
-				text: `Delete ${sender.address}? Apps that send with its login can't send anymore.`,
-				path: '/mail-senders/' + sender.id,
+				text: `Delete ${sendOnly.address}? Apps that send with its login can't send anymore.`,
+				path: '/send-only/' + sendOnly.id,
 			}));
-		if (deleted) selectedSender = null;
+		if (deleted) selectedSendOnly = null;
 	}
 
 	async function switchMode() {
@@ -205,9 +214,9 @@
 	no mailbox.
 </p>
 <ListView
-	items={domain.senders}
+	items={domain.sendOnlyAddresses}
 	key={s => s.id}
-	bind:selected={selectedSender}
+	bind:selected={selectedSendOnly}
 	columns={[{ label: 'Address' }, { label: 'For' }]}
 	empty="No send-only addresses."
 	maxHeight={200}
@@ -218,15 +227,15 @@
 	{/snippet}
 </ListView>
 <div class="row-buttons">
-	<Button onclick={() => (editing = 'sender')}>Add…</Button>
-	<Button onclick={newSenderPassword} disabled={!sender}>
+	<Button onclick={() => (editing = 'send-only')}>Add…</Button>
+	<Button onclick={newSendOnlyPassword} disabled={!sendOnly}>
 		New Password…
 	</Button>
-	<Button onclick={removeSender} disabled={!sender}>Delete…</Button>
+	<Button onclick={removeSendOnly} disabled={!sendOnly}>Delete…</Button>
 </div>
-{#if sender}
-	{#key sender.id}
-		<SenderSettings {sender} {host} />
+{#if sendOnly}
+	{#key `${sendOnly.id}-${newPasswords}`}
+		<SendOnlySettings {sendOnly} />
 	{/key}
 {/if}
 
@@ -251,11 +260,11 @@
 
 {#if editing === 'new'}
 	<MailboxDialog {domain} onclose={() => (editing = null)} />
-{:else if editing === 'sender'}
-	<SenderDialog
+{:else if editing === 'send-only'}
+	<SendOnlyDialog
 		{domain}
 		oncreated={id => {
-			selectedSender = id;
+			selectedSendOnly = id;
 			editing = null;
 		}}
 		onclose={() => (editing = null)}

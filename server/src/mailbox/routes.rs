@@ -65,52 +65,58 @@ pub(super) async fn update_mode(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct SenderReq {
+pub(super) struct SendOnlyReq {
 	pub(super) local_part: String,
 	#[serde(default)]
 	pub(super) note: String,
 }
 
-pub(super) async fn create_sender(
+pub(super) async fn create_send_only(
 	_authed: Authed,
 	State(state): State<AppState>,
 	UrlPath(domain_id): UrlPath<i64>,
-	Json(req): Json<SenderReq>,
+	Json(req): Json<SendOnlyReq>,
 ) -> Result<Json<i64>> {
 	domain_by_id(&state.db.conn(), domain_id)?;
-	let key = std::path::Path::new(crate::secrets::KEY_FILE);
-	let id =
-		send_only::add(&state.db, key, domain_id, &req.local_part, &req.note)
-			.await?;
+	let key = crate::secrets::key_file();
+	let id = send_only::add(
+		&state.cfg,
+		&state.db,
+		key,
+		domain_id,
+		&req.local_part,
+		&req.note,
+	)
+	.await?;
 	apply_soon(state.cfg.clone(), state.db.clone(), state.events.clone());
 	Ok(Json(id))
 }
 
 /// The app settings with the password; the activity log records who
 /// asked.
-pub(super) async fn sender_settings(
+pub(super) async fn send_only_settings(
 	_authed: Authed,
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<send_only::AppSettings>> {
-	let key = std::path::Path::new(crate::secrets::KEY_FILE);
+	let key = crate::secrets::key_file();
 	Ok(Json(send_only::app_settings(&cfg, &db.conn(), key, id)?))
 }
 
-pub(super) async fn sender_password(
+pub(super) async fn send_only_password(
 	_authed: Authed,
 	State(state): State<AppState>,
 	UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<()>> {
-	let key = std::path::Path::new(crate::secrets::KEY_FILE);
+	let key = crate::secrets::key_file();
 	send_only::new_password(&state.db, key, id).await?;
 	apply_soon(state.cfg.clone(), state.db.clone(), state.events.clone());
 	Ok(Json(()))
 }
 
 /// A send-only address holds no mail, it goes without a confirmation.
-pub(super) async fn delete_sender(
+pub(super) async fn delete_send_only(
 	_authed: Authed,
 	State(state): State<AppState>,
 	UrlPath(id): UrlPath<i64>,
@@ -221,12 +227,12 @@ pub fn routes() -> Router<AppState> {
 		.route("/mail-domains/{id}/forwards", post(create_forward))
 		.route("/mail-domains/{id}/dns", get(dns_route))
 		.route("/mail-domains/{id}/mode", post(update_mode))
-		.route("/mail-domains/{id}/senders", post(create_sender))
+		.route("/mail-domains/{id}/send-only", post(create_send_only))
 		.route(
-			"/mail-senders/{id}",
-			get(sender_settings).delete(delete_sender),
+			"/send-only/{id}",
+			get(send_only_settings).delete(delete_send_only),
 		)
-		.route("/mail-senders/{id}/password", post(sender_password))
+		.route("/send-only/{id}/password", post(send_only_password))
 		.route("/mailboxes/{id}", post(update_mailbox))
 		.route("/forwards/{id}", delete(delete_forward))
 		.route("/groups/{id}/smtp", get(group_smtp))

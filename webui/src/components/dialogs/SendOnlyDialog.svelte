@@ -20,7 +20,7 @@
 
 	async function save() {
 		oncreated(
-			await post(`/mail-domains/${domain.id}/senders`, {
+			await post(`/mail-domains/${domain.id}/send-only`, {
 				localPart: local,
 				note,
 			}),

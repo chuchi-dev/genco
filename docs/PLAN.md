@@ -212,9 +212,10 @@ terminal.
       sender of forwarded mail (SRS) except for the server's own domains
 - [x] send-only mail (operator 2026-11-03): a mail domain whose inbox is
       elsewhere receives nothing here but is signed; send-only addresses
-      are an app's own SMTP login that sends only as itself (no IMAP),
-      password encrypted with secrets.key; app settings with
-      `ZIPP_SMTP_URL` in the panel and `genco mail sender`
+      are an app's own SMTP login that sends only as itself (envelope
+      and From header, no IMAP), password encrypted with secrets.key;
+      app settings in the panel, `genco mail send-only --env` writes
+      `ZIPP_SMTP_URL` into the app's environment without printing it
 - [ ] later: learn spam/ham from moves into and out of Junk (imapsieve),
       Sieve filters and vacation replies in the webmail (ManageSieve),
       mailbox owners change their password themselves

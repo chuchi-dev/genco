@@ -40,29 +40,25 @@ pub(super) fn load(conn: &Connection) -> rusqlite::Result<Vec<SendOnly>> {
 	.collect()
 }
 
-/// A mailbox or forward can't have the address of a send-only login.
-pub(super) fn taken_by_sender(
-	conn: &Connection,
-	domain_id: i64,
-	local: &str,
-) -> Result<()> {
-	let taken: bool = conn.query_row(
-		"SELECT EXISTS (SELECT 1 FROM mail_senders
-		WHERE mail_domain_id = ?1 AND local_part = ?2)",
-		params![domain_id, local],
-		|r| r.get(0),
-	)?;
-	if taken {
+/// Addresses no app gets a login for: genco's own sender and the
+/// panel domain's postmaster@ and abuse@, mail signed as the panel, and
+/// postmaster@ of every domain.
+fn check_reserved(cfg: &Config, local: &str, domain: &str) -> Result<()> {
+	let panel = cfg.domain.as_deref() == Some(domain);
+	let reserved =
+		local == "postmaster" || (panel && matches!(local, "genco" | "abuse"));
+	if reserved {
 		return Err(Error::Invalid(format!(
-			"{local}@ is a send-only address already"
+			"{local}@{domain} is reserved, it sends as the server itself"
 		)));
 	}
 	Ok(())
 }
 
 /// A new send-only address with a random password. Not with mail off,
-/// not for an address that is a mailbox or forward.
+/// not for an address that is a mailbox or forward or reserved.
 pub(super) async fn add(
+	cfg: &Config,
 	db: &Db,
 	key_file: &Path,
 	domain_id: i64,
@@ -80,27 +76,25 @@ pub(super) async fn add(
 			"a send-only address can't send; turn mail on first",
 		));
 	}
-	let taken: (bool, bool) = conn.query_row(
-		"SELECT
-		EXISTS (SELECT 1 FROM mailboxes
-			WHERE mail_domain_id = ?1 AND local_part = ?2),
-		EXISTS (SELECT 1 FROM mail_forwards
-			WHERE mail_domain_id = ?1 AND local_part = ?2)",
-		params![domain_id, local],
-		|r| Ok((r.get(0)?, r.get(1)?)),
+	let domain: String = conn.query_row(
+		"SELECT name FROM mail_domains WHERE id = ?1",
+		[domain_id],
+		|r| r.get(0),
 	)?;
-	match taken {
-		(true, _) => {
+	check_reserved(cfg, &local, &domain)?;
+	match address_in_use(&conn, domain_id, &local)? {
+		Some("mailbox") => {
 			return Err(Error::Invalid(format!(
 				"{local}@ is a mailbox, it sends with its own login"
 			)));
 		}
-		(_, true) => {
-			return Err(Error::Invalid(format!("{local}@ is a forward")));
+		Some(kind) => {
+			return Err(Error::Invalid(format!(
+				"{local}@ is a {kind} already"
+			)));
 		}
-		_ => {}
+		None => {}
 	}
-	taken_by_sender(&conn, domain_id, &local)?;
 
 	conn.execute(
 		"INSERT INTO mail_senders (mail_domain_id, local_part, password,
@@ -213,121 +207,6 @@ pub(super) fn app_settings(
 	})
 }
 
-/// The app settings for the terminal.
-fn settings_text(s: &AppSettings) -> String {
-	let mut out = format!(
-		"Host:     {}\nPort:     {} (STARTTLS)\nUser:     {}\nPassword: {}\n\
-		From:     {}\n\nZIPP_SMTP_URL={}\nSMTP_URL={}\n\
-		Craft: transport SMTP, host {}, port {}, encryption tls, user {}, \
-		the password above\n",
-		s.host,
-		s.port,
-		s.user,
-		s.password,
-		s.from,
-		s.zipp_smtp_url,
-		s.smtp_url,
-		s.host,
-		s.port,
-		s.user,
-	);
-	if !s.ready {
-		out.push_str(
-			"\nThe mail host has no certificate yet, sending works once \
-			genco apply got it.\n",
-		);
-	}
-	out
-}
-
-#[derive(Debug, clap::Parser)]
-pub enum SenderCmd {
-	/// Add a send-only address for an app and print its SMTP settings
-	Add {
-		address: String,
-		/// what the address is for
-		#[clap(long, default_value = "")]
-		note: String,
-	},
-	/// List the send-only addresses
-	List,
-	/// Print the SMTP settings of a send-only address, with its password
-	Show { address: String },
-	/// Give a send-only address a new password, the old one stops working
-	Password { address: String },
-	/// Remove a send-only address, its login stops working
-	Remove { address: String },
-}
-
-fn find(groups: &[Group], address: &str) -> Result<SendOnly> {
-	let address = address.trim().to_lowercase();
-	domains(groups)
-		.flat_map(|d| &d.senders)
-		.find(|s| s.address == address)
-		.cloned()
-		.ok_or_else(|| {
-			Error::Invalid(format!("no send-only address {address}"))
-		})
-}
-
-/// `genco mail sender`: the message, and whether the caller applies.
-pub(super) async fn cli(
-	cfg: &Config,
-	db: &Db,
-	groups: &[Group],
-	cmd: SenderCmd,
-) -> Result<(String, bool)> {
-	let key_file = Path::new(crate::secrets::KEY_FILE);
-	let settings = |id| {
-		app_settings(cfg, &db.conn(), key_file, id).map(|s| settings_text(&s))
-	};
-	Ok(match cmd {
-		SenderCmd::List => {
-			let mut out = String::new();
-			for d in domains(groups) {
-				for s in &d.senders {
-					out.push_str(&format!("{}  {}\n", s.address, s.note));
-				}
-			}
-			(out.trim_end().to_string(), false)
-		}
-		SenderCmd::Show { address } => {
-			(settings(find(groups, &address)?.id)?, false)
-		}
-		SenderCmd::Add { address, note } => {
-			let address = address.trim().to_lowercase();
-			let (local, domain) = cli::split(&address)?;
-			let d = cli::find_domain(groups, domain)?;
-			let id = add(db, key_file, d.id, local, &note).await?;
-			(
-				format!(
-					"added the send-only address {address}; its settings, \
-					shown again with genco mail sender show:\n\n{}",
-					settings(id)?
-				),
-				true,
-			)
-		}
-		SenderCmd::Password { address } => {
-			let s = find(groups, &address)?;
-			new_password(db, key_file, s.id).await?;
-			(
-				format!(
-					"new password for {}, the old one stops working:\n\n{}",
-					s.address,
-					settings(s.id)?
-				),
-				true,
-			)
-		}
-		SenderCmd::Remove { address } => {
-			let s = find(groups, &address)?;
-			remove(&db.conn(), s.id)?;
-			(format!("removed the send-only address {}", s.address), true)
-		}
-	})
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -350,6 +229,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn addresses_are_unique_and_never_a_mailbox_or_forward() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.com\"").unwrap();
 		let db = Db::memory();
 		let key = key_file();
 		super::super::tests::group_with_domains(&db.conn());
@@ -358,15 +239,17 @@ mod tests {
 			.await
 			.unwrap();
 
-		let refused = add(&db, &key, 1, "info", "").await.unwrap_err();
+		let refused = add(&cfg, &db, &key, 1, "info", "").await.unwrap_err();
 		assert!(refused.to_string().contains("forward"), "{refused}");
-		let refused = add(&db, &key, 1, "anna", "").await.unwrap_err();
+		let refused = add(&cfg, &db, &key, 1, "anna", "").await.unwrap_err();
 		assert!(refused.to_string().contains("mailbox"), "{refused}");
 
 		// on a receiving domain and a send-only one
-		add(&db, &key, 1, "noreply", "").await.unwrap();
-		let id = add(&db, &key, 2, "NoReply ", "the shop").await.unwrap();
-		let refused = add(&db, &key, 2, "noreply", "").await.unwrap_err();
+		add(&cfg, &db, &key, 1, "noreply", "").await.unwrap();
+		let id = add(&cfg, &db, &key, 2, "NoReply ", "the shop")
+			.await
+			.unwrap();
+		let refused = add(&cfg, &db, &key, 2, "noreply", "").await.unwrap_err();
 		assert!(refused.to_string().contains("already"), "{refused}");
 
 		// and the other way round
@@ -379,8 +262,6 @@ mod tests {
 				.unwrap_err();
 		assert!(refused.to_string().contains("send-only"), "{refused}");
 
-		let cfg: Config =
-			toml::from_str("domain = \"panel.example.com\"").unwrap();
 		let s = app_settings(&cfg, &db.conn(), &key, id).unwrap();
 		assert_eq!(s.user, "noreply@textrem.ch");
 		assert_eq!(s.host, "mail.panel.example.com");
@@ -405,12 +286,33 @@ mod tests {
 
 	#[tokio::test]
 	async fn no_send_only_address_with_mail_off() {
+		let cfg: Config = toml::from_str("").unwrap();
 		let db = Db::memory();
 		super::super::tests::group_with_domains(&db.conn());
 		crate::db::set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#)
 			.unwrap();
-		let refused =
-			add(&db, &key_file(), 2, "noreply", "").await.unwrap_err();
+		let refused = add(&cfg, &db, &key_file(), 2, "noreply", "")
+			.await
+			.unwrap_err();
 		assert!(refused.to_string().contains("mail is off"), "{refused}");
+	}
+
+	#[tokio::test]
+	async fn the_servers_own_addresses_are_reserved() {
+		let cfg: Config = toml::from_str("domain = \"shop.ch\"").unwrap();
+		let db = Db::memory();
+		let key = key_file();
+		super::super::tests::group_with_domains(&db.conn());
+		// shop.ch is the panel's domain here
+		for local in ["genco", "postmaster", "abuse"] {
+			let refused = add(&cfg, &db, &key, 1, local, "").await.unwrap_err();
+			assert!(refused.to_string().contains("reserved"), "{refused}");
+		}
+		let refused =
+			add(&cfg, &db, &key, 2, "postmaster", "").await.unwrap_err();
+		assert!(refused.to_string().contains("reserved"), "{refused}");
+		add(&cfg, &db, &key, 2, "genco", "").await.unwrap();
+		add(&cfg, &db, &key, 2, "abuse", "").await.unwrap();
+		let _ = std::fs::remove_file(key);
 	}
 }

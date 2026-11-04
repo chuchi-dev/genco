@@ -22,6 +22,11 @@ use crate::users::Authed;
 /// 32 random bytes, only root reads it. Without it the values are lost.
 pub const KEY_FILE: &str = "/etc/genco/secrets.key";
 
+/// `KEY_FILE` as a path, tests pass their own.
+pub fn key_file() -> &'static Path {
+	Path::new(KEY_FILE)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Secret {
@@ -93,11 +98,12 @@ fn open(key: &Key, blob: &[u8]) -> Result<String> {
 }
 
 /// Encrypts a password of another table with the key in `key_file`
-/// (`KEY_FILE`), e.g. a send-only mail address's.
+/// (`key_file()`), e.g. a send-only mail address's.
 pub fn seal_with(key_file: &Path, plain: &str) -> Result<Vec<u8>> {
 	seal(&key(key_file)?, plain)
 }
 
+/// Decrypts what `seal_with` encrypted with the same key file.
 pub fn open_with(key_file: &Path, blob: &[u8]) -> Result<String> {
 	open(&key(key_file)?, blob)
 }
@@ -256,7 +262,7 @@ pub fn cli(
 	cmd: SecretCmd,
 	value: impl FnOnce() -> std::result::Result<String, String>,
 ) -> Result<String> {
-	let key_file = Path::new(KEY_FILE);
+	let key_file = key_file();
 	let by_name = |name: &str| -> Result<i64> {
 		conn.query_row("SELECT id FROM secrets WHERE name = ?1", [name], |r| {
 			r.get(0)
@@ -331,7 +337,7 @@ async fn create(
 	State(events): State<Events>,
 	Json(req): Json<SecretReq>,
 ) -> Result<Json<i64>> {
-	let id = save(&db.conn(), Path::new(KEY_FILE), &req, &authed.user.name)?;
+	let id = save(&db.conn(), key_file(), &req, &authed.user.name)?;
 	events.send(Event::Tree);
 	Ok(Json(id))
 }
@@ -355,7 +361,7 @@ async fn update(
 			params![req.name.trim(), id],
 		)?;
 	}
-	save(&conn, Path::new(KEY_FILE), &req, &authed.user.name)?;
+	save(&conn, key_file(), &req, &authed.user.name)?;
 	Ok(Json(()))
 }
 
@@ -379,7 +385,7 @@ async fn value(
 	State(db): State<Db>,
 	UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<String>> {
-	Ok(Json(reveal(&db.conn(), Path::new(KEY_FILE), id)?))
+	Ok(Json(reveal(&db.conn(), key_file(), id)?))
 }
 
 pub fn routes() -> Router<AppState> {

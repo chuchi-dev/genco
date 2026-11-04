@@ -225,7 +225,9 @@ impl Cmd {
 					mailbox::MailCmd::List
 						| mailbox::MailCmd::Dns { .. }
 						| mailbox::MailCmd::Senders
-						| mailbox::MailCmd::Sender(mailbox::SenderCmd::List)
+						| mailbox::MailCmd::SendOnly(
+							mailbox::SendOnlyCmd::List
+						)
 				) | Cmd::Secret(secrets::SecretCmd::List)
 				| Cmd::Firewall(firewall::FirewallCmd::List)
 				| Cmd::Activity { .. }

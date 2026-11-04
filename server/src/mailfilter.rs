@@ -16,6 +16,7 @@ const DKIM_DIR: &str = "/etc/genco/dkim";
 pub const SELECTOR: &str = "genco";
 const RSPAMD_USER: &str = "_rspamd";
 const RSPAMD_LOCAL: &str = "/etc/rspamd/local.d";
+pub const SEND_ONLY_LUA: &str = "/etc/rspamd/lua.local.d/genco.lua";
 pub const SPAM_SIEVE: &str = "/etc/genco/mail/spam.sieve";
 pub const SRS_DEFAULTS: &str = "/etc/default/postsrsd";
 
@@ -86,6 +87,11 @@ use_esld = false;
 			),
 		),
 		File {
+			path: SEND_ONLY_LUA.into(),
+			content: send_only_lua(groups),
+			private_to: None,
+		},
+		File {
 			path: SPAM_SIEVE.into(),
 			content: "# written by genco, changes here are overwritten
 require [\"fileinto\"];
@@ -136,6 +142,46 @@ CHROOT=/var/lib/postsrsd
 		private_to: None,
 	});
 	files
+}
+
+/// A send-only login sends only as itself: Postfix checks the envelope
+/// sender, this rule the From header, which DKIM signs and readers see.
+/// Without it noreply@shop.ch could send signed as anna@shop.ch.
+fn send_only_lua(groups: &[Group]) -> String {
+	let mut logins = String::new();
+	for g in groups {
+		for d in &g.mail_domains {
+			for s in &d.send_only_addresses {
+				logins.push_str(&format!("\t[\"{}\"] = true,\n", s.address));
+			}
+		}
+	}
+	format!(
+		"-- written by genco, changes here are overwritten
+local send_only = {{
+{logins}}}
+
+rspamd_config:register_symbol({{
+	name = 'GENCO_SEND_ONLY_FROM',
+	type = 'prefilter',
+	priority = 10,
+	callback = function(task)
+		local user = task:get_user()
+		if not user or not send_only[user:lower()] then
+			return
+		end
+		local from = task:get_from('mime')
+		if from and #from == 1 and from[1].addr
+			and from[1].addr:lower() == user:lower() then
+			return
+		end
+		task:set_pre_result('reject',
+			'a send-only login sends only From: itself, ' .. user:lower(),
+			'genco')
+	end,
+}})
+"
+	)
 }
 
 /// Postfix's settings for the filter and SRS, empty values remove them.
@@ -204,22 +250,16 @@ pub async fn ensure_keys(groups: &[Group]) -> Result<Vec<String>, String> {
 	))
 	.await?;
 	let mut made = vec![];
-	for name in signed(groups) {
-		let path = key_path(name);
+	// every mail domain is signed, send-only ones too
+	for d in groups.iter().flat_map(|g| &g.mail_domains) {
+		let path = key_path(&d.name);
 		if path.exists() {
 			continue;
 		}
 		make_key(&path, Some(RSPAMD_USER)).await?;
-		made.push(name.to_string());
+		made.push(d.name.clone());
 	}
 	Ok(made)
-}
-
-/// The domains that get a key and so are signed: every mail domain,
-/// send-only ones too.
-fn signed(groups: &[Group]) -> Vec<&str> {
-	let domains = groups.iter().flat_map(|g| &g.mail_domains);
-	domains.map(|d| d.name.as_str()).collect()
 }
 
 /// A 2048 bit RSA key in PKCS#1 (lettre reads only that, Rspamd both),
@@ -263,24 +303,40 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn send_only_domains_are_signed() {
-		let domain = |name: &str, send_only| crate::mailbox::MailDomain {
+	fn send_only_logins_are_checked_by_their_from() {
+		let send_only = |address: &str| crate::mailbox::SendOnly {
 			id: 0,
-			group_id: 1,
-			name: name.into(),
-			send_only,
-			mailboxes: vec![],
-			forwards: vec![],
-			senders: vec![],
+			mail_domain_id: 0,
+			address: address.into(),
+			note: String::new(),
+			created_at: 0,
+			password_hash: String::new(),
 		};
 		let groups = [Group {
-			mail_domains: vec![
-				domain("shop.ch", false),
-				domain("textrem.ch", true),
-			],
+			mail_domains: vec![crate::mailbox::MailDomain {
+				id: 0,
+				group_id: 1,
+				name: "shop.ch".into(),
+				send_only: false,
+				mailboxes: vec![],
+				forwards: vec![],
+				send_only_addresses: vec![
+					send_only("noreply@shop.ch"),
+					send_only("orders@shop.ch"),
+				],
+			}],
 			..Default::default()
 		}];
-		assert_eq!(signed(&groups), ["shop.ch", "textrem.ch"]);
+		let lua = send_only_lua(&groups);
+		assert!(lua.contains(
+			"local send_only = {\n\t[\"noreply@shop.ch\"] = true,\n\
+			\t[\"orders@shop.ch\"] = true,\n}\n"
+		));
+		assert!(lua.contains("task:get_from('mime')"));
+		assert!(lua.contains("task:set_pre_result('reject'"));
+		// the group's login and mailboxes aren't in it
+		assert!(!lua.contains("g-"));
+		assert!(send_only_lua(&[]).contains("local send_only = {\n}\n"));
 	}
 
 	#[test]

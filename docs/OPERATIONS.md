@@ -106,7 +106,7 @@ into the server's config, and the CLI does the same:
 | Give a group more memory, CPU or tasks | `genco group set <g> --memory 2.5G --cpu 200% --tasks 1024`, then `genco apply` (see "Group limits" below) |
 | Restart a Node or Rust app without downtime | `genco domain set <name> --zero-downtime true`, then `genco apply` (see below) |
 | Which sender domains apps may use (SPF) | `genco mail senders` |
-| An app sends as a domain whose inbox is elsewhere | `genco mail add-domain <domain> --group <g> --send-only` (or the mail domain's page: Mail → Make Send-only…), then `genco mail sender add noreply@<domain>`: it prints Host, Port 587, User, Password and `ZIPP_SMTP_URL=`; set the SPF (add this server's `ip4:`) and DKIM records of `genco mail dns <domain>` (see "Send-only mail" below) |
+| An app sends as a domain whose inbox is elsewhere | `genco mail add-domain <domain> --group <g> --send-only` (or the mail domain's page: Mail → Make Send-only…), then `genco mail send-only add noreply@<domain> --env <group>[/<domain>]`: it writes `ZIPP_SMTP_URL` with the password into the app's environment (then `genco apply`) and prints Host, Port 587 and User, the password only with `--show-password`; set the SPF (add this server's `ip4:`) and DKIM records of `genco mail dns <domain>` (see "Send-only mail" below) |
 | DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
 | Send genco's mails through a relay as its account | Settings → Mail → Through an SMTP relay, Sender `ie@example.ch` (From and bounce address; signed by genco only as the panel's own domain) |
 | Why a mail doesn't arrive | Settings → Mail → Send Test Mail waits for postfix and shows its reason (deferred, bounced, a failed relay login); it also says when outgoing port 25 seems blocked (`genco setup` checks it too) |
@@ -148,12 +148,18 @@ in Postfix's `virtual_mailbox_domains`, so mail from this server to it
 goes out to its real MX, and it takes no mailboxes or forwards (a domain
 becomes send-only only without them). It gets a DKIM key and is signed
 like the others. Apps send as it with send-only addresses (`genco mail
-sender add|list|show|password|remove`, the domain's page in the panel):
-each is its own SMTP login on 587, user the whole address, that may send
-only as that address (the group's `g-<group>` login keeps all of the
-group's domains). Their password is encrypted with
-`/etc/genco/secrets.key`, the panel and `genco mail sender show` show it
-again. They live in Dovecot's passdb for SMTP logins, which has no
+send-only add|list|show|password|remove`, the domain's page in the
+panel): each is its own SMTP login on 587, user the whole address, that
+may send only as that address: Postfix checks the envelope sender, the
+Rspamd rule `/etc/rspamd/lua.local.d/genco.lua` rejects mail whose From
+header is another address (the group's `g-<group>` login keeps all of
+the group's domains). No login sends with the null sender `<>` on 587
+and 465. postmaster@ of every domain and genco@, abuse@ of the panel's
+domain are no send-only addresses. Their password is encrypted with
+`/etc/genco/secrets.key`; the CLI prints it only with `--show-password`,
+`--env <group>[/<domain>] [--name ZIPP_SMTP_URL]` writes the SMTP URL
+into the app's environment as a secret instead (on `add`, `show` and
+`password`), the panel shows it behind Show. They live in Dovecot's passdb for SMTP logins, which has no
 userdb, so IMAP and the webmail refuse them. Send-only addresses work on
 receiving domains too (noreply@ without a mailbox), never on an address
 that is a mailbox or forward. The DNS check of a send-only domain has no

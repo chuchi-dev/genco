@@ -33,6 +33,7 @@ use crate::render::File;
 use crate::users::Authed;
 use crate::util;
 
+pub use cli::SendOnlyCmd;
 pub use cli::{MailCmd, cli, dns_text, records_text};
 pub use conf::{
 	POSTFIX_AFTER_DOCKER, SUBMISSION, SUBMISSION_OPTIONS, docker_bridges,
@@ -41,7 +42,7 @@ pub use conf::{
 use dns::*;
 pub use dns::{DnsRecord, panel_dns};
 pub use routes::routes;
-pub use send_only::{SendOnly, SenderCmd};
+pub use send_only::SendOnly;
 
 /// Where Dovecot keeps the mail, `<domain>/<local part>/Maildir`.
 pub const VMAIL: &str = "/var/vmail";
@@ -59,7 +60,7 @@ pub struct MailDomain {
 	pub send_only: bool,
 	pub mailboxes: Vec<Mailbox>,
 	pub forwards: Vec<Forward>,
-	pub senders: Vec<SendOnly>,
+	pub send_only_addresses: Vec<SendOnly>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,7 +122,7 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<MailDomain>> {
 		})?
 		.collect::<rusqlite::Result<_>>()?;
 
-	let senders = send_only::load(conn)?;
+	let send_only = send_only::load(conn)?;
 
 	let mut stmt = conn.prepare(
 		"SELECT id, group_id, name, send_only FROM mail_domains ORDER BY name",
@@ -135,7 +136,9 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<MailDomain>> {
 			send_only: r.get(3)?,
 			mailboxes: util::matching(&boxes, |b| b.mail_domain_id == id),
 			forwards: util::matching(&forwards, |f| f.mail_domain_id == id),
-			senders: util::matching(&senders, |s| s.mail_domain_id == id),
+			send_only_addresses: util::matching(&send_only, |s| {
+				s.mail_domain_id == id
+			}),
 		})
 	})?
 	.collect()
@@ -258,9 +261,15 @@ fn add_domain(
 	Ok(conn.last_insert_rowid())
 }
 
-/// Receiving or send-only. A domain becomes send-only only without
-/// mailboxes and forwards: their mail would no longer arrive.
+/// Receiving or send-only, not with mail off. A domain becomes
+/// send-only only without mailboxes and forwards: their mail would no
+/// longer arrive.
 fn set_mode(conn: &Connection, domain_id: i64, send_only: bool) -> Result<()> {
+	if crate::mail::is_off(conn) {
+		return Err(crate::mail::off_error(
+			"a mail domain can't send; turn mail on first",
+		));
+	}
 	let (name, boxes, forwards): (String, i64, i64) = conn.query_row(
 		"SELECT name,
 		(SELECT count(*) FROM mailboxes WHERE mail_domain_id = d.id),
@@ -310,8 +319,9 @@ pub async fn add_mailbox(
 	let hash = hash(password).await?;
 	let conn = db.conn();
 	check_receiving(&conn, domain_id)?;
-	taken_by_forward(&conn, domain_id, &local)?;
-	send_only::taken_by_sender(&conn, domain_id, &local)?;
+	if let Some(kind) = address_in_use(&conn, domain_id, &local)? {
+		return Err(Error::Invalid(format!("{local}@ is a {kind} already")));
+	}
 	conn.execute(
 		"INSERT INTO mailboxes (mail_domain_id, local_part, password_hash,
 		quota_mb, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -348,21 +358,30 @@ pub async fn set_mailbox(
 	Ok(())
 }
 
-fn taken_by_forward(
+/// What an address of a domain is already: "mailbox", "forward" or
+/// "send-only address". One address is only one of them.
+fn address_in_use(
 	conn: &Connection,
 	domain_id: i64,
 	local: &str,
-) -> Result<()> {
-	let taken: bool = conn.query_row(
-		"SELECT EXISTS (SELECT 1 FROM mail_forwards
-		WHERE mail_domain_id = ?1 AND local_part = ?2)",
+) -> Result<Option<&'static str>> {
+	let (mailbox, forward, send_only): (bool, bool, bool) = conn.query_row(
+		"SELECT
+		EXISTS (SELECT 1 FROM mailboxes
+			WHERE mail_domain_id = ?1 AND local_part = ?2),
+		EXISTS (SELECT 1 FROM mail_forwards
+			WHERE mail_domain_id = ?1 AND local_part = ?2),
+		EXISTS (SELECT 1 FROM mail_senders
+			WHERE mail_domain_id = ?1 AND local_part = ?2)",
 		params![domain_id, local],
-		|r| r.get(0),
+		|r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
 	)?;
-	if taken {
-		return Err(Error::Invalid(format!("{local}@ is a forward already")));
-	}
-	Ok(())
+	Ok(match (mailbox, forward, send_only) {
+		(true, _, _) => Some("mailbox"),
+		(_, true, _) => Some("forward"),
+		(_, _, true) => Some("send-only address"),
+		_ => None,
+	})
 }
 
 /// A forward to one or more addresses; `*` is the catch-all of the domain.
@@ -376,7 +395,20 @@ fn set_forward(
 	check_receiving(conn, domain_id)?;
 	if local != "*" {
 		check_local_part(&local)?;
-		send_only::taken_by_sender(conn, domain_id, &local)?;
+	}
+	match address_in_use(conn, domain_id, &local)? {
+		Some("mailbox") => {
+			return Err(Error::Invalid(format!(
+				"{local}@ is a mailbox, give the mailbox a forward instead"
+			)));
+		}
+		Some("send-only address") => {
+			return Err(Error::Invalid(format!(
+				"{local}@ is a send-only address already"
+			)));
+		}
+		// a forward gets its new targets
+		_ => {}
 	}
 	let targets: Vec<String> = targets
 		.iter()
@@ -390,17 +422,6 @@ fn set_forward(
 	}
 	for t in &targets {
 		check_address(t)?;
-	}
-	let mailbox: bool = conn.query_row(
-		"SELECT EXISTS (SELECT 1 FROM mailboxes
-		WHERE mail_domain_id = ?1 AND local_part = ?2)",
-		params![domain_id, local],
-		|r| r.get(0),
-	)?;
-	if mailbox {
-		return Err(Error::Invalid(format!(
-			"{local}@ is a mailbox, give the mailbox a forward instead"
-		)));
 	}
 
 	conn.execute(
@@ -494,5 +515,55 @@ mod tests {
 		set_mode(&conn, 2, false).unwrap();
 		let d = load(&conn).unwrap();
 		assert!(d.iter().all(|d| !d.send_only));
+	}
+
+	#[test]
+	fn no_mode_change_with_mail_off() {
+		let db = crate::db::Db::memory();
+		group_with_domains(&db.conn());
+		let conn = db.conn();
+		crate::db::set_setting(&conn, "mail", r#"{"mode":"off"}"#).unwrap();
+		let refused = set_mode(&conn, 1, true).unwrap_err();
+		assert!(refused.to_string().contains("mail is off"), "{refused}");
+	}
+
+	#[tokio::test]
+	async fn an_address_is_only_one_thing() {
+		let db = crate::db::Db::memory();
+		group_with_domains(&db.conn());
+		let in_use = |local| address_in_use(&db.conn(), 1, local).unwrap();
+		assert_eq!(in_use("info"), None);
+
+		set_forward(&db.conn(), 1, "info", &["a@b.ch".into()]).unwrap();
+		add_mailbox(&db, 1, "anna", "long enough pw".into(), None)
+			.await
+			.unwrap();
+		db.conn()
+			.execute(
+				"INSERT INTO mail_senders (mail_domain_id, local_part,
+				password, password_hash, note, created_at)
+				VALUES (1, 'noreply', x'', '', '', 0)",
+				[],
+			)
+			.unwrap();
+		assert_eq!(in_use("info"), Some("forward"));
+		assert_eq!(in_use("anna"), Some("mailbox"));
+		assert_eq!(in_use("noreply"), Some("send-only address"));
+		// another domain's
+		assert_eq!(address_in_use(&db.conn(), 2, "anna").unwrap(), None);
+
+		// a forward gets new targets, a mailbox never a second time
+		set_forward(&db.conn(), 1, "info", &["c@d.ch".into()]).unwrap();
+		let refused =
+			set_forward(&db.conn(), 1, "anna", &["c@d.ch".into()]).unwrap_err();
+		assert!(refused.to_string().contains("is a mailbox"), "{refused}");
+		let refused =
+			add_mailbox(&db, 1, "anna", "long enough pw".into(), None)
+				.await
+				.unwrap_err();
+		assert!(
+			refused.to_string().contains("a mailbox already"),
+			"{refused}"
+		);
 	}
 }

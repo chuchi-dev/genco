@@ -23,13 +23,14 @@ pub(super) fn map_file(name: &str, lines: Vec<String>) -> File {
 /// send-only address itself, and the SMTP login of its group for every
 /// address of the group's mail domains. Postfix looks up the whole
 /// address before @domain, so its line names the group's login too.
-pub(super) fn senders(groups: &[Group]) -> Vec<String> {
+pub(super) fn sender_logins(groups: &[Group]) -> Vec<String> {
 	let mut lines = vec![];
 	for g in groups {
 		let login = g.smtp.as_ref().map(|_| smtp_user(&g.name));
 		for d in &g.mail_domains {
 			let own = d.mailboxes.iter().map(|b| &b.address);
-			for address in own.chain(d.senders.iter().map(|s| &s.address)) {
+			let send_only = d.send_only_addresses.iter().map(|s| &s.address);
+			for address in own.chain(send_only) {
 				match &login {
 					Some(l) => lines.push(format!("{address} {address},{l}")),
 					None => lines.push(format!("{address} {address}")),
@@ -80,7 +81,13 @@ pub fn files(
 		),
 		// a mailbox and a send-only address send as themselves only, a
 		// group's SMTP login as any address of the group's mail domains
-		map_file("senders", senders(groups)),
+		map_file("senders", sender_logins(groups)),
+		// Postfix checks no owner for the null sender: on the submission
+		// ports a login could send bounces as anyone
+		map_file(
+			"null-sender",
+			vec!["<> REJECT a login sends with its own sender address".into()],
+		),
 		map_file(
 			"forwards",
 			forwards
@@ -108,7 +115,7 @@ pub fn files(
 	// without a userdb, they can send but never open a mailbox
 	let mut smtp =
 		"# written by genco, changes here are overwritten\n".to_string();
-	for s in domains.iter().flat_map(|d| &d.senders) {
+	for s in domains.iter().flat_map(|d| &d.send_only_addresses) {
 		smtp.push_str(&format!("{}:{}\n", s.address, s.password_hash));
 	}
 	for g in groups.iter().filter(|g| !g.mail_domains.is_empty()) {
@@ -445,7 +452,12 @@ pub const SUBMISSION_OPTIONS: &[(&str, &str)] = &[
 		"smtpd_client_restrictions",
 		"permit_sasl_authenticated,reject",
 	),
-	("smtpd_sender_restrictions", "reject_sender_login_mismatch"),
+	// `null-sender` of MAPS refuses <>; commas only, master.cf's -o
+	(
+		"smtpd_sender_restrictions",
+		"reject_sender_login_mismatch,check_sender_access,\
+		texthash:/etc/genco/mail/null-sender",
+	),
 	(
 		"smtpd_recipient_restrictions",
 		"permit_sasl_authenticated,reject",
@@ -474,7 +486,7 @@ mod tests {
 			send_only: false,
 			mailboxes: vec![],
 			forwards: vec![],
-			senders: vec![],
+			send_only_addresses: vec![],
 		};
 		let mail_domains = if mail { vec![domain] } else { vec![] };
 		vec![Group {
@@ -507,7 +519,7 @@ mod tests {
 				password_hash: "{BLF-CRYPT}anna".into(),
 			}],
 			forwards: vec![],
-			senders: vec![sender(1, 1, "noreply@shop.ch")],
+			send_only_addresses: vec![sender(1, 1, "noreply@shop.ch")],
 		};
 		let textrem = MailDomain {
 			id: 2,
@@ -516,7 +528,7 @@ mod tests {
 			send_only: true,
 			mailboxes: vec![],
 			forwards: vec![],
-			senders: vec![sender(2, 2, "noreply@textrem.ch")],
+			send_only_addresses: vec![sender(2, 2, "noreply@textrem.ch")],
 		};
 		vec![Group {
 			name: "shop".into(),
@@ -547,7 +559,7 @@ mod tests {
 
 	#[test]
 	fn send_only_addresses_send_as_themselves() {
-		let lines = senders(&send_only_groups());
+		let lines = sender_logins(&send_only_groups());
 		assert_eq!(
 			lines,
 			[
@@ -558,6 +570,27 @@ mod tests {
 				"@textrem.ch g-shop",
 			]
 		);
+	}
+
+	#[test]
+	fn logins_never_send_with_the_null_sender() {
+		let cfg: Config =
+			toml::from_str("domain = \"panel.example.com\"").unwrap();
+		let files = files(&cfg, &groups(false), false, false);
+		let map = content(&files, "/etc/genco/mail/null-sender");
+		assert!(map.contains("\n<> REJECT "), "{map}");
+		let (_, restrictions) = SUBMISSION_OPTIONS
+			.iter()
+			.find(|(k, _)| *k == "smtpd_sender_restrictions")
+			.unwrap();
+		assert_eq!(
+			*restrictions,
+			format!(
+				"reject_sender_login_mismatch,check_sender_access,\
+				texthash:{MAPS}/null-sender"
+			)
+		);
+		assert!(!restrictions.contains(' '));
 	}
 
 	#[test]

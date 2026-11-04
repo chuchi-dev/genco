@@ -202,7 +202,7 @@ export type MailDomain = {
 	sendOnly: boolean;
 	mailboxes: Mailbox[];
 	forwards: Forward[];
-	senders: SendOnly[];
+	sendOnlyAddresses: SendOnly[];
 };
 
 /** an app's own SMTP login, it sends only as its address */
@@ -215,7 +215,7 @@ export type SendOnly = {
 };
 
 /** what an app needs to send as a send-only address */
-export type SenderSettings = {
+export type SendOnlySettings = {
 	host: string;
 	port: number;
 	user: string;

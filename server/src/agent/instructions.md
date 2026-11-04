@@ -281,7 +281,7 @@ field in the panel.
   mail in `/var/vmail/<domain>/<local>`) and forwards (`*@domain` is
   the catch-all). Everything uses one host, `mail.<panel domain>`, the
   same for all domains. `genco mail list|add-domain|set|add|password|
-  quota|forward|unforward|delete|delete-domain|dns|sender` (see `--help`); changes
+  quota|forward|unforward|delete|delete-domain|dns|send-only` (see `--help`); changes
   apply by themselves, deletions go by mail like the others. `genco mail
   dns <domain>` compares the records the domain needs (A of the mail
   host, MX, SPF, DMARC, SRV, PTR) with its DNS: when an admin asks what
@@ -291,13 +291,17 @@ field in the panel.
   password into the chat; admins set them in the panel.
 - An app that sends as a domain whose inbox is elsewhere (e.g. MX at
   another provider): `genco mail add-domain <domain> --group <g>
-  --send-only`, then `genco mail sender add noreply@<domain> --note
-  <what for>`; give the app the printed settings (`ZIPP_SMTP_URL` for
-  zipp, Craft: SMTP, port 587, tls) and the admins the SPF/DKIM records
-  of `genco mail dns <domain>`. Never make such a domain receiving
-  (local mail to it would land here instead of its inbox). A send-only
-  address sends only as itself, also for noreply@ on a receiving domain;
-  `genco mail sender list|show|password|remove`.
+  --send-only`, then `genco mail send-only add noreply@<domain> --note
+  <what for> --env <group>[/<domain>]`: genco writes `ZIPP_SMTP_URL`
+  with the password into the app's environment (`--name` for another
+  variable), then `genco apply`. Never print or pass on the password
+  (no `--show-password`); apps that aren't a node or rust app get it
+  from the admins in the panel. Give the admins the SPF/DKIM records of
+  `genco mail dns <domain>`. Never make such a domain receiving (local
+  mail to it would land here instead of its inbox). A send-only address
+  sends only as itself (envelope and From), also for noreply@ on a
+  receiving domain; `genco mail send-only list|show|password|remove`,
+  `password --env` replaces the app's URL.
   Rspamd (milter, Redis) filters: score 15 rejects, 6 marks `X-Spam: Yes`
   and Dovecot files it into Junk (`/var/log/rspamd/rspamd.log` shows the
   symbols of each mail); it signs outgoing mail with the domain's DKIM

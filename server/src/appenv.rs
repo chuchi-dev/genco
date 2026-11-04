@@ -110,6 +110,24 @@ fn set(conn: &Connection, domain_id: i64, mut vars: Vec<EnvVar>) -> Result<()> {
 	Ok(())
 }
 
+/// Sets one secret variable, e.g. an SMTP URL with its password that
+/// genco writes so it never passes the terminal.
+pub fn set_secret(
+	conn: &Connection,
+	domain_id: i64,
+	name: &str,
+	value: &str,
+) -> Result<()> {
+	let mut vars = load(conn, domain_id)?;
+	vars.retain(|v| v.name != name);
+	vars.push(EnvVar {
+		name: name.into(),
+		value: value.into(),
+		secret: true,
+	});
+	set(conn, domain_id, vars)
+}
+
 /// The file systemd loads: `NAME="value"`, quotes and backslashes escaped,
 /// nothing expanded. With the group's SMTP login (`user`, `password`)
 /// the app gets `GENCO_SMTP_*` to send DKIM signed mail.
