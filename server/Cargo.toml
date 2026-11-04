@@ -1,6 +1,6 @@
 [package]
 name = "genco"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "A hosting panel for a single Debian server with a maintenance agent"
 license = "MIT OR Apache-2.0"
