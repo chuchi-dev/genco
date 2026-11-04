@@ -115,6 +115,12 @@
 		Sending is off: mail is off in Start → Settings → Mail. The mailboxes
 		stay as they are.
 	</p>
+{:else if mail.hostingOff}
+	<p class="error">
+		Mail hosting is off in Start → Settings → Mail: no new mailboxes,
+		forwards or send-only addresses. This mail domain stays until you delete
+		it.
+	</p>
 {/if}
 
 <dl class="props">

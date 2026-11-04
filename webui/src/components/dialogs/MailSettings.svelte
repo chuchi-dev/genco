@@ -16,6 +16,9 @@
 	let relayPassword = $state('');
 	let hasPassword = $state(false);
 	let sender = $state('');
+	// mail domains on this server, its own switch: with "off" nothing
+	// could send, so it shows off
+	let hosting = $state(true);
 	let error = $state<string | null>(null);
 	let testTo = $state(session.user?.email ?? '');
 	let testResult = $state<string | null>(null);
@@ -47,6 +50,7 @@
 			relayUser = s.relayUser;
 			hasPassword = s.hasPassword;
 			sender = s.sender;
+			hosting = s.hosting;
 		})
 		.catch(e => (error = e.message));
 
@@ -69,6 +73,19 @@
 		if (relayPassword) hasPassword = true;
 		relayPassword = '';
 		mail.mode = mode;
+	}
+
+	async function saveHosting() {
+		const domains: number = await post('/settings/mail/hosting', {
+			hosting,
+		});
+		mail.hosting = hosting;
+		if (!hosting && domains > 0) {
+			message.show(
+				'Mail Hosting',
+				`${domains} mail domains stay until you delete them.`,
+			);
+		}
 	}
 
 	async function test() {
@@ -150,6 +167,35 @@
 		</Form>
 	{/if}
 </fieldset>
+
+{#if loaded}
+	<fieldset>
+		<legend>Mail Hosting</legend>
+		<p>
+			Mail domains of the groups with mailboxes, forwards and send-only
+			addresses for apps.
+		</p>
+		<Form onsubmit={saveHosting} ok="Save" done="Saved">
+			<span></span>
+			<label class="check">
+				{#if mode === 'off'}
+					<input type="checkbox" checked={false} disabled />
+				{:else}
+					<input type="checkbox" bind:checked={hosting} />
+				{/if}
+				Host mail on this server
+			</label>
+		</Form>
+		{#if mode === 'off'}
+			<p class="hint">With no mail nothing could send, so no hosting.</p>
+		{:else if !hosting}
+			<p class="hint">
+				No new mail domains; genco's own mails (confirmations, invites,
+				proposal links) still go out.
+			</p>
+		{/if}
+	</fieldset>
+{/if}
 
 {#if mode === 'direct'}
 	<fieldset>

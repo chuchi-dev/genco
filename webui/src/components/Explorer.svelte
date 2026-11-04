@@ -125,7 +125,7 @@
 				{
 					label: 'New Mail Domain…',
 					onclick: () => onnew('mail'),
-					disabled: !tree.groups.length || mail.off,
+					disabled: !tree.groups.length || mail.hostingOff,
 				},
 			],
 		},
@@ -196,7 +196,7 @@
 					{
 						label: 'New Mail Domain…',
 						onclick: () => onnew('mail'),
-						disabled: mail.off,
+						disabled: mail.hostingOff,
 					},
 					sep,
 					tab('Files', 'files'),

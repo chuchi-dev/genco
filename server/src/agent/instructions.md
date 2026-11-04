@@ -275,10 +275,11 @@ field in the panel.
   through the relay of Start → Settings (`postconf relayhost`). This
   server's mode: {{mail_mode}}. PHP's
   mail() sends with msmtp to it; apps like Craft use SMTP on
-  127.0.0.1:25 without login. Delivery problems: `journalctl -u postfix`,
-  `mailq`.
-- Mail hosting: a group has mail domains with mailboxes (IMAP, Dovecot,
-  mail in `/var/vmail/<domain>/<local>`) and forwards (`*@domain` is
+  127.0.0.1:25 without login. Delivery problems: `genco mail test
+  <to>` (Settings → Mail's test: waits for postfix, fails with its
+  reason when deferred or bounced), `journalctl -u postfix`, `mailq`.
+- Mail hosting ({{mail_hosting}}): a group has mail domains with
+  mailboxes (IMAP, Dovecot, mail in `/var/vmail/<domain>/<local>`) and forwards (`*@domain` is
   the catch-all). Everything uses one host, `mail.<panel domain>`, the
   same for all domains. `genco mail list|add-domain|set|add|password|
   quota|forward|unforward|delete|delete-domain|dns|send-only` (see `--help`); changes

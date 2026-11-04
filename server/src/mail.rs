@@ -18,7 +18,7 @@ use crate::db::{Db, set_setting};
 use crate::error::{Error, Result};
 use crate::users::{self, Authed};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MailSettings {
 	/// "direct": postfix delivers to the recipients' servers, "relay":
@@ -40,15 +40,43 @@ pub struct MailSettings {
 	/// which often only sends as its account; empty is genco@<panel>
 	#[serde(default)]
 	pub sender: String,
+	/// mail domains with mailboxes, forwards and send-only addresses on
+	/// this server; off keeps genco's own mails, "off" mode implies it
+	#[serde(default = "yes")]
+	pub hosting: bool,
+}
+
+fn yes() -> bool {
+	true
+}
+
+impl Default for MailSettings {
+	fn default() -> Self {
+		Self {
+			mode: String::new(),
+			relay_host: String::new(),
+			relay_port: 0,
+			relay_user: String::new(),
+			relay_password: String::new(),
+			has_password: false,
+			sender: String::new(),
+			hosting: true,
+		}
+	}
+}
+
+/// As saved, `hosting` without the "off" mode in it.
+fn stored(conn: &rusqlite::Connection) -> MailSettings {
+	crate::db::get_json(conn, "mail").unwrap_or_default()
 }
 
 pub fn settings(db: &Db) -> Result<MailSettings> {
-	let mut s: MailSettings =
-		crate::db::get_json(&db.conn(), "mail").unwrap_or_default();
+	let mut s = stored(&db.conn());
 	if s.mode.is_empty() {
 		s.mode = "direct".into();
 	}
 	s.has_password = !s.relay_password.is_empty();
+	s.hosting &= s.mode != "off";
 	Ok(s)
 }
 
@@ -58,13 +86,24 @@ pub fn off(db: &Db) -> bool {
 }
 
 pub fn is_off(conn: &rusqlite::Connection) -> bool {
-	crate::db::get_json::<MailSettings>(conn, "mail")
-		.is_some_and(|s| s.mode == "off")
+	stored(conn).mode == "off"
 }
 
 /// The error of what needs a mail while mail is off.
 pub fn off_error(what: &str) -> Error {
 	Error::Invalid(format!("mail is off in Settings → Mail, {what}"))
+}
+
+/// Whether no new mail domains, mailboxes, forwards or send-only
+/// addresses can be made here, also with mail off: nothing could send.
+pub fn hosting_off(conn: &rusqlite::Connection) -> bool {
+	let s = stored(conn);
+	s.mode == "off" || !s.hosting
+}
+
+/// The error of what needs mail hosting while it is off.
+pub fn hosting_off_error(what: &str) -> Error {
+	Error::Invalid(format!("mail hosting is off in Settings → Mail, {what}"))
 }
 
 /// genco's From, also the envelope sender bounces go to: the relay's
@@ -462,9 +501,41 @@ async fn save_settings(
 		"relayUser": new.relay_user,
 		"relayPassword": new.relay_password,
 		"sender": new.sender,
+		// its own switch, kept also while mail is off
+		"hosting": stored(&db.conn()).hosting,
 	});
 	set_setting(&db.conn(), "mail", &stored.to_string())?;
 	Ok(Json(()))
+}
+
+#[derive(Debug, Deserialize)]
+struct HostingReq {
+	hosting: bool,
+}
+
+/// Mail hosting on or off, without the password: it changes no mail
+/// genco sends. Existing mail domains stay, the answer is how many.
+async fn save_hosting(
+	_authed: Authed,
+	State(db): State<Db>,
+	Json(req): Json<HostingReq>,
+) -> Result<Json<i64>> {
+	set_hosting(&db.conn(), req.hosting)?;
+	let domains =
+		db.conn()
+			.query_row("SELECT count(*) FROM mail_domains", [], |r| r.get(0))?;
+	Ok(Json(domains))
+}
+
+fn set_hosting(conn: &rusqlite::Connection, hosting: bool) -> Result<()> {
+	if hosting && is_off(conn) {
+		return Err(off_error("nothing could send; turn mail on first"));
+	}
+	let mut stored: serde_json::Value = crate::db::get_json(conn, "mail")
+		.unwrap_or_else(|| serde_json::json!({ "mode": "direct" }));
+	stored["hosting"] = hosting.into();
+	set_setting(conn, "mail", &stored.to_string())?;
+	Ok(())
 }
 
 /// The relay's sender, a plain address like ie@dunkel.cc or empty.
@@ -496,42 +567,45 @@ async fn test_mail(
 	State(db): State<Db>,
 	Json(req): Json<TestReq>,
 ) -> Result<Json<String>> {
+	Ok(Json(test(&cfg, &db, &req.to, &authed.user.name).await?))
+}
+
+/// The test mail of the panel and `genco mail test`, sent by `by`.
+pub async fn test(cfg: &Config, db: &Db, to: &str, by: &str) -> Result<String> {
 	let since = crate::db::now();
 	let id = queue(
-		&cfg,
-		&db,
-		std::slice::from_ref(&req.to),
+		cfg,
+		db,
+		&[to.to_string()],
 		"genco test mail",
 		&format!(
-			"{} sent this test from genco on {}.\n\nIf it is in the spam \
+			"{by} sent this test from genco on {}.\n\nIf it is in the spam \
 			folder, use a relay or add SPF and DKIM for the sender's \
 			domain.\n",
-			authed.user.name,
 			cfg.domain.as_deref().unwrap_or("this server")
 		),
 	)
 	.await?;
-	let to = req.to;
 	let Some(id) = id else {
-		return Ok(Json(format!(
+		return Ok(format!(
 			"postfix took it for {to}, check the inbox (and the spam folder)."
-		)));
+		));
 	};
 	match wait_for_delivery(&id, since).await {
-		Some(Delivery::Sent(reply)) => Ok(Json(format!(
+		Some(Delivery::Sent(reply)) => Ok(format!(
 			"Delivered for {to} ({reply}), check the inbox (and the spam \
 			folder)."
-		))),
+		)),
 		Some(Delivery::Deferred(reason)) => Err(Error::Invalid(format!(
 			"Not delivered, postfix tries again later: {reason}"
 		))),
 		Some(Delivery::Bounced(reason)) => {
 			Err(Error::Invalid(format!("Bounced: {reason}")))
 		}
-		None => Ok(Json(format!(
+		None => Ok(format!(
 			"Still in postfix's queue as {id}, see `mailq` and \
 			`journalctl -u postfix` on the server."
-		))),
+		)),
 	}
 }
 
@@ -563,6 +637,7 @@ pub fn routes() -> Router<AppState> {
 	Router::new()
 		.route("/settings/mail", get(get_settings).post(save_settings))
 		.route("/settings/mail/test", post(test_mail))
+		.route("/settings/mail/hosting", post(save_hosting))
 		.route("/settings/mail/port25", get(port25_route))
 		.route("/settings/mail/dns", get(dns_route))
 }
@@ -625,6 +700,47 @@ mod tests {
 		let no_code = save("admin password").await.unwrap_err().to_string();
 		assert!(no_code.contains("two-factor"), "{no_code}");
 		assert_ne!(settings(&db).unwrap().relay_host, "evil.example.ch");
+	}
+
+	#[test]
+	fn hosting_is_its_own_switch() {
+		let db = Db::memory();
+		let conn = db.conn();
+		// on for servers from before the switch
+		assert!(stored(&conn).hosting && !hosting_off(&conn));
+		set_setting(&conn, "mail", r#"{"mode":"relay","relayPassword":"pw"}"#)
+			.unwrap();
+		assert!(!hosting_off(&conn));
+
+		set_hosting(&conn, false).unwrap();
+		assert!(hosting_off(&conn) && !is_off(&conn));
+		let s = stored(&conn);
+		assert_eq!(
+			(s.mode.as_str(), s.relay_password.as_str()),
+			("relay", "pw")
+		);
+		drop(conn);
+		assert!(!settings(&db).unwrap().hosting);
+
+		db.conn().execute("DELETE FROM settings", []).unwrap();
+		set_hosting(&db.conn(), false).unwrap();
+		assert_eq!(settings(&db).unwrap().mode, "direct");
+		set_hosting(&db.conn(), true).unwrap();
+		assert!(settings(&db).unwrap().hosting);
+	}
+
+	#[test]
+	fn no_mail_means_no_hosting() {
+		let db = Db::memory();
+		let conn = db.conn();
+		set_setting(&conn, "mail", r#"{"mode":"off","hosting":true}"#).unwrap();
+		assert!(hosting_off(&conn));
+		let refused = set_hosting(&conn, true).unwrap_err().to_string();
+		assert!(refused.contains("mail is off"), "{refused}");
+		// turning it off is fine, the choice stays for when mail is back
+		set_hosting(&conn, false).unwrap();
+		drop(conn);
+		assert!(!settings(&db).unwrap().hosting);
 	}
 
 	#[test]

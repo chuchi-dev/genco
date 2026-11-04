@@ -238,19 +238,15 @@ pub async fn ensure_smtp_logins(db: &Db) -> Result<()> {
 	Ok(())
 }
 
-/// Not with mail off: its mailboxes couldn't send. `send_only`: the
-/// inbox stays elsewhere, apps here only send from it.
+/// Not with mail hosting off. `send_only`: the inbox stays elsewhere,
+/// apps here only send from it.
 fn add_domain(
 	conn: &Connection,
 	group_id: i64,
 	name: &str,
 	send_only: bool,
 ) -> Result<i64> {
-	if crate::mail::is_off(conn) {
-		return Err(crate::mail::off_error(
-			"a mail domain can't send; turn mail on first",
-		));
-	}
+	check_hosting(conn, "no new mail domains")?;
 	let name = name.trim().to_lowercase();
 	hosting::check_domain_name(&name)?;
 	conn.execute(
@@ -261,15 +257,11 @@ fn add_domain(
 	Ok(conn.last_insert_rowid())
 }
 
-/// Receiving or send-only, not with mail off. A domain becomes
+/// Receiving or send-only, not with mail hosting off. A domain becomes
 /// send-only only without mailboxes and forwards: their mail would no
 /// longer arrive.
 fn set_mode(conn: &Connection, domain_id: i64, send_only: bool) -> Result<()> {
-	if crate::mail::is_off(conn) {
-		return Err(crate::mail::off_error(
-			"a mail domain can't send; turn mail on first",
-		));
-	}
+	check_hosting(conn, "mail domains keep their mode")?;
 	let (name, boxes, forwards): (String, i64, i64) = conn.query_row(
 		"SELECT name,
 		(SELECT count(*) FROM mailboxes WHERE mail_domain_id = d.id),
@@ -288,6 +280,15 @@ fn set_mode(conn: &Connection, domain_id: i64, send_only: bool) -> Result<()> {
 		"UPDATE mail_domains SET send_only = ?1 WHERE id = ?2",
 		params![send_only, domain_id],
 	)?;
+	Ok(())
+}
+
+/// Nothing new to host with mail hosting off (or mail off: nothing
+/// could send), what exists stays.
+fn check_hosting(conn: &Connection, what: &str) -> Result<()> {
+	if crate::mail::hosting_off(conn) {
+		return Err(crate::mail::hosting_off_error(what));
+	}
 	Ok(())
 }
 
@@ -318,6 +319,7 @@ pub async fn add_mailbox(
 	check_local_part(&local)?;
 	let hash = hash(password).await?;
 	let conn = db.conn();
+	check_hosting(&conn, "no new mailboxes")?;
 	check_receiving(&conn, domain_id)?;
 	if let Some(kind) = address_in_use(&conn, domain_id, &local)? {
 		return Err(Error::Invalid(format!("{local}@ is a {kind} already")));
@@ -407,8 +409,9 @@ fn set_forward(
 				"{local}@ is a send-only address already"
 			)));
 		}
-		// a forward gets its new targets
-		_ => {}
+		// a forward gets its new targets, also with hosting off
+		Some(_) => {}
+		None => check_hosting(conn, "no new forwards")?,
 	}
 	let targets: Vec<String> = targets
 		.iter()
@@ -466,9 +469,9 @@ mod tests {
 		.unwrap();
 		crate::db::set_setting(&conn, "mail", r#"{"mode":"off"}"#).unwrap();
 		let refused = add_domain(&conn, 1, "shop.ch", false).unwrap_err();
-		assert!(refused.to_string().contains("mail is off"));
+		assert!(refused.to_string().contains("mail hosting is off"));
 		let refused = add_domain(&conn, 1, "shop.ch", true).unwrap_err();
-		assert!(refused.to_string().contains("mail is off"));
+		assert!(refused.to_string().contains("mail hosting is off"));
 
 		crate::db::set_setting(&conn, "mail", r#"{"mode":"direct"}"#).unwrap();
 		add_domain(&conn, 1, "shop.ch", false).unwrap();
@@ -524,7 +527,43 @@ mod tests {
 		let conn = db.conn();
 		crate::db::set_setting(&conn, "mail", r#"{"mode":"off"}"#).unwrap();
 		let refused = set_mode(&conn, 1, true).unwrap_err();
-		assert!(refused.to_string().contains("mail is off"), "{refused}");
+		assert!(
+			refused.to_string().contains("mail hosting is off"),
+			"{refused}"
+		);
+	}
+
+	#[tokio::test]
+	async fn nothing_new_with_hosting_off_under_any_mode() {
+		let db = crate::db::Db::memory();
+		group_with_domains(&db.conn());
+		set_forward(&db.conn(), 1, "info", &["a@b.ch".into()]).unwrap();
+
+		for mode in ["direct", "relay", "off"] {
+			let conn = db.conn();
+			let mail = format!(r#"{{"mode":"{mode}","hosting":false}}"#);
+			crate::db::set_setting(&conn, "mail", &mail).unwrap();
+			let off = |r: Result<i64>| {
+				let e = r.unwrap_err().to_string();
+				assert!(e.contains("mail hosting is off"), "{mode}: {e}");
+			};
+			off(add_domain(&conn, 1, "new.ch", false));
+			off(add_domain(&conn, 1, "new.ch", true));
+			off(set_forward(&conn, 1, "sales", &["a@b.ch".into()]));
+			drop(conn);
+			off(add_mailbox(&db, 1, "anna", "long enough pw".into(), None)
+				.await);
+			assert!(set_mode(&db.conn(), 2, false).is_err());
+
+			// what exists stays, a forward gets new targets
+			let conn = db.conn();
+			assert_eq!(load(&conn).unwrap().len(), 2);
+			set_forward(&conn, 1, "info", &["c@d.ch".into()]).unwrap();
+		}
+
+		let conn = db.conn();
+		crate::db::set_setting(&conn, "mail", r#"{"mode":"relay"}"#).unwrap();
+		add_domain(&conn, 1, "new.ch", false).unwrap();
 	}
 
 	#[tokio::test]

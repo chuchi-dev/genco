@@ -55,7 +55,8 @@ fn check_reserved(cfg: &Config, local: &str, domain: &str) -> Result<()> {
 	Ok(())
 }
 
-/// A new send-only address with a random password. Not with mail off,
+/// A new send-only address with a random password. Not with mail
+/// hosting off,
 /// not for an address that is a mailbox or forward or reserved.
 pub(super) async fn add(
 	cfg: &Config,
@@ -71,11 +72,7 @@ pub(super) async fn add(
 	let hash = hash(password.clone()).await?;
 
 	let conn = db.conn();
-	if crate::mail::is_off(&conn) {
-		return Err(crate::mail::off_error(
-			"a send-only address can't send; turn mail on first",
-		));
-	}
+	super::check_hosting(&conn, "no new send-only addresses")?;
 	let domain: String = conn.query_row(
 		"SELECT name FROM mail_domains WHERE id = ?1",
 		[domain_id],
@@ -285,7 +282,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn no_send_only_address_with_mail_off() {
+	async fn no_send_only_address_without_hosting() {
 		let cfg: Config = toml::from_str("").unwrap();
 		let db = Db::memory();
 		super::super::tests::group_with_domains(&db.conn());
@@ -294,7 +291,10 @@ mod tests {
 		let refused = add(&cfg, &db, &key_file(), 2, "noreply", "")
 			.await
 			.unwrap_err();
-		assert!(refused.to_string().contains("mail is off"), "{refused}");
+		assert!(
+			refused.to_string().contains("mail hosting is off"),
+			"{refused}"
+		);
 	}
 
 	#[tokio::test]

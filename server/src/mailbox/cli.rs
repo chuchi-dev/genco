@@ -1,5 +1,6 @@
-//! `genco mail`: list, DNS, senders, send-only addresses, changes
-//! (applied right away) and deletions (confirmed by mail).
+//! `genco mail`: list, DNS, senders, the test mail, send-only
+//! addresses, changes (applied right away) and deletions (confirmed by
+//! mail).
 
 use super::*;
 
@@ -57,6 +58,9 @@ pub enum MailCmd {
 	/// Which sender domains this server may send mail as (SPF), for an
 	/// app's MAIL_FROM
 	Senders,
+	/// Send genco's test mail (Settings → Mail) and wait for postfix:
+	/// fails when it is deferred or bounced, with postfix's reason
+	Test { to: String },
 	/// Send-only addresses: an app's own SMTP login that sends only as
 	/// that address, DKIM signed, no mailbox
 	#[clap(subcommand)]
@@ -141,6 +145,11 @@ pub async fn cli(
 	match cmd {
 		MailCmd::Senders => Ok(crate::senders::cli(cfg, db).await),
 		MailCmd::List => Ok(list_text(&groups)),
+		MailCmd::Test { to } => {
+			let by =
+				format!("`genco mail test` ({})", crate::activity::cli_actor());
+			crate::mail::test(cfg, db, &to, &by).await
+		}
 		MailCmd::Dns { domain } => dns_text(cfg, db, &domain).await,
 		MailCmd::DeleteDomain { name } => {
 			let d = find_domain(&groups, &name)?;

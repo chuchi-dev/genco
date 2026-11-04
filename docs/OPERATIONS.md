@@ -109,8 +109,9 @@ into the server's config, and the CLI does the same:
 | An app sends as a domain whose inbox is elsewhere | `genco mail add-domain <domain> --group <g> --send-only` (or the mail domain's page: Mail → Make Send-only…), then `genco mail send-only add noreply@<domain> --env <group>[/<domain>]`: it writes `ZIPP_SMTP_URL` with the password into the app's environment (then `genco apply`) and prints Host, Port 587 and User, the password only with `--show-password`; set the SPF (add this server's `ip4:`) and DKIM records of `genco mail dns <domain>` (see "Send-only mail" below) |
 | DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
 | Send genco's mails through a relay as its account | Settings → Mail → Through an SMTP relay, Sender `ie@example.ch` (From and bounce address; signed by genco only as the panel's own domain) |
-| Why a mail doesn't arrive | Settings → Mail → Send Test Mail waits for postfix and shows its reason (deferred, bounced, a failed relay login); it also says when outgoing port 25 seems blocked (`genco setup` checks it too) |
+| Why a mail doesn't arrive | Settings → Mail → Send Test Mail or `genco mail test <to>` waits for postfix and shows its reason (deferred, bounced, a failed relay login; the command exits non-zero then); the panel also says when outgoing port 25 seems blocked (`genco setup` checks it too) |
 | A server without mail (port 25 blocked, no relay) | Settings → Mail → No mail: deletions are confirmed in the panel with password and 2FA code, no invites, no new mail domains, reports only in the panel and webhooks |
+| genco sends mail but hosts none | Settings → Mail → uncheck Mail hosting: no new mail domains, mailboxes, forwards or send-only addresses (panel, CLI and agent refuse them); genco's own mails (confirmations, invites, proposal links) keep going. Existing mail domains stay and keep running until deleted; without any, Dovecot, Rspamd and the submission ports stay off as always. No mail implies hosting off |
 | A PostgreSQL database | `genco database add <name> --group <g> --postgres`, then `genco apply` (installs PostgreSQL the first time) |
 | Environment variables of an app | `genco domain env <name> --set NAME=value --secret NAME=value --unset NAME`, then `genco apply` |
 | A stored password (Start → Passwords) | `genco secret list`, `genco secret show <name>` |
@@ -165,8 +166,8 @@ receiving domains too (noreply@ without a mailbox), never on an address
 that is a mailbox or forward. The DNS check of a send-only domain has no
 MX: its SPF has to list this server (add `ip4:<ip>` to the record that
 is there), the DKIM record `genco._domainkey`, DMARC recommended. With
-mail through a relay the relay's SPF counts instead; with No mail there
-are no new send-only domains or addresses.
+mail through a relay the relay's SPF counts instead; with No mail or mail
+hosting off there are no new send-only domains or addresses.
 
 Mail services follow the mail domains: without one, `genco apply` keeps
 Dovecot, Rspamd, Redis and postsrsd stopped and disabled (installed, they

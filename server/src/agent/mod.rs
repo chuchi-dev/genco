@@ -559,7 +559,8 @@ impl Runner {
 				&self.0.cfg.notes_path().display().to_string(),
 			)
 			.replace("{{inventory}}", crate::setup::INVENTORY)
-			.replace("{{mail_mode}}", &mail_mode(&self.0.db));
+			.replace("{{mail_mode}}", &mail_mode(&self.0.db))
+			.replace("{{mail_hosting}}", mail_hosting(&self.0.db));
 		format!("{ctn}\n\n# Your notes\n\n{notes}")
 	}
 
@@ -588,6 +589,17 @@ fn mail_mode(db: &Db) -> String {
 			.into(),
 		Ok("relay") => "through an SMTP relay".into(),
 		_ => "direct delivery".into(),
+	}
+}
+
+/// Settings → Mail → Mail hosting, separate from how mail is sent.
+fn mail_hosting(db: &Db) -> &'static str {
+	if crate::mail::hosting_off(&db.conn()) {
+		"off in Start → Settings → Mail on this server: no new mail \
+		domains, mailboxes, forwards or send-only addresses, existing ones \
+		stay; genco's own mails still go out unless mail is off"
+	} else {
+		"on"
 	}
 }
 
