@@ -69,10 +69,15 @@ pub struct Deploy {
 	/// its release is the one `current` points to; also a failed deploy
 	/// whose step after the switch (`craft up`) failed
 	pub live: bool,
+	/// its build waits for a runner at this place in the queue (1 next)
+	pub queue: Option<i64>,
 }
 
 const COLUMNS: &str = "id, group_id, ref, commit_id, release, status, \
-	started_by, created_at, finished_at";
+	started_by, created_at, finished_at, \
+	(SELECT count(*) FROM build_jobs q WHERE q.status = 'queued' \
+	AND q.id <= (SELECT max(j.id) FROM build_jobs j \
+	WHERE j.deploy_id = deploys.id AND j.status = 'queued'))";
 
 fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Deploy> {
 	Ok(Deploy {
@@ -86,6 +91,7 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Deploy> {
 		created_at: row.get(7)?,
 		finished_at: row.get(8)?,
 		live: false,
+		queue: Some(row.get(9)?).filter(|n| *n > 0),
 	})
 }
 
@@ -254,6 +260,14 @@ impl Ctx {
 			finished_at = coalesce(?2, finished_at) WHERE id = ?3",
 			params![status, finished, id],
 		);
+	}
+
+	/// Tells the browsers about the deploy as it is.
+	fn changed(&self, id: i64) {
+		match get(&self.db.conn(), id) {
+			Ok(deploy) => self.events.send(Event::Deploy { deploy }),
+			Err(e) => tracing::error!("deploy {id}: {e}"),
+		}
 	}
 
 	fn set_commit(&self, id: i64, commit: &str) {

@@ -102,6 +102,7 @@ into the server's config, and the CLI does the same:
 | Build runners for `on = "runner"` steps | `genco runners list`, `genco runners add <name>` (prints the token), `genco runners remove <name>` |
 | Make a box a runner | on it: `genco runner install`, `genco runner register https://<panel> <token>`, `systemctl restart genco-runner` |
 | Update a runner | on it: `genco runner update` (a daily timer of `genco runner install` does it; Settings → Runners warns when a runner runs another version) |
+| Runner builds queue | a step with `on = "runner"` never builds on the server: its deploy waits in the queue until a runner takes it, oldest first; the log says the position and what the runners do. It fails after the queue timeout (Settings → Runners, 2 h; `wait = <minutes>` on the step), when no runner is online for 15 minutes, or at once without any runner. Cancel in the group's Deploy tab takes it out of the queue. Only detected steps (no genco.toml) build here, on a server without runners |
 | Back up now | `genco backup` |
 | Copy the backups off the server (Backblaze B2, S3) | Settings → Backups, or `genco backup remote set --b2 --key-id <keyID> --bucket <bucket> [--path genco/<panel>]` (the application key on stdin; see "The remote copy" below); `genco backup remote show`, `genco backup remote test`, `genco backup remote off` |
 | List and restore snapshots | `genco backup snapshots [--tag group:shop] [--remote]`, `genco backup restore latest --tag group:shop,files --target /tmp/restore [--remote]`; anything else with `genco restic [--remote] ...` |

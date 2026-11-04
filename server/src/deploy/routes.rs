@@ -239,6 +239,16 @@ pub(super) async fn rollback_group(
 	Ok(Json(id))
 }
 
+/// Takes a deploy's build out of the runners' queue, the deploy fails.
+pub(super) async fn cancel_deploy(
+	authed: Authed,
+	State(db): State<Db>,
+	UrlPath(id): UrlPath<i64>,
+) -> Result<Json<()>> {
+	crate::runners::cancel(&db.conn(), id, &authed.user.name)?;
+	Ok(Json(()))
+}
+
 pub(super) async fn group_deploy_key(
 	_authed: Authed,
 	State(db): State<Db>,
@@ -262,6 +272,7 @@ pub fn routes() -> Router<AppState> {
 		.route("/groups/{id}/deploy-key", routing::get(group_deploy_key))
 		.route("/deploys/{id}", routing::get(get_deploy))
 		.route("/deploys/{id}/log", routing::get(deploy_log))
+		.route("/deploys/{id}/cancel", post(cancel_deploy))
 }
 
 #[cfg(test)]

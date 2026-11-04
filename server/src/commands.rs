@@ -128,7 +128,8 @@ pub(crate) async fn runners_cmd(
 			}
 			if list.is_empty() {
 				println!(
-					"no runner, build steps with on = \"runner\" run here"
+					"no runner: deploys with on = \"runner\" steps fail \
+					(detected ones build here)"
 				);
 			}
 			let t = runners::target().await;

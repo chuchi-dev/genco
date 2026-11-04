@@ -185,6 +185,7 @@ field in the panel.
   [[build]]          # on a build runner, in a container for this Debian
   dir = "cms"
   on = "runner"
+  # wait = 120       # minutes in the runners' queue, default the setting
   run = "cargo build --release --locked && cp target/release/app ."
   artifacts = ["app"]          # what comes back into the release
   image = "rust:1-{codename}"  # default: rust, node or debian by folder
@@ -209,8 +210,14 @@ field in the panel.
 - Runners: build boxes running `genco runner` connect out to this
   server and take the `on = "runner"` steps (Settings → Runners, `genco
   runners list|add <name>|remove <name>`; on the box `genco runner
-  install` and `genco runner register <url> <token>`). No runner online,
-  or none takes the job within 5 minutes: the step runs here. Only Rust
+  install` and `genco runner register <url> <token>`). A runner step
+  never runs here: the deploy waits in the queue ("waiting for a runner
+  (position N ...)" in its log, "queued" in the panel) until a runner
+  takes it, which is normal while a runner builds for another group;
+  don't start parallel retries, they only queue up. It fails after the
+  queue timeout (Settings → Runners, 2 h, `wait = <minutes>` on the
+  step) or when no runner is online for 15 minutes (tell the admins to
+  start it). Only Rust
   builds go on a runner (operator), composer and npm stay here, as
   detection does. `image` may be any build image: one that runs as root
   gets HOME=/cache/home; one with its own USER keeps its HOME and tools

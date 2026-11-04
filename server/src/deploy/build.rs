@@ -202,7 +202,8 @@ impl Build<'_> {
 	/// binaries.
 	pub(super) async fn run(&self, log: &mut Log) -> Res<DeployConfig> {
 		let cfg = config(self.shell, self.release, self.base).await?;
-		if !self.release.join("genco.toml").exists() {
+		let detected = !self.release.join("genco.toml").exists();
+		if detected {
 			log.line("no genco.toml, detected the steps").await;
 		}
 		for hint in &cfg.hints {
@@ -237,7 +238,7 @@ impl Build<'_> {
 		for s in steps {
 			log.line(&format!("$ {} (in {})", s.run, s.dir)).await;
 			if s.on_runner() {
-				self.on_runner(log, s).await?;
+				self.on_runner(log, s, detected).await?;
 			} else {
 				let dir = self.release.join(&s.dir);
 				self.shell.run_for(log, &dir, &s.run, s.minutes()).await?;
@@ -249,10 +250,18 @@ impl Build<'_> {
 	}
 
 	/// A step on a runner: the step's folder goes there (packed as the
-	/// group's user), the artifacts come back (unpacked as it). Without a
-	/// runner it runs here, with caches outside the release.
-	pub(super) async fn on_runner(&self, log: &mut Log, s: &Step) -> Res<()> {
+	/// group's user), the artifacts come back (unpacked as it). A
+	/// `detected` step runs here on a server without runners, with caches
+	/// outside the release.
+	pub(super) async fn on_runner(
+		&self,
+		log: &mut Log,
+		s: &Step,
+		detected: bool,
+	) -> Res<()> {
 		let dir = self.release.join(&s.dir);
+		// the deploy's view shows its place in the queue
+		let moved = || self.ctx.changed(self.id);
 		let req = crate::runners::Request {
 			db: &self.ctx.db,
 			deploy_id: self.id,
@@ -263,6 +272,9 @@ impl Build<'_> {
 			run: &s.run,
 			artifacts: &s.artifacts,
 			minutes: s.minutes(),
+			wait: s.wait,
+			fallback: detected,
+			moved: &moved,
 		};
 		let pack = self.shell.command(
 			&dir,

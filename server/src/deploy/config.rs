@@ -125,10 +125,14 @@ pub struct Step {
 	#[serde(default = "default_dir")]
 	pub dir: String,
 	pub run: String,
-	/// `runner`: on a build runner in a container, see runners.rs; here
-	/// if none is online
+	/// `runner`: on a build runner in a container, see runners.rs; it
+	/// waits in the queue until one takes it
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub on: Option<String>,
+	/// minutes a runner step may wait for a runner, by default the queue
+	/// timeout of Settings → Runners
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub wait: Option<u32>,
 	/// the runner's image, `{codename}` is this server's Debian release;
 	/// by default rust, node or debian for what `dir` holds
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +169,12 @@ impl Step {
 		if !self.artifacts.is_empty() && !self.on_runner() {
 			return Err("artifacts only come from a runner".into());
 		}
+		if let Some(w) = self.wait {
+			if !self.on_runner() {
+				return Err("only a step on a runner waits for one".into());
+			}
+			crate::runners::check_queue_minutes(w)?;
+		}
 		if let Some(i) = &self.image {
 			crate::runners::check_image(i)?;
 		}
@@ -184,6 +194,7 @@ pub(super) fn step(dir: &str, run: &str) -> Step {
 		dir: dir.into(),
 		run: run.into(),
 		on: None,
+		wait: None,
 		image: None,
 		artifacts: vec![],
 		timeout: None,
@@ -408,7 +419,7 @@ pub(super) fn cargo_binary(path: &Path) -> Option<String> {
 }
 
 /// `cargo build` on a runner, the binary comes back into the step's
-/// folder (here, if no runner is online).
+/// folder (here, if the server has no runner at all).
 pub(super) fn cargo_step(dir: &str, bin: &str) -> Step {
 	let mut s = step(
 		dir,

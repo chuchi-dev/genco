@@ -39,6 +39,16 @@
 	let name = $state('');
 	let created = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	// how long a deploy waits for a runner; the form only once loaded, a
+	// Save before would write the default over it
+	let queueMinutes = $state<number | null>(null);
+	get('/settings/runners')
+		.then(s => (queueMinutes = s.queueMinutes))
+		.catch(e => (error = e.message));
+
+	async function saveQueue() {
+		await post('/settings/runners', { queueMinutes });
+	}
 
 	// polled: an older answer mustn't overwrite a newer one
 	const fetchRunners = newest();
@@ -107,8 +117,10 @@
 	</Form>
 {:else}
 	<p>
-		Build steps with <code>on = "runner"</code> in genco.toml run on a runner;
-		without one online (or none takes it within 5 minutes) they run here.
+		Build steps with <code>on = "runner"</code> in genco.toml run on a runner,
+		never here: a deploy waits in the queue until one takes its build, oldest
+		first. No runner online for 15 minutes, or none takes it in the queue timeout,
+		and the deploy fails.
 	</p>
 	<ListView
 		items={runners}
@@ -155,6 +167,21 @@
 			{target.version} ({target.codename}), glibc {target.glibc}, {target.arch}.
 		</p>
 	{/if}
+	{#if queueMinutes !== null}
+		<Form onsubmit={saveQueue} ok="Save" done="Saved">
+			<label for="r-queue">Queue timeout:</label>
+			<div>
+				<input
+					id="r-queue"
+					type="number"
+					min="1"
+					max="1440"
+					bind:value={queueMinutes}
+				/>
+				minutes (a step's <code>wait</code> in genco.toml overrides it)
+			</div>
+		</Form>
+	{/if}
 	<div class="row-buttons">
 		<Button onclick={() => (adding = true)}>New Runner…</Button>
 		<Button onclick={remove} disabled={!selected}>Remove</Button>
@@ -174,5 +201,9 @@
 
 	.off {
 		color: $hint;
+	}
+
+	#r-queue {
+		width: 60px;
 	}
 </style>

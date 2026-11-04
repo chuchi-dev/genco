@@ -257,9 +257,11 @@ terminal.
       servers (token per runner), long-polls for jobs, builds
       `on = "runner"` steps in podman or docker with an image for the
       server's Debian (`rust:1-{codename}`), sends the log and the
-      artifacts back; caches per server, group and folder. No runner
-      online, or none takes the job within 5 minutes: built on the
-      server. Settings → Runners, `genco runners`, `genco runner
+      artifacts back; caches per server, group and folder. Builds wait
+      in a queue until a runner takes them, never on the server
+      (operator, after three deploys at once on gs2: the third fell
+      back after 5 minutes and had no cargo); queue timeout, early
+      failure without an online runner, cancel. Settings → Runners, `genco runners`, `genco runner
       install|register|run`. a Rust app built cold in 2m51s on a
       build box (9m20s on the server alone), warm deploy 22 s
 - [ ] on-demand machines: genco starts a cloud machine with a cache disk

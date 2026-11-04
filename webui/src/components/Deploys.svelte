@@ -100,6 +100,27 @@
 		}
 	}
 
+	async function cancel(d: Deploy) {
+		if (
+			!(await message.confirm(
+				'Cancel Deploy',
+				`Take the build of #${d.id} out of the runners' queue? The deploy fails, the live site stays.`,
+			))
+		)
+			return;
+		try {
+			await post(`/deploys/${d.id}/cancel`, {});
+		} catch (e: any) {
+			error = e.message;
+		}
+	}
+
+	// a running deploy whose build waits for a runner shows as queued
+	function statusLabel(d: Deploy): string {
+		if (d.queue) return `queued, #${d.queue} for a runner`;
+		return d.status + (d.id === current ? ', live' : '');
+	}
+
 	// a commit as ref is shown short, a branch with its commit
 	function refLabel(d: Deploy): string {
 		if (/^[0-9a-f]{40}$/.test(d.ref)) return d.ref.slice(0, 8);
@@ -157,8 +178,8 @@
 			{#snippet row(d)}
 				<td>{d.id}</td>
 				<td>{refLabel(d)}</td>
-				<td class="status {d.status}">
-					{d.status}{d.id === current ? ', live' : ''}
+				<td class="status {d.queue ? 'queued' : d.status}">
+					{statusLabel(d)}
 				</td>
 				<td>{d.startedBy}</td>
 				<td>{formatTime(d.createdAt)}</td>
@@ -167,6 +188,9 @@
 		{#if shown}
 			<div class="log-head">
 				<span>Log of #{shown.id}</span>
+				{#if shown.queue}
+					<Button onclick={() => cancel(shown)}>Cancel</Button>
+				{/if}
 				{#if shown.status === 'done' && shown.id !== current && shown.release}
 					<Button onclick={() => rollback(shown)}>
 						Roll back to this

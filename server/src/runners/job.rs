@@ -1,6 +1,6 @@
-//! The deploy's side of a build job: pack the step's folder, wait for a
-//! runner to take it, judge its state each second, copy its log, unpack
-//! the artifacts; or build here when no runner takes it.
+//! The deploy's side of a build job: pack the step's folder, wait in the
+//! queue until a runner takes it, judge its state each second, copy its
+//! log, unpack the artifacts.
 
 use super::*;
 
@@ -17,12 +17,19 @@ pub struct Request<'a> {
 	pub run: &'a str,
 	pub artifacts: &'a [String],
 	pub minutes: u32,
+	/// minutes it may wait for a runner, else the setting
+	pub wait: Option<u32>,
+	/// a detected step (no genco.toml): it builds here when this server
+	/// has no runner at all
+	pub fallback: bool,
+	/// its place in the queue changed, for the deploy's view
+	pub moved: &'a (dyn Fn() + Sync),
 }
 
 pub enum Outcome {
 	/// the artifacts are in the release
 	Built,
-	/// no runner took it, build it here
+	/// a detected step without a runner, build it here
 	Here(String),
 }
 
@@ -61,9 +68,23 @@ pub async fn build(
 	pack: tokio::process::Command,
 	unpack: impl FnOnce(std::fs::File) -> tokio::process::Command,
 ) -> std::result::Result<Outcome, String> {
-	if !any_online(&req.db.conn()).map_err(|e| e.to_string())? {
-		return Ok(Outcome::Here("no runner is online".into()));
+	let (registered, settings) = {
+		let conn = req.db.conn();
+		(
+			any_registered(&conn).map_err(|e| e.to_string())?,
+			settings(&conn),
+		)
+	};
+	if !registered && req.fallback {
+		return Ok(Outcome::Here("this server has no runner".into()));
 	}
+	if !registered {
+		return Err("the step has on = \"runner\", but this server has no \
+			runner (Settings → Runners)"
+			.into());
+	}
+	let limit = req.wait.unwrap_or(settings.queue_minutes);
+	let limit = Duration::from_secs(u64::from(limit) * 60);
 	let target = target().await;
 	let image = image(req.image, req.dir, &target.codename);
 	check_image(&image)?;
@@ -88,7 +109,11 @@ pub async fn build(
 		conn.last_insert_rowid()
 	};
 	let dir = job_dir(id);
-	let res = run_job(req.db, id, &dir, &image, log, pack, unpack).await;
+	let wait = Wait {
+		limit,
+		moved: req.moved,
+	};
+	let res = run_job(req.db, id, &dir, &image, wait, log, pack, unpack).await;
 	if let Err(e) = &res {
 		let _ = fail(req.db, id, e);
 	}
@@ -96,11 +121,19 @@ pub async fn build(
 	res
 }
 
+/// How the job waits in the queue.
+pub(super) struct Wait<'a> {
+	pub(super) limit: Duration,
+	pub(super) moved: &'a (dyn Fn() + Sync),
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_job(
 	db: &Db,
 	id: i64,
 	dir: &Path,
 	image: &str,
+	wait: Wait<'_>,
 	log: &mut Log,
 	pack: tokio::process::Command,
 	unpack: impl FnOnce(std::fs::File) -> tokio::process::Command,
@@ -112,26 +145,58 @@ pub(super) async fn run_job(
 		.await
 		.map_err(|e| format!("packing the source for the runner: {e}"))?;
 	set_status(db, id, "packing", "queued")?;
-	log.line(&format!("waiting for a runner (image {image})"))
+	log.line(&format!("queued for a runner (image {image})"))
 		.await;
 
 	let queued = Instant::now();
+	let mut offline_since: Option<Instant> = None;
+	// what the log said about the queue last, and when
+	let mut said = (String::new(), Instant::now());
+	let mut position = None;
 	let mut logged = 0u64;
 	loop {
 		tokio::time::sleep(Duration::from_secs(1)).await;
 		logged = copy_log(dir, logged, log).await;
 		let job = JobRow::read(db, id)?;
-		let runner = job.runner.clone().unwrap_or_default();
-		match verdict(&job, now(), queued.elapsed()) {
-			Verdict::Wait => {}
-			// unless a runner took it in this very moment
-			Verdict::GiveUp => {
-				if set_status(db, id, "queued", "gone").is_ok() {
-					return Ok(Outcome::Here(format!(
-						"no runner took it within {} minutes",
-						WAIT.as_secs() / 60
-					)));
+
+		if job.status == "queued" {
+			let q = Queue::read(db, id)?;
+			let at = now();
+			offline_since = match q.any_online(at) {
+				true => None,
+				false => offline_since.or(Some(Instant::now())),
+			};
+			let offline = offline_since.map(|s| s.elapsed());
+			if let Some(why) =
+				give_up(&q, at, queued.elapsed(), wait.limit, offline)
+			{
+				// unless a runner took it in this very moment
+				if drop_queued(db, id, &why)? {
+					return Err(why);
 				}
+				continue;
+			}
+			let (key, text) = q.describe(at);
+			if key != said.0 || said.1.elapsed() > REMIND {
+				log.line(&text).await;
+				said = (key, Instant::now());
+			}
+			if position != Some(q.position) {
+				position = Some(q.position);
+				(wait.moved)();
+			}
+			continue;
+		}
+		if position.take().is_some() {
+			(wait.moved)();
+		}
+
+		let runner = job.runner.clone().unwrap_or_default();
+		match verdict(&job, now()) {
+			Verdict::Wait => {}
+			Verdict::Cancelled => {
+				let by = job.message.unwrap_or_else(|| "cancelled".into());
+				return Err(format!("{by} while it waited for a runner"));
 			}
 			Verdict::Requeue => {
 				let _ = db.conn().execute(
@@ -199,12 +264,185 @@ impl JobRow {
 	}
 }
 
+/// The queue as a waiting job sees it.
+#[derive(Debug)]
+pub(super) struct Queue {
+	/// 1 for the next a runner takes
+	pub(super) position: i64,
+	pub(super) runners: Vec<QueueRunner>,
+}
+
+#[derive(Debug)]
+pub(super) struct QueueRunner {
+	pub(super) name: String,
+	pub(super) last_seen: Option<i64>,
+	/// the group it builds for right now
+	pub(super) busy: Option<String>,
+}
+
+impl Queue {
+	pub(super) fn read(db: &Db, id: i64) -> std::result::Result<Self, String> {
+		let conn = db.conn();
+		let read = || -> rusqlite::Result<Self> {
+			let position = position(&conn, id)?;
+			let mut stmt = conn.prepare(
+				"SELECT r.name, r.last_seen,
+				(SELECT coalesce(g.name, '?') FROM build_jobs j
+				LEFT JOIN deploys d ON d.id = j.deploy_id
+				LEFT JOIN domain_groups g ON g.id = d.group_id
+				WHERE j.runner_id = r.id AND j.status = 'running' LIMIT 1)
+				FROM runners r ORDER BY r.name",
+			)?;
+			let runners = stmt
+				.query_map([], |r| {
+					Ok(QueueRunner {
+						name: r.get(0)?,
+						last_seen: r.get(1)?,
+						busy: r.get(2)?,
+					})
+				})?
+				.collect::<rusqlite::Result<_>>()?;
+			Ok(Self { position, runners })
+		};
+		read().map_err(|e| e.to_string())
+	}
+
+	pub(super) fn any_online(&self, now: i64) -> bool {
+		self.runners.iter().any(|r| r.online(now))
+	}
+
+	/// What the runners do, for the log and the errors.
+	pub(super) fn runners_text(&self, now: i64) -> String {
+		if self.runners.is_empty() {
+			return "no runner registered".into();
+		}
+		let list: Vec<String> =
+			self.runners.iter().map(|r| r.text(now, true)).collect();
+		list.join(", ")
+	}
+
+	/// The log's line, and what has to change for a new one (no times).
+	pub(super) fn describe(&self, now: i64) -> (String, String) {
+		let line = |times: bool| {
+			let list: Vec<String> =
+				self.runners.iter().map(|r| r.text(now, times)).collect();
+			format!(
+				"waiting for a runner (position {} in the queue, {})",
+				self.position,
+				list.join(", ")
+			)
+		};
+		(line(false), line(true))
+	}
+}
+
+impl QueueRunner {
+	fn online(&self, now: i64) -> bool {
+		self.last_seen.is_some_and(|s| now - s < ONLINE_MS)
+	}
+
+	fn text(&self, now: i64, times: bool) -> String {
+		let name = &self.name;
+		match (&self.busy, self.last_seen) {
+			(Some(group), _) => format!("{name} busy with group {group}"),
+			_ if self.online(now) => format!("{name} online"),
+			(None, Some(seen)) if times => {
+				format!("{name} offline for {}", span(now - seen))
+			}
+			(None, Some(_)) => format!("{name} offline"),
+			(None, None) => format!("{name} never connected"),
+		}
+	}
+}
+
+/// The place of a queued job, 1 for the next one; 0 when it isn't queued.
+pub(super) fn position(conn: &Connection, id: i64) -> rusqlite::Result<i64> {
+	conn.query_row(
+		"SELECT count(*) FROM build_jobs WHERE status = 'queued' AND id <= ?1
+		AND EXISTS (SELECT 1 FROM build_jobs WHERE id = ?1
+		AND status = 'queued')",
+		[id],
+		|r| r.get(0),
+	)
+}
+
+/// Milliseconds like `2 h`, `1 h 5 min` or `40 min`.
+pub(super) fn span(ms: i64) -> String {
+	let minutes = (ms / 60_000).max(1);
+	match (minutes / 60, minutes % 60) {
+		(0, m) => format!("{m} min"),
+		(h, 0) => format!("{h} h"),
+		(h, m) => format!("{h} h {m} min"),
+	}
+}
+
+/// Why a queued job fails, if it waited long enough: no runner online for
+/// `OFFLINE` (a box that is off won't come back by itself), or none took
+/// it within `limit`.
+pub(super) fn give_up(
+	q: &Queue,
+	now: i64,
+	waited: Duration,
+	limit: Duration,
+	offline: Option<Duration>,
+) -> Option<String> {
+	if offline.is_some_and(|o| o > OFFLINE) {
+		return Some(format!(
+			"no runner online for {} ({}): start one (systemctl start \
+			genco-runner on the build box) and deploy again",
+			span(OFFLINE.as_millis() as i64),
+			q.runners_text(now)
+		));
+	}
+	if waited > limit {
+		return Some(format!(
+			"no runner took the build in {} ({})",
+			span(limit.as_millis() as i64),
+			q.runners_text(now)
+		));
+	}
+	None
+}
+
+/// Fails a job that is still queued, false if a runner took it.
+pub(super) fn drop_queued(
+	db: &Db,
+	id: i64,
+	why: &str,
+) -> std::result::Result<bool, String> {
+	let n = db
+		.conn()
+		.execute(
+			"UPDATE build_jobs SET status = 'failed', message = ?2,
+			finished_at = ?3 WHERE id = ?1 AND status = 'queued'",
+			params![id, why, now()],
+		)
+		.map_err(|e| e.to_string())?;
+	Ok(n == 1)
+}
+
+/// Takes the deploy's job out of the queue; an error if it doesn't wait
+/// for a runner (anymore). Its deploy fails at its next look.
+pub fn cancel(conn: &Connection, deploy_id: i64, by: &str) -> Result<()> {
+	let n = conn.execute(
+		"UPDATE build_jobs SET status = 'cancelled', message = ?2,
+		finished_at = ?3 WHERE deploy_id = ?1 AND status = 'queued'",
+		params![deploy_id, format!("cancelled by {by}"), now()],
+	)?;
+	if n == 0 {
+		return Err(Error::Invalid(
+			"the deploy doesn't wait for a runner".into(),
+		));
+	}
+	Ok(())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Verdict {
 	/// nothing to do yet
 	Wait,
-	/// no runner took it in time, it builds here
-	GiveUp,
+	/// an admin took it out of the queue
+	Cancelled,
 	/// taken but never heard of: the answer to the runner's poll got lost
 	Requeue,
 	/// the runner went quiet or the step ran too long
@@ -214,11 +452,11 @@ pub(super) enum Verdict {
 	Failed,
 }
 
-/// What the waiting deploy does with its job, `waited` since it queued.
-pub(super) fn verdict(job: &JobRow, now: i64, waited: Duration) -> Verdict {
+/// What the waiting deploy does with its job once it left the queue.
+pub(super) fn verdict(job: &JobRow, now: i64) -> Verdict {
 	match job.status.as_str() {
-		"queued" if waited > WAIT => Verdict::GiveUp,
 		"queued" => Verdict::Wait,
+		"cancelled" => Verdict::Cancelled,
 		"running" => {
 			// a runner says something right after it took a job
 			let unheard =
@@ -340,35 +578,174 @@ mod tests {
 
 	#[test]
 	fn the_waiting_deploy_judges_its_job() {
-		let soon = Duration::from_secs(10);
-		let late = WAIT + Duration::from_secs(1);
-		assert_eq!(verdict(&job("queued", None, None), 0, soon), Verdict::Wait);
+		// queued, it waits as long as it takes: no fallback after minutes
+		assert_eq!(verdict(&job("queued", None, None), 0), Verdict::Wait);
 		assert_eq!(
-			verdict(&job("queued", None, None), 0, late),
-			Verdict::GiveUp
+			verdict(&job("cancelled", None, None), 0),
+			Verdict::Cancelled
 		);
 		// taken a while ago, never heard of
 		let taken = job("running", Some(1000), Some(1000));
-		assert_eq!(verdict(&taken, 1000 + UNHEARD_MS - 1, soon), Verdict::Wait);
-		assert_eq!(
-			verdict(&taken, 1000 + UNHEARD_MS + 1, soon),
-			Verdict::Requeue
-		);
+		assert_eq!(verdict(&taken, 1000 + UNHEARD_MS - 1), Verdict::Wait);
+		assert_eq!(verdict(&taken, 1000 + UNHEARD_MS + 1), Verdict::Requeue);
 		// it spoke, then went quiet
 		let quiet = job("running", Some(5000), Some(1000));
-		assert_eq!(verdict(&quiet, 5000 + SILENT_MS - 1, soon), Verdict::Wait);
+		assert_eq!(verdict(&quiet, 5000 + SILENT_MS - 1), Verdict::Wait);
 		assert!(matches!(
-			verdict(&quiet, 5000 + SILENT_MS + 1, soon),
+			verdict(&quiet, 5000 + SILENT_MS + 1),
 			Verdict::Fail(_)
 		));
 		// speaks all along, but past its minutes and five more
 		let at = 1000 + 15 * 60 * 1000 + 1;
 		let long = job("running", Some(at), Some(1000));
-		assert!(matches!(verdict(&long, at, soon), Verdict::Fail(_)));
-		assert_eq!(verdict(&job("done", None, None), 0, soon), Verdict::Done);
+		assert!(matches!(verdict(&long, at), Verdict::Fail(_)));
+		assert_eq!(verdict(&job("done", None, None), 0), Verdict::Done);
+		assert_eq!(verdict(&job("failed", None, None), 0), Verdict::Failed);
+	}
+
+	/// A deploy of group `group` with a build job in `status`, on `runner`.
+	fn add_job(db: &Db, group: &str, status: &str, runner: Option<i64>) -> i64 {
+		let conn = db.conn();
+		conn.execute(
+			"INSERT OR IGNORE INTO clients (name, created_at) VALUES ('c', 0)",
+			[],
+		)
+		.unwrap();
+		conn.execute(
+			"INSERT OR IGNORE INTO domain_groups (name, client_id, created_at)
+			VALUES (?1, 1, 0)",
+			[group],
+		)
+		.unwrap();
+		conn.execute(
+			"INSERT INTO deploys (group_id, ref, status, started_by,
+			created_at) VALUES ((SELECT id FROM domain_groups
+			WHERE name = ?1), 'main', 'running', 'x', 0)",
+			[group],
+		)
+		.unwrap();
+		conn.execute(
+			"INSERT INTO build_jobs (deploy_id, cache_key, image, run,
+			artifacts, minutes, status, runner_id, created_at)
+			VALUES (?1, 'g/x', 'img', 'make', '[]', 5, ?2, ?3, 0)",
+			params![conn.last_insert_rowid(), status, runner],
+		)
+		.unwrap();
+		conn.last_insert_rowid()
+	}
+
+	#[test]
+	fn queued_jobs_know_their_place() {
+		let db = Db::memory();
+		create(&db.conn(), "perf").unwrap();
+		db.conn()
+			.execute("UPDATE runners SET last_seen = 1000", [])
+			.unwrap();
+		let busy = add_job(&db, "shop", "running", Some(1));
+		let second = add_job(&db, "blog", "queued", None);
+		let third = add_job(&db, "cms", "queued", None);
+
+		let q = Queue::read(&db, third).unwrap();
+		assert_eq!(q.position, 2);
 		assert_eq!(
-			verdict(&job("failed", None, None), 0, soon),
-			Verdict::Failed
+			q.describe(2000).1,
+			"waiting for a runner (position 2 in the queue, perf busy with \
+			group shop)"
 		);
+		assert_eq!(position(&db.conn(), busy).unwrap(), 0);
+		// the deploy's view shows it (deploy ids are the job ids here)
+		let deploy = |id| crate::deploy::get(&db.conn(), id).unwrap().queue;
+		assert_eq!(deploy(third), Some(2));
+		assert_eq!(deploy(busy), None);
+
+		// the runner takes the oldest, the third moves up
+		let next = api::claim(&db, 1).unwrap().unwrap();
+		assert_eq!(next.id, second);
+		assert_eq!(Queue::read(&db, third).unwrap().position, 1);
+	}
+
+	#[test]
+	fn a_queued_job_gives_up_late_and_says_why() {
+		let hour = 60 * 60 * 1000;
+		let q = Queue {
+			position: 1,
+			runners: vec![QueueRunner {
+				name: "performance".into(),
+				last_seen: Some(0),
+				busy: None,
+			}],
+		};
+		let limit = Duration::from_secs(2 * 60 * 60);
+		let minutes = |m: u64| Duration::from_secs(m * 60);
+		// an hour, and the runner was offline only a while
+		assert_eq!(
+			give_up(&q, hour, minutes(60), limit, Some(minutes(5))),
+			None
+		);
+		assert_eq!(
+			give_up(&q, 2 * hour, minutes(121), limit, None).unwrap(),
+			"no runner took the build in 2 h (performance offline for 2 h)"
+		);
+		// all offline for a quarter of an hour: no need to wait two
+		let why = give_up(&q, hour, minutes(16), limit, Some(minutes(16)));
+		assert!(why.unwrap().starts_with(
+			"no runner online for 15 min (performance offline for 1 h)"
+		));
+		let none = Queue {
+			position: 1,
+			runners: vec![],
+		};
+		let why = give_up(&none, 0, minutes(16), limit, Some(minutes(16)));
+		assert!(why.unwrap().contains("(no runner registered)"));
+	}
+
+	#[test]
+	fn a_cancel_takes_the_job_out_of_the_queue() {
+		let db = Db::memory();
+		let id = add_job(&db, "shop", "queued", None);
+		let deploy: i64 = db
+			.conn()
+			.query_row("SELECT deploy_id FROM build_jobs", [], |r| r.get(0))
+			.unwrap();
+		cancel(&db.conn(), deploy, "soeren").unwrap();
+		let job = JobRow::read(&db, id).unwrap();
+		assert_eq!(verdict(&job, 0), Verdict::Cancelled);
+		assert_eq!(job.message.as_deref(), Some("cancelled by soeren"));
+		// no runner gets it, and twice is an error
+		create(&db.conn(), "perf").unwrap();
+		assert!(api::claim(&db, 1).unwrap().is_none());
+		assert!(cancel(&db.conn(), deploy, "soeren").is_err());
+		// a job a runner took already isn't cancelled
+		add_job(&db, "blog", "running", Some(1));
+		assert!(cancel(&db.conn(), deploy + 1, "soeren").is_err());
+	}
+
+	#[tokio::test]
+	async fn without_runners_only_a_detected_step_builds_here() {
+		let db = Db::memory();
+		let dir = std::env::temp_dir().join("genco-test-no-runner");
+		let mut log =
+			Log::create(dir.to_str().unwrap(), 1, false).await.unwrap();
+		let moved = || {};
+		let req = |fallback| Request {
+			db: &db,
+			deploy_id: 1,
+			group: "shop",
+			dir: Path::new("/nonexistent"),
+			rel_dir: ".",
+			image: None,
+			run: "cargo build",
+			artifacts: &[],
+			minutes: 5,
+			wait: None,
+			fallback,
+			moved: &moved,
+		};
+		let cmd = || tokio::process::Command::new("false");
+		let res = build(req(false), &mut log, cmd(), |_| cmd()).await;
+		assert!(res.err().unwrap().contains("this server has no runner"));
+		let res = build(req(true), &mut log, cmd(), |_| cmd()).await;
+		assert!(matches!(res, Ok(Outcome::Here(_))));
+		let _ = std::fs::remove_dir_all(dir);
 	}
 }

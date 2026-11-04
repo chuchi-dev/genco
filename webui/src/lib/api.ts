@@ -397,6 +397,8 @@ export type Deploy = {
 	finishedAt: number | null;
 	/** its release is the one that runs, set by the list only */
 	live: boolean;
+	/** its build waits for a runner at this place in the queue */
+	queue: number | null;
 };
 
 export type Token = {

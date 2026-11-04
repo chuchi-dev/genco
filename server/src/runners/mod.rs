@@ -6,10 +6,16 @@
 //! for this server's Debian release, sends the log and the artifacts
 //! back. No ssh, it works behind NAT.
 //!
-//! A deploy queues a job and waits: no runner online, or none takes the
-//! job within `WAIT`, and the step runs on this server like any other.
-//! The source and the artifacts go through root-only files in `DIR`;
-//! packing and unpacking them runs as the group's user.
+//! A deploy queues a job and waits until a runner takes it, oldest job
+//! first; several deploys of different groups wait at once and their logs
+//! show their place in the queue. The step never runs on this server
+//! instead (it has no toolchain for it, operator): no runner takes it in
+//! the queue timeout (Settings → Runners, 2 h by default, `wait` of the
+//! step), or no runner is online for `OFFLINE`, and the deploy fails. Only
+//! a detected step (no genco.toml) builds here, when no runner is
+//! registered at all. Cancelling the deploy takes the job out of the
+//! queue. The source and the artifacts go through root-only files in
+//! `DIR`; packing and unpacking them runs as the group's user.
 
 mod api;
 mod job;
@@ -39,11 +45,16 @@ use crate::util::sh;
 
 pub use api::RunnerInfo;
 use api::*;
-pub use job::{Outcome, Request, build};
+pub use job::{Outcome, Request, build, cancel};
 
 const DIR: &str = "/var/lib/genco/builds";
-/// how long a deploy waits for a runner to take its job
-const WAIT: Duration = Duration::from_secs(5 * 60);
+/// how long a deploy waits for a runner to take its job, by default
+const QUEUE_MINUTES: u32 = 120;
+/// no runner online this long while a job waits: the deploy fails
+const OFFLINE: Duration = Duration::from_secs(15 * 60);
+/// a waiting deploy says where it is in the queue this often, without
+/// a change too
+const REMIND: Duration = Duration::from_secs(10 * 60);
 /// a runner is online when it asked for jobs this recently
 const ONLINE_MS: i64 = 90 * 1000;
 /// a running job whose runner was silent this long failed
@@ -136,12 +147,40 @@ pub fn remove(conn: &Connection, name: &str) -> Result<()> {
 	Ok(())
 }
 
-fn any_online(conn: &Connection) -> rusqlite::Result<bool> {
-	conn.query_row(
-		"SELECT EXISTS (SELECT 1 FROM runners WHERE last_seen > ?1)",
-		[now() - ONLINE_MS],
-		|r| r.get(0),
-	)
+fn any_registered(conn: &Connection) -> rusqlite::Result<bool> {
+	conn.query_row("SELECT EXISTS (SELECT 1 FROM runners)", [], |r| r.get(0))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+	/// how long a deploy waits for a runner to take its build
+	#[serde(default = "default_queue_minutes")]
+	pub queue_minutes: u32,
+}
+
+impl Default for Settings {
+	fn default() -> Self {
+		Self {
+			queue_minutes: QUEUE_MINUTES,
+		}
+	}
+}
+
+fn default_queue_minutes() -> u32 {
+	QUEUE_MINUTES
+}
+
+pub fn settings(conn: &Connection) -> Settings {
+	crate::db::get_json(conn, "runners").unwrap_or_default()
+}
+
+/// What a queue timeout may be, in Settings and genco.toml.
+pub fn check_queue_minutes(minutes: u32) -> std::result::Result<(), String> {
+	if !(1..=24 * 60).contains(&minutes) {
+		return Err("a queue timeout is 1 to 1440 minutes".into());
+	}
+	Ok(())
 }
 
 /// What a build for this server has to match.
@@ -277,6 +316,24 @@ async fn list_route(
 	})))
 }
 
+async fn get_settings(_authed: Authed, State(db): State<Db>) -> Json<Settings> {
+	Json(settings(&db.conn()))
+}
+
+async fn save_settings(
+	_authed: Authed,
+	State(db): State<Db>,
+	Json(new): Json<Settings>,
+) -> Result<Json<()>> {
+	check_queue_minutes(new.queue_minutes).map_err(Error::Invalid)?;
+	crate::db::set_setting(
+		&db.conn(),
+		"runners",
+		&serde_json::to_string(&new).unwrap(),
+	)?;
+	Ok(Json(()))
+}
+
 #[derive(Deserialize)]
 struct CreateReq {
 	name: String,
@@ -319,6 +376,7 @@ pub fn routes() -> Router<AppState> {
 	Router::new()
 		.route("/runners", get(list_route).post(create_route))
 		.route("/runners/{name}", delete(delete_route))
+		.route("/settings/runners", get(get_settings).post(save_settings))
 		.route("/deploy/target", get(deploy_target))
 		.route("/runner/hello", get(hello))
 		.route("/runner/jobs/next", post(next_job))
