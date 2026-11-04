@@ -12,8 +12,7 @@ import { go, setChat } from './router.svelte';
 /**
  * The conversation the agent window shows: its messages, merged with
  * those the events bring, and the answer being streamed. `follow` is
- * called on new text to scroll down, `always` even if the reader
- * scrolled up.
+ * called when a conversation opens or the reader sends, to go to its end.
  */
 export class Chat {
 	routines = $state<Routine[]>([]);
@@ -37,11 +36,11 @@ export class Chat {
 		),
 	);
 
-	#follow: (always: boolean) => void;
+	#follow: () => void;
 	// the first load opens the conversation of the url or the latest one
 	#first = true;
 
-	constructor(current: number | null, follow: (always: boolean) => void) {
+	constructor(current: number | null, follow: () => void) {
 		this.current = current;
 		this.#follow = follow;
 	}
@@ -70,6 +69,7 @@ export class Chat {
 		setChat(id);
 		this.streaming = '';
 		this.messages = [];
+		this.#follow();
 		if (id === null) return;
 		try {
 			const resp = await get('/conversations/' + id);
@@ -84,7 +84,7 @@ export class Chat {
 		} catch (e: any) {
 			if (this.current === id) this.error = e.message;
 		}
-		this.#follow(true);
+		this.#follow();
 	}
 
 	onEvent(ev: Event) {
@@ -99,14 +99,12 @@ export class Chat {
 			if (this.messages.some(x => x.id === m.id)) return;
 			if (m.kind === 'assistant') this.streaming = '';
 			this.messages.push(m);
-			this.#follow(false);
 		} else if (ev.type === 'showPage') {
 			// the agent shows a page to who follows its conversation
 			if (ev.conversationId === this.current) go(ev.path);
 		} else if (ev.type === 'delta') {
 			if (ev.conversationId !== this.current) return;
 			this.streaming += ev.text;
-			this.#follow(false);
 		}
 	}
 
@@ -116,6 +114,7 @@ export class Chat {
 	 */
 	async send(text: string, files: string[] = []) {
 		this.error = null;
+		this.#follow();
 		try {
 			if (this.current === null) {
 				const c: Conversation = await post('/conversations', {

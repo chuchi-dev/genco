@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { newest, request } from '@/lib/api';
+	import { Follow } from '@/lib/follow.svelte';
+	import Button from './win/Button.svelte';
 
 	// the log of a deploy or backup, every two seconds while it runs
 	let {
@@ -32,6 +34,14 @@
 		);
 	}
 
+	// stays at the end while it grows, unless the reader scrolled up
+	const follow = new Follow();
+	// another log starts at its end
+	$effect(() => {
+		void url;
+		follow.down();
+	});
+
 	// once when the log or its state changes, then while it runs
 	$effect(() => {
 		const from = url;
@@ -43,12 +53,34 @@
 </script>
 
 <!-- old logs are removed after a while, their runs stay -->
-<pre class="log selectable" style:height="{height}px">{error ??
-		(text ||
-			(loaded && !live ? 'No log, removed after a while.' : '…'))}</pre>
+<div class="log-box">
+	<pre
+		class="log selectable"
+		style:height="{height}px"
+		{@attach follow.attach}>{error ??
+			(text ||
+				(loaded && !live
+					? 'No log, removed after a while.'
+					: '…'))}</pre>
+	{#if follow.unseen}
+		<div class="unseen">
+			<Button onclick={() => follow.down()}>↓ New output</Button>
+		</div>
+	{/if}
+</div>
 
 <style lang="scss">
 	@use 'styles/win' as *;
+
+	.log-box {
+		position: relative;
+	}
+
+	.unseen {
+		position: absolute;
+		right: 20px;
+		bottom: 6px;
+	}
 
 	.log {
 		margin: 0;

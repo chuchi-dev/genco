@@ -3,6 +3,7 @@
 	import { Chat } from '@/lib/chat.svelte';
 	import { conversations } from '@/lib/conversations.svelte';
 	import { listen } from '@/lib/events.svelte';
+	import { Follow } from '@/lib/follow.svelte';
 	import { current as page } from '@/lib/router.svelte';
 	import Button from './win/Button.svelte';
 	import DropMenu from './win/DropMenu.svelte';
@@ -13,9 +14,9 @@
 
 	let { onminimize }: { onminimize: () => void } = $props();
 
-	let scroller: HTMLElement | undefined = $state();
-
-	const chat = new Chat(page.chat, scrollDown);
+	// follows new text, unless the reader scrolled up
+	const follow = new Follow();
+	const chat = new Chat(page.chat, () => follow.down());
 	chat.load();
 	const conversation = $derived(chat.conversation);
 	const running = $derived(chat.running);
@@ -29,15 +30,6 @@
 	});
 
 	$effect(() => listen(ev => chat.onEvent(ev)));
-
-	/// follows new text, unless the reader scrolled up
-	function scrollDown(always = false) {
-		if (!scroller) return;
-		const s = scroller;
-		const atEnd = s.scrollHeight - s.scrollTop - s.clientHeight < 60;
-		if (!always && !atEnd) return;
-		requestAnimationFrame(() => (s.scrollTop = s.scrollHeight));
-	}
 </script>
 
 <Window title="Server Agent" icon="agent" {onminimize}>
@@ -61,34 +53,42 @@
 		</DropMenu>
 	</div>
 
-	<div class="log selectable" bind:this={scroller}>
-		{#if chat.current === null}
-			<p class="hint">
-				Ask the agent anything about this server: set up a domain, check
-				why a site is down, update packages. It has root access.
-			</p>
-		{/if}
-		{#each chat.messages as m (m.id)}
-			{#if m.kind !== 'toolOutput'}
+	<div class="log-box">
+		<div class="log selectable" {@attach follow.attach}>
+			{#if chat.current === null}
+				<p class="hint">
+					Ask the agent anything about this server: set up a domain,
+					check why a site is down, update packages. It has root
+					access.
+				</p>
+			{/if}
+			{#each chat.messages as m (m.id)}
+				{#if m.kind !== 'toolOutput'}
+					<AgentMessage
+						{m}
+						output={m.kind === 'toolCall'
+							? chat.outputs.get(m.callId)
+							: undefined}
+					/>
+				{/if}
+			{/each}
+			{#if chat.streaming}
 				<AgentMessage
-					{m}
-					output={m.kind === 'toolCall'
-						? chat.outputs.get(m.callId)
-						: undefined}
+					m={{
+						id: 0,
+						conversationId: chat.current ?? 0,
+						createdAt: Date.now(),
+						kind: 'assistant',
+						text: chat.streaming,
+					}}
+					live
 				/>
 			{/if}
-		{/each}
-		{#if chat.streaming}
-			<AgentMessage
-				m={{
-					id: 0,
-					conversationId: chat.current ?? 0,
-					createdAt: Date.now(),
-					kind: 'assistant',
-					text: chat.streaming,
-				}}
-				live
-			/>
+		</div>
+		{#if follow.unseen}
+			<div class="unseen">
+				<Button onclick={() => follow.down()}>↓ New messages</Button>
+			</div>
 		{/if}
 	</div>
 
@@ -123,12 +123,26 @@
 		}
 	}
 
+	.log-box {
+		position: relative;
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+	}
+
 	.log {
 		@include sunken;
 		flex: 1;
 		overflow: auto;
 		padding: 6px 8px;
 		min-height: 0;
+	}
+
+	.unseen {
+		position: absolute;
+		right: 20px;
+		bottom: 6px;
 	}
 
 	.hint {
