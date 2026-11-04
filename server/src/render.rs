@@ -206,6 +206,7 @@ pub fn unit_path(unit: &str) -> PathBuf {
 }
 
 pub const FIREWALL: &str = "/etc/genco/nftables.conf";
+pub const RESERVED_PORTS: &str = "/etc/sysctl.d/60-genco.conf";
 
 /// Above it slot A's port would be another domain's slot B, insert_domain
 /// refuses such ids.
@@ -231,6 +232,28 @@ pub fn public_ports(groups: &[Group]) -> Vec<u16> {
 	ports.sort();
 	ports.dedup();
 	ports
+}
+
+/// The ports genco's units listen on, kept out of the kernel's ephemeral
+/// range: an app may bind port 0 (see `sandbox`), without this it could do
+/// so until it gets another app's slot B or a worker's port while that
+/// one restarts. A unit that binds its port explicitly still gets it.
+/// Also for IPv6.
+pub fn reserved_ports(groups: &[Group], panel_port: u16) -> String {
+	let mut ports = public_ports(groups);
+	ports.push(panel_port);
+	ports.retain(|p| !(20000..=39999).contains(p));
+	ports.sort();
+	ports.dedup();
+	let mut list: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
+	// the apps' slots A and B, see slot_port
+	list.push("20000-39999".into());
+	format!(
+		"{HEADER}
+net.ipv4.ip_local_reserved_ports = {}
+",
+		list.join(",")
+	)
 }
 
 pub fn has_app(domain: &Domain) -> bool {
@@ -727,9 +750,6 @@ fn magick_env(group: &Group) -> Option<String> {
 	))
 }
 
-/// Runs as the group's user and only sees its own files. `bind` is the
-/// one port it may listen on: a free port of another app or of the panel
-/// would otherwise be open to any group while its owner restarts.
 /// genco's own state, the groups' processes never see it (`-`: fine if
 /// it doesn't exist)
 pub const HIDDEN: &[&str] = &[
@@ -742,13 +762,23 @@ pub const HIDDEN: &[&str] = &[
 	"-/etc/genco/dkim",
 ];
 
+/// Denies binding every TCP port but port 0: clients (SMTP) bind it before
+/// they connect and the kernel picks an ephemeral one, `any` would deny
+/// that too. UDP stays open, resolvers like hickory bind a random port of
+/// their own; the firewall drops inbound UDP and genco listens on none.
+pub const BIND_DENY: &str = "SocketBindDeny=tcp:1-65535";
+
+/// Runs as the group's user and only sees its own files. `bind` is the
+/// one port it may listen on: a free port of another app or of the panel
+/// would otherwise be open to any group while its owner restarts. Port 0
+/// can't land on one of them, see `reserved_ports`.
 fn sandbox(g: &str, bind: Option<u16>) -> String {
 	let bind = match bind {
 		Some(port) => format!("SocketBindAllow=tcp:{port}\n"),
 		None => String::new(),
 	};
 	format!(
-		"{bind}SocketBindDeny=any
+		"{bind}{deny}
 User={user}
 Group={user}
 Slice={slice}
@@ -774,6 +804,7 @@ LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ",
+		deny = BIND_DENY,
 		user = group_user(g),
 		slice = slice(g),
 		dir = group_dir(g).display(),
@@ -1185,7 +1216,9 @@ mod tests {
 		assert!(unit.contains("User=g-shop"));
 		assert!(unit.contains("ReadWritePaths=/srv/genco/shop"));
 		assert!(unit.contains("/usr/sbin/php-fpm8.4"));
-		assert!(unit.contains("SocketBindDeny=any"));
+		assert!(unit.contains("SocketBindDeny=tcp:1-65535\n"));
+		assert!(!unit.contains("SocketBindDeny=any"));
+		assert!(!unit.contains("udp"));
 		assert!(!unit.contains("SocketBindAllow"));
 		assert!(site.contains("disable_symlinks if_not_owner;"));
 	}
@@ -1299,7 +1332,11 @@ mod tests {
 		assert!(unit.contains("PORT=20005"));
 		assert!(unit.contains("WorkingDirectory=/srv/genco/shop/public"));
 		assert!(unit.contains("Slice=genco-shop.slice"));
-		assert!(unit.contains("SocketBindAllow=tcp:20005\nSocketBindDeny=any"));
+		assert!(
+			unit.contains(
+				"SocketBindAllow=tcp:20005\nSocketBindDeny=tcp:1-65535"
+			)
+		);
 		assert!(
 			find(&files, "/etc/genco/apps/shop.ch.sh")
 				.contains("node build/index.js")
@@ -1351,7 +1388,9 @@ mod tests {
 		let b =
 			find(&files, "/etc/systemd/system/genco-shop-shop.ch_b.service");
 		assert!(b.contains("PORT=30005"));
-		assert!(b.contains("SocketBindAllow=tcp:30005\nSocketBindDeny=any"));
+		assert!(
+			b.contains("SocketBindAllow=tcp:30005\nSocketBindDeny=tcp:1-65535")
+		);
 		let fw = firewall(std::slice::from_ref(&g), 4100, &[]);
 		assert!(fw.contains("tcp dport 20005 meta skuid"));
 		assert!(fw.contains("tcp dport 30005 meta skuid"));
@@ -1583,7 +1622,7 @@ mod tests {
 		assert!(q.contains("WorkingDirectory=/srv/genco/shop/current/craft"));
 		assert!(q.contains("PATH=/usr/local/lib/genco/php8.4:/usr/local/bin"));
 		assert!(q.contains("User=g-shop"));
-		assert!(q.contains("SocketBindDeny=any"));
+		assert!(q.contains("SocketBindDeny=tcp:1-65535\n"));
 		assert!(!q.contains("SocketBindAllow"));
 		assert!(
 			find(&files, "/etc/genco/workers/shop-queue.sh")
@@ -1595,7 +1634,9 @@ mod tests {
 			"/etc/systemd/system/genco-shop-worker-packages.service",
 		);
 		assert!(p.contains("PORT=5426"));
-		assert!(p.contains("SocketBindAllow=tcp:5426"));
+		assert!(p.contains(
+			"SocketBindAllow=tcp:5426\nSocketBindDeny=tcp:1-65535\n"
+		));
 
 		let s = find(
 			&files,
@@ -1606,9 +1647,16 @@ mod tests {
 		assert!(s.contains("HOME=/srv/genco/shop MAGICK_MEMORY_LIMIT=256MiB"));
 		assert!(q.contains("MAGICK_THREAD_LIMIT=1\n"));
 		assert!(s.contains("TimeoutStartSec=10min"));
+		assert!(s.contains("SocketBindDeny=tcp:1-65535\n"));
 		let t =
 			find(&files, "/etc/systemd/system/genco-shop-cron-statuses.timer");
 		assert!(t.contains("OnCalendar=*:0/5"));
+
+		let sysctl = reserved_ports(std::slice::from_ref(&g), 4100);
+		assert!(sysctl.starts_with(HEADER));
+		assert!(sysctl.ends_with(
+			"\nnet.ipv4.ip_local_reserved_ports = 4100,5426,20000-39999\n"
+		));
 
 		let fw = firewall(&[g], 4100, &[]);
 		assert!(fw.contains("add element inet filter genco_public { 5426 }"));

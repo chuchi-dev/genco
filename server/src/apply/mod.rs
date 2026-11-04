@@ -198,6 +198,11 @@ async fn sync(
 		.collect();
 	files.extend(panel_files(cfg, old_names));
 	files.push(firewall_file(cfg, groups, blocked));
+	files.push(File {
+		path: render::RESERVED_PORTS.into(),
+		content: render::reserved_ports(groups, cfg.panel_port()),
+		private_to: None,
+	});
 	prepare_mail(r, groups).await;
 	let mail_files = mail_files(r, cfg, groups);
 	files.extend(mail_files.iter().cloned());
@@ -224,6 +229,9 @@ async fn sync(
 
 	if changed.contains(Path::new(render::FIREWALL)) {
 		r.run(&["nft", "-f", render::FIREWALL]).await;
+	}
+	if changed.contains(Path::new(render::RESERVED_PORTS)) {
+		r.run(&["sysctl", "-q", "-p", render::RESERVED_PORTS]).await;
 	}
 	if !mail_files.is_empty() {
 		mail_services(r, cfg, groups, &changed).await;

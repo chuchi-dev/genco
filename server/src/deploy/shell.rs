@@ -68,7 +68,7 @@ impl GroupShell {
 				"ProtectProc=invisible",
 				// like the group's services, see render::sandbox
 				"-p",
-				"SocketBindDeny=any",
+				render::BIND_DENY,
 			])
 			// a step that never ends would hold every group's deploys
 			.arg("-p")

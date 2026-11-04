@@ -156,7 +156,7 @@ ExecReload=/bin/kill -USR2 $MAINPID
 RuntimeDirectory=genco-webmail
 RuntimeDirectoryMode=0750
 Restart=on-failure
-SocketBindDeny=any
+{deny}
 User={USER}
 Group={USER}
 UMask=0027
@@ -182,7 +182,8 @@ SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
-"
+",
+		deny = crate::render::BIND_DENY,
 	)
 }
 
@@ -325,6 +326,13 @@ mod tests {
 		assert_eq!(v["SMTP"]["port"], 465);
 		assert_eq!(v["SMTP"]["useAuth"], true);
 		assert_eq!(v["Sieve"]["enabled"], false);
+	}
+
+	#[test]
+	fn the_unit_binds_no_tcp_port_but_port_0() {
+		let u = service();
+		assert!(u.contains("SocketBindDeny=tcp:1-65535\n"));
+		assert!(!u.contains("SocketBindAllow"));
 	}
 
 	#[test]

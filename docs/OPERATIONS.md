@@ -275,6 +275,30 @@ work with the old code for that moment, background jobs inside the app
 may run twice and SQLite apps may see a short lock. Switching it off
 goes back to slot A with the next `genco apply`.
 
+The groups' units (apps, PHP, workers, schedules, deploy steps) run in a
+sandbox as the group's user: they see only the group's files and listen
+on TCP only on their own port (an app's `PORT`, a worker's `--port`),
+every other TCP bind is denied (`SocketBindDeny=tcp:1-65535`). Outgoing
+TCP connections (SMTP, HTTP) bind port 0 and get an ephemeral port. So
+that port 0 never lands on another unit's port while it restarts,
+`apply` reserves genco's ports (the panel, 20000 to 39999, the workers'
+ports) from the ephemeral range in `/etc/sysctl.d/60-genco.conf`
+(`net.ipv4.ip_local_reserved_ports`, for IPv6 too); the owning unit
+still binds its port. Apps may use UDP freely for client traffic (DNS,
+NTP; resolvers like hickory that pick their own port work); inbound UDP
+stays closed by the firewall. To check a sandbox by hand:
+
+```sh
+systemd-run --wait --pipe -q -p DynamicUser=yes \
+  -p SocketBindAllow=tcp:20003 -p SocketBindDeny=tcp:1-65535 \
+  python3 -c 'import socket as s
+for t, p in [(s.SOCK_STREAM, 0), (s.SOCK_DGRAM, 40000),
+             (s.SOCK_STREAM, 20003), (s.SOCK_STREAM, 20004)]:
+    try: s.socket(s.AF_INET, t).bind(("127.0.0.1", p)); print(p, "ok")
+    except OSError as e: print(p, e)'
+# 0 ok, 40000 ok, 20003 ok, 20004 [Errno 1] Operation not permitted
+```
+
 `systemctl list-units 'genco-*'` shows them. A broken genco binary only
 stops the panel and new changes. To get a working binary back, run the
 install script again.

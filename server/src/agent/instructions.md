@@ -98,6 +98,8 @@ field in the panel.
 - Node and Rust apps run in `<group dir>/<root>` as
   `genco-<group>-<domain>.service`, with `PORT` (20000 + domain id) and
   `HOST=127.0.0.1`; only nginx, root and the group can reach the port.
+  The sandbox lets it listen on TCP only on that port; outgoing
+  connections (SMTP, HTTP) and UDP client traffic (DNS, NTP) work.
   A public folder (`genco domain set --public current/svelte/dist/public`)
   is served by nginx directly, the rest goes to the app; crelte sites
   have theirs in `svelte/dist/public`. crelte reads `../craft/.env` at
