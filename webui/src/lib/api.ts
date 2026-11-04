@@ -1,7 +1,7 @@
 import { session } from './session.svelte';
 
 // most components take the formats from here, with the requests
-export { formatBytes, formatTime } from './format';
+export { formatAgo, formatBytes, formatTime } from './format';
 
 export class ApiError extends Error {
 	type: string;
@@ -267,6 +267,32 @@ export type DnsRecord = {
 	found: string[];
 	status: 'ok' | 'missing' | 'differs' | 'optional';
 	note: string;
+};
+
+/** the mail of an address in the last days, from Postfix's log */
+export type AddressCount = {
+	/** `*@domain` the catch-all, `g-<group>` the group's SMTP login */
+	address: string;
+	/** received and forwarded; sent of a send-only address and the
+	 * login; rejected of an unknown address */
+	count: number;
+	last: number | null;
+};
+
+export type MailCounts = {
+	/** when counting started */
+	since: number | null;
+	days: number;
+	received: number;
+	forwarded: number;
+	rejected: number;
+	bounced: number;
+	mailboxes: AddressCount[];
+	forwards: AddressCount[];
+	sendOnly: AddressCount[];
+	login: AddressCount | null;
+	/** rejected addresses without a mailbox or forward */
+	unknown: AddressCount[];
 };
 
 export type Client = {

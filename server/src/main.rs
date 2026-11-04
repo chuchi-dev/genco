@@ -225,6 +225,7 @@ impl Cmd {
 					mailbox::MailCmd::List
 						| mailbox::MailCmd::Dns { .. }
 						| mailbox::MailCmd::Senders
+						| mailbox::MailCmd::Stats { .. }
 						| mailbox::MailCmd::SendOnly(
 							mailbox::SendOnlyCmd::List
 						)

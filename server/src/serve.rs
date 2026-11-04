@@ -180,7 +180,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		runner.onboard();
 	}
 	checks::spawn(cfg.clone(), db.clone(), runner.clone(), events.clone());
-	let stats = stats::StatsDb::open(&cfg.data_dir.join("stats.db"))?;
+	let stats = stats::StatsDb::open(&stats::path(&cfg))?;
 	stats::spawn(db.clone(), stats.clone());
 
 	let state = AppState {

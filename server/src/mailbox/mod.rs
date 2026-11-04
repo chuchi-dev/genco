@@ -9,6 +9,7 @@
 
 mod cli;
 mod conf;
+mod counts;
 mod dns;
 mod routes;
 mod send_only;
@@ -39,6 +40,7 @@ pub use conf::{
 	POSTFIX_AFTER_DOCKER, SUBMISSION, SUBMISSION_OPTIONS, docker_bridges,
 	docker_installed, files, postfix_settings,
 };
+pub use counts::{Counter, SCHEMA as COUNTS_SCHEMA};
 use dns::*;
 pub use dns::{DnsRecord, panel_dns};
 pub use routes::routes;

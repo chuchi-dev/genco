@@ -220,12 +220,27 @@ pub(super) async fn dns_route(
 	Ok(Json(domain_dns(&cfg, &db, &name).await?))
 }
 
+/// Mail per address of the last 30 days.
+pub(super) async fn counts_route(
+	_authed: Authed,
+	State(db): State<Db>,
+	State(stats): State<crate::stats::StatsDb>,
+	UrlPath(id): UrlPath<i64>,
+) -> Result<Json<counts::DomainCounts>> {
+	let groups = hosting::groups(&db.conn())?;
+	let d = domains(&groups)
+		.find(|d| d.id == id)
+		.ok_or(Error::NotFound)?;
+	Ok(Json(counts::counts(&stats, &groups, d)?))
+}
+
 pub fn routes() -> Router<AppState> {
 	Router::new()
 		.route("/mail-domains", post(create_domain))
 		.route("/mail-domains/{id}/mailboxes", post(create_mailbox))
 		.route("/mail-domains/{id}/forwards", post(create_forward))
 		.route("/mail-domains/{id}/dns", get(dns_route))
+		.route("/mail-domains/{id}/counts", get(counts_route))
 		.route("/mail-domains/{id}/mode", post(update_mode))
 		.route("/mail-domains/{id}/send-only", post(create_send_only))
 		.route(

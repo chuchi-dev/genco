@@ -106,6 +106,7 @@ into the server's config, and the CLI does the same:
 | Give a group more memory, CPU or tasks | `genco group set <g> --memory 2.5G --cpu 200% --tasks 1024`, then `genco apply` (see "Group limits" below) |
 | Restart a Node or Rust app without downtime | `genco domain set <name> --zero-downtime true`, then `genco apply` (see below) |
 | Which sender domains apps may use (SPF) | `genco mail senders` |
+| Which mailboxes, forwards and send-only addresses are used | `genco mail stats [<domain>]` or the mail domain's page (see "Mail counts" below) |
 | An app sends as a domain whose inbox is elsewhere | `genco mail add-domain <domain> --group <g> --send-only` (or the mail domain's page: Mail → Make Send-only…), then `genco mail send-only add noreply@<domain> --env <group>[/<domain>]`: it writes `ZIPP_SMTP_URL` with the password into the app's environment (then `genco apply`) and prints Host, Port 587 and User, the password only with `--show-password`; set the SPF (add this server's `ip4:`) and DKIM records of `genco mail dns <domain>` (see "Send-only mail" below) |
 | DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
 | Send genco's mails through a relay as its account | Settings → Mail → Through an SMTP relay, Sender `ie@example.ch` (From and bounce address; signed by genco only as the panel's own domain) |
@@ -191,6 +192,24 @@ MX: its SPF has to list this server (add `ip4:<ip>` to the record that
 is there), the DKIM record `genco._domainkey`, DMARC recommended. With
 mail through a relay the relay's SPF counts instead; with No mail or mail
 hosting off there are no new send-only domains or addresses.
+
+Mail counts: every minute genco reads Postfix's new lines in the journal
+(from a cursor in the stats database, so a restart counts nothing twice;
+the first run on a server starts at that moment) and counts per day and
+address of the receiving mail domains how a mail ended: received
+(delivered to a mailbox here), forwarded (sent on to another server),
+rejected (refused for good while it came in: unknown address, Rspamd's
+spam reject) or bounced, all by the address it was sent to (before
+forwards and the catch-all); and per SMTP login (send-only addresses,
+mailboxes, the group's `g-<group>`) what it sent. A mail to a forward
+with two targets counts once; mail still being retried counts when it
+ends. Only counts and the time of each address's last mail are kept,
+never senders, subjects or message ids: the counts for 90 days, the last
+mail for 400 days (of rejected addresses 90). The mail domain's page
+shows the last 30 days per mailbox, forward (the catch-all sums up the
+addresses without their own) and send-only address with the last mail,
+the domain's totals, and the 10 refused unknown addresses tried most;
+`genco mail stats [<domain>]` prints the same.
 
 Mail services follow the mail domains: without one, `genco apply` keeps
 Dovecot, Rspamd, Redis and postsrsd stopped and disabled (installed, they

@@ -2,6 +2,12 @@
 	import { objectPage } from '@/lib/router.svelte';
 	import { tree } from '@/lib/tree.svelte';
 
+	// received or forwarded, see `counts`
+	const COUNT_COLUMNS = [
+		{ label: 'Last 30 days', num: true },
+		{ label: 'Last mail' },
+	];
+
 	const page = objectPage(
 		id => tree.mailDomain(id),
 		'This mail domain is gone.',
@@ -10,7 +16,18 @@
 </script>
 
 <script lang="ts">
-	import { post, type DnsRecord, type Mailbox } from '@/lib/api';
+	import { untrack } from 'svelte';
+	import {
+		formatAgo,
+		formatTime,
+		get,
+		newest,
+		post,
+		type AddressCount,
+		type DnsRecord,
+		type Mailbox,
+		type MailCounts,
+	} from '@/lib/api';
 	import { mail } from '@/lib/mail.svelte';
 	import {
 		message,
@@ -47,6 +64,27 @@
 	let dns = $state<DnsRecord[] | null>(null);
 	// the mail server's own name, the first record of the check
 	const host = $derived(dns?.find(r => r.kind === 'A')?.name ?? null);
+
+	// mail per address from Postfix's log, again when the addresses change
+	let counts = $state<MailCounts | null>(null);
+	const loadCounts = newest();
+	$effect(() => {
+		const path = `/mail-domains/${domain.id}/counts`;
+		void [domain.mailboxes, domain.forwards, domain.sendOnlyAddresses];
+		untrack(() => loadCounts(get(path), (c: MailCounts) => (counts = c)));
+	});
+	const byAddress = $derived(
+		new Map(
+			[
+				...(counts?.mailboxes ?? []),
+				...(counts?.forwards ?? []),
+				...(counts?.sendOnly ?? []),
+			].map(c => [c.address, c]),
+		),
+	);
+	const sent = $derived(
+		(counts?.sendOnly ?? []).reduce((n, c) => n + c.count, 0),
+	);
 
 	const box = $derived(domain.mailboxes.find(b => b.id === selectedBox));
 	const forward = $derived(
@@ -140,6 +178,23 @@
 		</Button>
 		{#if modeError}<span class="error">{modeError}</span>{/if}
 	</dd>
+	{#if counts}
+		<dt>Last {counts.days} days:</dt>
+		<dd>
+			{#if domain.sendOnly}
+				{sent} sent by send-only addresses
+			{:else}
+				{counts.received} received, {counts.forwarded} forwarded, {counts.rejected}
+				rejected{#if counts.bounced}, {counts.bounced} bounced{/if}
+			{/if}{#if counts.login}, {counts.login.count} sent with the group's login
+				{counts.login.address}{/if}
+			<span class="hint">
+				{counts.since
+					? `(counted since ${formatTime(counts.since)})`
+					: '(counting starts within a minute)'}
+			</span>
+		</dd>
+	{/if}
 	{#if host && !domain.sendOnly}
 		<dt>Webmail:</dt>
 		<dd>
@@ -162,7 +217,11 @@
 		items={domain.mailboxes}
 		key={b => b.id}
 		bind:selected={selectedBox}
-		columns={[{ label: 'Address' }, { label: 'Quota', num: true }]}
+		columns={[
+			{ label: 'Address' },
+			{ label: 'Quota', num: true },
+			...COUNT_COLUMNS,
+		]}
 		empty="No mailboxes yet."
 		ondblclick={b => (editing = b)}
 		maxHeight={260}
@@ -170,6 +229,7 @@
 		{#snippet row(b)}
 			<td>{b.address}</td>
 			<td class="num">{b.quotaMb} MB</td>
+			{@render countCells(byAddress.get(b.address))}
 		{/snippet}
 	</ListView>
 	<div class="row-buttons">
@@ -195,7 +255,7 @@
 		items={domain.forwards}
 		key={f => f.id}
 		bind:selected={selectedForward}
-		columns={[{ label: 'Address' }, { label: 'Goes to' }]}
+		columns={[{ label: 'Address' }, { label: 'Goes to' }, ...COUNT_COLUMNS]}
 		empty="No forwards."
 		maxHeight={260}
 	>
@@ -206,12 +266,36 @@
 					: f.address}
 			</td>
 			<td>{f.targets.join(', ')}</td>
+			{@render countCells(byAddress.get(f.address))}
 		{/snippet}
 	</ListView>
 	<div class="row-buttons">
 		<Button onclick={() => (editing = 'forward')}>New Forward…</Button>
 		<Button onclick={removeForward} disabled={!forward}>Delete</Button>
 	</div>
+
+	{#if counts?.unknown.length}
+		<h4>Unknown addresses (rejected)</h4>
+		<p class="hint">
+			Mail to addresses without a mailbox or forward, refused in the last
+			{counts.days} days: tried by spammers, or one that is missing.
+		</p>
+		<ListView
+			items={counts.unknown}
+			key={u => u.address}
+			columns={[
+				{ label: 'Address' },
+				{ label: 'Rejected', num: true },
+				{ label: 'Last mail' },
+			]}
+			maxHeight={200}
+		>
+			{#snippet row(u)}
+				<td>{u.address}</td>
+				{@render countCells(u)}
+			{/snippet}
+		</ListView>
+	{/if}
 {/if}
 
 <h4>Send-only addresses</h4>
@@ -223,13 +307,19 @@
 	items={domain.sendOnlyAddresses}
 	key={s => s.id}
 	bind:selected={selectedSendOnly}
-	columns={[{ label: 'Address' }, { label: 'For' }]}
+	columns={[
+		{ label: 'Address' },
+		{ label: 'For' },
+		{ label: 'Sent (30 days)', num: true },
+		{ label: 'Last mail' },
+	]}
 	empty="No send-only addresses."
 	maxHeight={200}
 >
 	{#snippet row(s)}
 		<td>{s.address}</td>
 		<td>{s.note}</td>
+		{@render countCells(byAddress.get(s.address))}
 	{/snippet}
 </ListView>
 <div class="row-buttons">
@@ -263,6 +353,11 @@
 		Delete Mail Domain…
 	</Button>
 </div>
+
+{#snippet countCells(c: AddressCount | undefined)}
+	<td class="num">{c?.count ?? ''}</td>
+	<td>{c ? (c.last ? formatAgo(c.last) : 'never') : ''}</td>
+{/snippet}
 
 {#if editing === 'new'}
 	<MailboxDialog {domain} onclose={() => (editing = null)} />

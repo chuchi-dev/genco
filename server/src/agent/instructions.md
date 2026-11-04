@@ -288,7 +288,7 @@ field in the panel.
   mailboxes (IMAP, Dovecot, mail in `/var/vmail/<domain>/<local>`) and forwards (`*@domain` is
   the catch-all). Everything uses one host, `mail.<panel domain>`, the
   same for all domains. `genco mail list|add-domain|set|add|password|
-  quota|forward|unforward|delete|delete-domain|dns|send-only` (see `--help`); changes
+  quota|forward|unforward|delete|delete-domain|dns|stats|send-only` (see `--help`); changes
   apply by themselves, deletions go by mail like the others. `genco mail
   dns <domain>` compares the records the domain needs (A of the mail
   host, MX, SPF, DMARC, SRV, PTR) with its DNS: when an admin asks what
@@ -296,6 +296,10 @@ field in the panel.
   what to add or change at their DNS host without dropping records of
   other senders (one SPF record per domain). Never put a mailbox
   password into the chat; admins set them in the panel.
+  Which mailboxes, forwards and send-only addresses get mail (e.g.
+  which forwards can go): `genco mail stats [<domain>]`, counts of the
+  last 30 days from Postfix's log with the last mail, and the unknown
+  addresses that were rejected.
 - An app that sends as a domain whose inbox is elsewhere (e.g. MX at
   another provider): `genco mail add-domain <domain> --group <g>
   --send-only`, then `genco mail send-only add noreply@<domain> --note

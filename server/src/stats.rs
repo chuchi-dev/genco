@@ -36,6 +36,10 @@ const DISK_EVERY: i64 = HOUR;
 const CGROUPS: &str = "/sys/fs/cgroup/genco.slice";
 const NGINX_LOGS: &str = "/var/log/nginx/genco";
 
+pub fn path(cfg: &crate::config::Config) -> PathBuf {
+	cfg.data_dir.join("stats.db")
+}
+
 /// The stats database, apart from genco's: it is big, changes every
 /// minute and needs no backup.
 #[derive(Clone)]
@@ -47,17 +51,20 @@ impl StatsDb {
 			format!("failed to open the stats {}: {e}", path.display())
 		})?;
 		conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+		conn.execute_batch(crate::mailbox::COUNTS_SCHEMA)
+			.map_err(|e| e.to_string())?;
 		Ok(Self(Arc::new(Mutex::new(conn))))
 	}
 
 	#[cfg(test)]
-	fn memory() -> Self {
+	pub fn memory() -> Self {
 		let conn = Connection::open_in_memory().unwrap();
 		conn.execute_batch(SCHEMA).unwrap();
+		conn.execute_batch(crate::mailbox::COUNTS_SCHEMA).unwrap();
 		Self(Arc::new(Mutex::new(conn)))
 	}
 
-	fn conn(&self) -> MutexGuard<'_, Connection> {
+	pub fn conn(&self) -> MutexGuard<'_, Connection> {
 		self.0.lock().unwrap()
 	}
 }
@@ -115,6 +122,7 @@ struct Collector {
 	/// the server's own addresses: its apps calling its sites (crelte's
 	/// queries) are no visitors
 	own: Vec<String>,
+	mail: crate::mailbox::Counter,
 }
 
 impl Collector {
@@ -154,12 +162,15 @@ impl Collector {
 			rows.push((format!("group:{}", g.name), group));
 		}
 
-		let conn = stats.conn();
-		let res = store(&conn, 60, &rows).and_then(|()| rollup(&conn, at));
-		drop(conn);
+		let res = {
+			let conn = stats.conn();
+			store(&conn, 60, &rows).and_then(|()| rollup(&conn, at))
+		};
 		if let Err(e) = res {
 			tracing::error!("stats: {e}");
 		}
+
+		self.mail.round(&groups, stats).await;
 	}
 
 	async fn server(&mut self, at: i64) -> Sample {

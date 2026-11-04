@@ -58,6 +58,10 @@ pub enum MailCmd {
 	/// Which sender domains this server may send mail as (SPF), for an
 	/// app's MAIL_FROM
 	Senders,
+	/// Mail per address in the last 30 days: received or forwarded per
+	/// mailbox and forward, sent per send-only address and group login,
+	/// unknown addresses that were rejected
+	Stats { domain: Option<String> },
 	/// Send genco's test mail (Settings → Mail) and wait for postfix:
 	/// fails when it is deferred or bounced, with postfix's reason
 	Test { to: String },
@@ -151,6 +155,11 @@ pub async fn cli(
 			crate::mail::test(cfg, db, &to, &by).await
 		}
 		MailCmd::Dns { domain } => dns_text(cfg, db, &domain).await,
+		MailCmd::Stats { domain } => {
+			let stats = crate::stats::StatsDb::open(&crate::stats::path(cfg))
+				.map_err(Error::Internal)?;
+			counts::stats_text(&stats, &groups, domain.as_deref()).await
+		}
 		MailCmd::DeleteDomain { name } => {
 			let d = find_domain(&groups, &name)?;
 			deletion(crate::actions::Kind::MailDomain, d.id).await

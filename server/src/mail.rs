@@ -239,7 +239,7 @@ fn delivery(id: &str, log: &str, queue: &str) -> Option<Delivery> {
 /// postfix's delivery agents and queue manager, only they write the
 /// status of a mail; any other program could log a line like theirs. Its
 /// unit is set by journald, the name (`-t`) by the program that logs.
-const POSTFIX_UNITS: [&str; 2] = [
+pub const POSTFIX_UNITS: [&str; 2] = [
 	"_SYSTEMD_UNIT=postfix.service",
 	"_SYSTEMD_UNIT=postfix@-.service",
 ];

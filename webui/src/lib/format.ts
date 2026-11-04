@@ -40,3 +40,15 @@ export function formatBytes(n: number): string {
 export function formatUsd(v: number): string {
 	return v === 0 ? '$0' : v < 0.01 ? '<$0.01' : `$${v.toFixed(2)}`;
 }
+
+/** a day counted back from today: today, yesterday, 3 days ago */
+export function formatAgo(ms: number): string {
+	const day = (t: number) => {
+		const d = new Date(t);
+		return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+	};
+	const days = Math.round((day(Date.now()) - day(ms)) / 86_400_000);
+	if (days <= 0) return 'today';
+	if (days === 1) return 'yesterday';
+	return `${days} days ago`;
+}

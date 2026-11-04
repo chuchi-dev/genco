@@ -216,6 +216,11 @@ terminal.
       and From header, no IMAP), password encrypted with secrets.key;
       app settings in the panel, `genco mail send-only --env` writes
       `ZIPP_SMTP_URL` into the app's environment without printing it
+- [x] mail per address (operator 2026-11-04): Postfix's journal is
+      counted every minute per day and address (received, forwarded,
+      rejected, bounced, sent with a login), only counts and the last
+      mail, 90 days in the stats database; the mail domain's page and
+      `genco mail stats` show which mailboxes and forwards are used
 - [ ] later: learn spam/ham from moves into and out of Junk (imapsieve),
       Sieve filters and vacation replies in the webmail (ManageSieve),
       mailbox owners change their password themselves
