@@ -6,7 +6,8 @@
 
 	// a modal window: it starts in the middle and moves with its title
 	// bar; a resizable one has a grip in the corner, for lists, logs and
-	// editors that like more room
+	// editors that like more room. With `remember` the size the admin
+	// gave it stays for the next time.
 	let {
 		title,
 		icon,
@@ -14,6 +15,7 @@
 		width = 380,
 		height,
 		resizable = false,
+		remember,
 		children,
 	}: {
 		title: string;
@@ -23,18 +25,27 @@
 		/** a fixed start height, else the content decides */
 		height?: number;
 		resizable?: boolean;
+		/** the name its size is kept under */
+		remember?: string;
 		children: Snippet;
 	} = $props();
+
+	// svelte-ignore state_referenced_locally
+	const KEY = remember && `genco-dialog-${remember}`;
+	const kept: { w?: number; h?: number } = KEY
+		? JSON.parse(localStorage.getItem(KEY) ?? '{}')
+		: {};
 
 	let el: HTMLElement | undefined = $state();
 	let x = $state<number | null>(null);
 	let y = $state(0);
 	// svelte-ignore state_referenced_locally
-	let w = $state(Math.min(width, innerWidth - 16));
+	let w = $state(Math.min(kept.w ?? width, innerWidth - 16));
 	// its content decides until it is resized
 	// svelte-ignore state_referenced_locally
+	const startHeight = kept.h ?? height;
 	let h = $state<number | null>(
-		height ? Math.min(height, innerHeight - 16) : null,
+		startHeight ? Math.min(startHeight, innerHeight - 16) : null,
 	);
 
 	$effect(() => {
@@ -107,10 +118,14 @@
 
 	function resize(e: PointerEvent) {
 		const r = el!.getBoundingClientRect();
-		track(e, (dx, dy) => {
-			w = Math.max(240, r.width + dx);
-			h = Math.max(120, r.height + dy);
-		});
+		track(
+			e,
+			(dx, dy) => {
+				w = Math.max(240, r.width + dx);
+				h = Math.max(120, r.height + dy);
+			},
+			() => KEY && localStorage.setItem(KEY, JSON.stringify({ w, h })),
+		);
 	}
 </script>
 

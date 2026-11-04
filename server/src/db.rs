@@ -456,6 +456,23 @@ const MIGRATIONS: &[&str] = &[
 		UNIQUE (mail_domain_id, local_part)
 	);
 "#,
+	// the personal link of each admin in a proposal's mail, it approves
+	// or rejects without a login (proposals/links.rs)
+	r#"
+	CREATE TABLE proposal_links (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		proposal_id INTEGER NOT NULL
+			REFERENCES proposals(id) ON DELETE CASCADE,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		token_hash TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL
+	);
+"#,
+	// what the admin added when approving, genco's agent follows it over
+	// the proposal (proposals.rs)
+	r#"
+	ALTER TABLE proposals ADD COLUMN comment TEXT;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

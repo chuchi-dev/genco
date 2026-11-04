@@ -402,6 +402,8 @@ export type Proposal = {
 	conversationId: number | null;
 	/** what went back: the agent's answer, or the reason of a rejection */
 	answer: string | null;
+	/** what the admin added when approving, ranks above the text */
+	comment: string | null;
 	createdAt: number;
 };
 

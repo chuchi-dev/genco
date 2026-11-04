@@ -8,6 +8,11 @@ export function registerRoutes() {
 		/^\/invite(\/(?<token>[0-9a-f]+))?$/,
 		() => import('./Invite.svelte'),
 	);
+	// the link of a proposal's mail, approves without a login
+	router.register(
+		/^\/proposal(\/(?<token>[0-9a-f]+))?$/,
+		() => import('./ProposalLink.svelte'),
+	);
 
 	inLayout(
 		() => import('./Desktop.svelte'),

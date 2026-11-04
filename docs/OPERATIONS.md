@@ -603,9 +603,14 @@ agent may:
   status and `answer`. Rejected, the webhook gets "<admin> rejected
   the proposal: <reason>" (or "<admin> rejected the proposal." without
   a reason) and `answer` is the reason; the admin's reason is optional,
-  at most 2000 characters, cleaned like the text. Nobody decided within
-  7 days, the status becomes `expired` and the webhook gets "The
-  proposal expired after 7 days without a decision." once.
+  at most 2000 characters, cleaned like the text. Approving takes an
+  optional comment the same way ("yes, but keep the old DNS for now"):
+  genco's agent gets it after the proposal as the admin's change and
+  follows it where the two differ, and the answer to the webhook
+  starts with "<admin> approved it with a comment: <comment>", the
+  proposal's `comment` holds it. Nobody decided within 7 days, the
+  status becomes `expired` and the webhook gets "The proposal expired
+  after 7 days without a decision." once.
 
   `text` says what the agent wants and why, not a long list of steps:
   genco's agent works out the details itself. Before the admins see
@@ -627,6 +632,18 @@ agent may:
   and turns other whitespace into spaces; the panel says how many were
   removed and warns (the mail too) when the original or the rewrite has
   non-Latin letters (e.g. Cyrillic look-alikes in a name or address).
+
+  Each admin's mail has their own link (`https://<panel>/proposal/…`)
+  that decides without logging in, handy on a phone: it shows the
+  proposal as the panel does (with its warnings and the original),
+  Approve and Reject… (with the optional reason). Opening it changes
+  nothing (mail scanners open links too); with two-factor login on,
+  Approve asks for the code, which counts toward the login's limit
+  like a wrong one. The links of a proposal stop working once anybody
+  decided it, in the panel or by a link, or it expired; they work only
+  on the panel's domain, and an address that tries 20 links that don't
+  work waits 15 minutes. The activity log names the admin ("Approve
+  proposal via the mail link"), never the link.
 
 An admin's own token that downloads every database is in Start → API
 Tokens; deploy tokens are in a group's Deploy tab.

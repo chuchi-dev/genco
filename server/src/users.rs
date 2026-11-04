@@ -33,9 +33,10 @@ const MAX_CODE_FAILURES: u32 = 5;
 const MAX_PASSWORD_FAILURES: u32 = 10;
 const CODE_LOCK_MS: i64 = 1000 * 60 * 15;
 
-/// wrong 2FA codes (`code:<user id>`) and passwords (`password:<email>`):
-/// how many and when the last was. nginx limits per IP, this per account,
-/// also for a client that reaches genco without nginx.
+/// wrong 2FA codes (`code:<user id>`), passwords (`password:<email>`)
+/// and links of proposal mails (`proposal-link:<ip>`): how many and when
+/// the last was. nginx limits per IP, this per account, also for a client
+/// that reaches genco without nginx.
 static CODE_FAILURES: LazyLock<Mutex<HashMap<String, (u32, i64)>>> =
 	LazyLock::new(Default::default);
 
@@ -347,10 +348,7 @@ async fn login(
 ) -> Result<Json<LoginResp>> {
 	let email = req.email.trim().to_lowercase();
 	let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
-	// genco only listens on localhost, nginx appends the real client last
-	let ip = header("x-forwarded-for")
-		.and_then(|v| v.rsplit(',').next())
-		.map(str::trim);
+	let ip = client_ip(&headers);
 	let from = format!("from {}", ip.unwrap_or("?"));
 
 	let (user_id, secret, last_step) =
@@ -365,6 +363,16 @@ async fn login(
 
 	let resp = create_session(&db, user_id, header("user-agent"), ip, &from)?;
 	Ok(Json(resp))
+}
+
+/// The address of the client: genco only listens on localhost, nginx
+/// appends the real client last.
+pub fn client_ip(headers: &HeaderMap) -> Option<&str> {
+	headers
+		.get("x-forwarded-for")
+		.and_then(|v| v.to_str().ok())
+		.and_then(|v| v.rsplit(',').next())
+		.map(str::trim)
 }
 
 /// The user id, 2FA secret and last used 2FA step of a right email and
@@ -972,14 +980,14 @@ async fn accept_invite(
 }
 
 /// false while the account waits after `max` wrong tries
-fn attempts_allowed(key: &str, max: u32) -> bool {
+pub fn attempts_allowed(key: &str, max: u32) -> bool {
 	match CODE_FAILURES.lock().unwrap().get(key) {
 		Some((n, last)) => *n < max || last + CODE_LOCK_MS < now(),
 		None => true,
 	}
 }
 
-fn attempt_failed(key: &str, max: u32) {
+pub fn attempt_failed(key: &str, max: u32) {
 	let mut failures = CODE_FAILURES.lock().unwrap();
 	// unknown emails would grow the map without end
 	failures.retain(|_, (_, last)| *last + CODE_LOCK_MS > now());

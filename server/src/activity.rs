@@ -368,9 +368,12 @@ pub async fn record(
 	req: Request,
 	next: Next,
 ) -> Response {
-	// below /api; the login and invites log themselves, with the email
+	// below /api; the login and invites log themselves, with the email,
+	// and the links of proposal mails with their admin (never the token)
 	let path = req.uri().path().to_string();
-	let own = path == "/users/login" || path.starts_with("/users/invite/");
+	let own = path == "/users/login"
+		|| path.starts_with("/users/invite/")
+		|| path.starts_with("/proposal-links/");
 	let Some(action) = describe(req.method(), &path).filter(|_| !own) else {
 		return next.run(req).await;
 	};

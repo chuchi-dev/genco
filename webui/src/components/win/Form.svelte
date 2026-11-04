@@ -92,6 +92,7 @@
 
 	.buttons {
 		display: flex;
+		flex-wrap: wrap;
 		justify-content: flex-end;
 		gap: 6px;
 		margin-top: 16px;

@@ -245,9 +245,11 @@ button.link {
 	cursor: pointer;
 }
 
-// a row of buttons; a .gap in it pushes the rest to the right
+// a row of buttons, a narrow window wraps it; a .gap in it pushes the
+// rest to the right
 .row-buttons {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 6px;
 	margin-top: 10px;
 

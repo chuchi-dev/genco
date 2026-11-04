@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Markdown from '../Markdown.svelte';
 	import OneTimeSecret from '../OneTimeSecret.svelte';
+	import ProposalText from '../ProposalText.svelte';
 	import { formatTime, get, post, type Peer, type Proposal } from '@/lib/api';
 	import { message, confirmDelete, type Auth } from '@/lib/dialogs.svelte';
 	import { proposals } from '@/lib/proposals.svelte';
@@ -10,6 +11,7 @@
 	import Form from '../win/Form.svelte';
 	import ListView from '../win/ListView.svelte';
 	import Tabs from '../win/Tabs.svelte';
+	import ApproveDialog from './ApproveDialog.svelte';
 	import RejectDialog from './RejectDialog.svelte';
 
 	// other AI agents that look after the server: one key each (status,
@@ -36,6 +38,7 @@
 	let key = $state<string | null>(null);
 	let testResult = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	let approving = $state<Proposal | null>(null);
 	let rejecting = $state<Proposal | null>(null);
 
 	const peer = $derived(peers.find(p => p.id === selected));
@@ -133,18 +136,9 @@
 		await load();
 	}
 
-	async function approve() {
-		if (!proposal) return;
-		const ok = await message.confirm(
-			'Approve',
-			`The server agent works on this task from ${proposal.from} as if an admin asked. Approve it?`,
-		);
-		if (!ok) return;
-		try {
-			setChat(await post(`/proposals/${proposal.id}/approve`, {}));
-		} catch (e: any) {
-			message.show('Not Approved', e.message);
-		}
+	async function approved(conversation: number) {
+		approving = null;
+		setChat(conversation);
 		await load();
 	}
 
@@ -184,7 +178,16 @@
 	]);
 </script>
 
-<Dialog title="AI Agents" resizable icon="agent" {onclose} width={620}>
+<!-- room to read a proposal -->
+<Dialog
+	title="AI Agents"
+	resizable
+	remember="agents"
+	icon="agent"
+	{onclose}
+	width={760}
+	height={Math.min(innerHeight * 0.75, 820)}
+>
 	<Tabs tabs={TABS} selected={tab} onselect={t => (tab = t)}>
 		<div class="tab" hidden={tab !== 'agents'}>
 			{#if editing !== null}
@@ -310,54 +313,7 @@
 				{/snippet}
 			</ListView>
 			{#if proposal}
-				<p><b>{proposal.from}</b> proposes:</p>
-				{#if proposal.mixedScripts}
-					<p class="error">
-						Contains letters, digits or punctuation outside the
-						usual European ones (e.g. Cyrillic а, ∕ for /) — check
-						names, addresses and commands carefully.
-					</p>
-				{/if}
-				{#if proposal.rewriteMixedScripts}
-					<p class="error">
-						The rewrite contains letters, digits or punctuation
-						outside the usual European ones — compare it with the
-						original.
-					</p>
-				{/if}
-				{#if proposal.removedChars}
-					<p class="hint">
-						{proposal.removedChars} invisible character{proposal.removedChars ===
-						1
-							? ''
-							: 's'} removed.
-					</p>
-				{/if}
-				{#if !proposal.rewrittenBy && !proposal.text.includes('\n') && proposal.text.length > 400}
-					<p class="hint">The agent sent one long paragraph.</p>
-				{/if}
-				{#if view === 'original'}
-					<p class="hint">The original the agent sent:</p>
-				{:else if proposal.rewrittenBy}
-					<p class="hint">
-						Rewritten for readability by {proposal.rewrittenBy}.
-					</p>
-				{:else if proposal.rewriteTried}
-					<p class="hint">
-						Not rewritten{proposal.rewriteNote
-							? `: ${proposal.rewriteNote}`
-							: '.'}
-					</p>
-				{/if}
-				<div class="text selectable">
-					{#if view === 'original'}
-						<pre class="raw">{proposal.originalText}</pre>
-					{:else if view === 'raw'}
-						<pre class="raw">{proposal.text}</pre>
-					{:else}
-						<Markdown text={proposal.text} hrefs />
-					{/if}
-				</div>
+				<ProposalText {proposal} {view} />
 				{#if proposal.status === 'pending'}
 					<p class="hint">
 						Waits for an admin to approve or reject it{proposal.approverEmail
@@ -370,8 +326,15 @@
 						{proposal.status === 'rejected'
 							? 'Rejected'
 							: 'Approved'} by
-						{proposal.decidedBy}.
+						{proposal.decidedBy}{proposal.comment
+							? ' with a change:'
+							: '.'}
 					</p>
+					{#if proposal.comment}
+						<div class="text selectable">
+							<Markdown text={proposal.comment} />
+						</div>
+					{/if}
 				{/if}
 				{#if proposal.status === 'expired'}
 					<p class="hint">
@@ -397,7 +360,7 @@
 			{/if}
 			<div class="row-buttons">
 				<Button
-					onclick={approve}
+					onclick={() => (approving = proposal ?? null)}
 					disabled={proposal?.status !== 'pending'}
 				>
 					Approve…
@@ -413,20 +376,20 @@
 						(view = view === 'raw' ? 'formatted' : 'raw')}
 					disabled={!proposal}
 				>
-					{view === 'raw' ? 'Show Formatted' : 'Show Raw Text'}
+					{view === 'raw' ? 'Formatted' : 'Raw Text'}
 				</Button>
 				<Button
 					onclick={() =>
 						(view = view === 'original' ? 'formatted' : 'original')}
 					disabled={!proposal?.rewrittenBy}
 				>
-					{view === 'original' ? 'Show Rewrite' : 'Show Original'}
+					{view === 'original' ? 'Rewritten' : 'Original'}
 				</Button>
 				<Button
 					onclick={() => proposal && setChat(proposal.conversationId)}
 					disabled={!proposal?.conversationId}
 				>
-					Open Conversation
+					Open Chat
 				</Button>
 				<span class="gap"></span>
 				<Button primary onclick={onclose}>Close</Button>
@@ -435,6 +398,13 @@
 	</Tabs>
 </Dialog>
 
+{#if approving}
+	<ApproveDialog
+		proposal={approving}
+		onapproved={approved}
+		onclose={() => (approving = null)}
+	/>
+{/if}
 {#if rejecting}
 	<RejectDialog proposal={rejecting} onclose={rejected} />
 {/if}
@@ -460,8 +430,7 @@
 		white-space: pre-wrap;
 	}
 
-	// a proposal and its answer, formatted like the chat, take the height
-	// of a bigger window
+	// the answer, formatted like the proposal
 	.text {
 		@include sunken;
 		flex: 1 1 140px;
@@ -469,13 +438,6 @@
 		overflow: auto;
 		padding: 4px 8px;
 		background: #fff;
-	}
-
-	.raw {
-		margin: 0;
-		font-family: $mono;
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
 	}
 
 	.task {

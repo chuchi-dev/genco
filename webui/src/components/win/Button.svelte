@@ -38,6 +38,7 @@
 		border: none;
 		border-radius: 0;
 		font: inherit;
+		white-space: nowrap;
 		color: #000;
 		cursor: default;
 
