@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import Button from './Button.svelte';
+	import { dialogContext } from './Dialog.svelte';
 
 	// a dialog form: labeled rows, OK / Cancel and the error line. It runs
 	// `onsubmit` once at a time; an error it throws shows below the rows,
@@ -26,6 +27,9 @@
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 	let flash = $state(false);
+	let form: HTMLFormElement | undefined = $state();
+	// a saved form doesn't keep its dialog open
+	const dialog = dialogContext();
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
@@ -34,6 +38,7 @@
 		error = null;
 		try {
 			const result = await onsubmit();
+			if (result !== false && form) dialog?.saved(form);
 			if (done && result !== false) {
 				flash = true;
 				setTimeout(() => (flash = false), 1500);
@@ -46,7 +51,7 @@
 	}
 </script>
 
-<form onsubmit={submit}>
+<form onsubmit={submit} bind:this={form} aria-busy={busy}>
 	<div class="rows">
 		{@render children()}
 	</div>

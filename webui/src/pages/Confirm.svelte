@@ -60,6 +60,7 @@
 	resizable
 	icon="key"
 	onclose={() => go('/')}
+	keep={() => busy}
 	width={520}
 >
 	<div class="msg">

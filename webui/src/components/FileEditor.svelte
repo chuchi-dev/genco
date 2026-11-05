@@ -64,6 +64,8 @@
 	title={file.path}
 	icon="file"
 	onclose={close}
+	keep={() =>
+		saving || (!file.readOnly && !!editor && editor.getValue() !== saved)}
 	width={Math.round(innerWidth * 0.8)}
 	height={Math.round(innerHeight * 0.85)}
 >

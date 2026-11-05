@@ -1,5 +1,15 @@
+<script lang="ts" module>
+	import { getContext } from 'svelte';
+
+	/** what a Form in a dialog tells it */
+	export type DialogContext = { saved: (form: HTMLFormElement) => void };
+
+	export const dialogContext = () =>
+		getContext<DialogContext | undefined>('dialog');
+</script>
+
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import { setContext, type Snippet } from 'svelte';
 	import { track } from '@/lib/drag';
 	import Window from './Window.svelte';
 	import type { IconName } from './Icon.svelte';
@@ -16,6 +26,7 @@
 		height,
 		resizable = false,
 		remember,
+		keep,
 		children,
 	}: {
 		title: string;
@@ -27,6 +38,9 @@
 		resizable?: boolean;
 		/** the name its size is kept under */
 		remember?: string;
+		/** true while a click beside it mustn't close it, besides the
+		 * changes and requests of its forms */
+		keep?: () => boolean;
 		children: Snippet;
 	} = $props();
 
@@ -60,17 +74,20 @@
 	// it was when the dialog closes
 	const FOCUSABLE =
 		'button:not([disabled]), input:not([disabled]), select, textarea, a[href], [tabindex]:not([tabindex="-1"])';
+
+	function focusIn() {
+		if (!el || el.contains(document.activeElement)) return;
+		const target =
+			el.querySelector<HTMLElement>('[autofocus]') ??
+			el.querySelector<HTMLElement>('button.primary') ??
+			el.querySelector<HTMLElement>(FOCUSABLE) ??
+			el;
+		target.focus();
+	}
+
 	$effect(() => {
 		const before = document.activeElement as HTMLElement | null;
-		requestAnimationFrame(() => {
-			if (!el || el.contains(document.activeElement)) return;
-			const target =
-				el.querySelector<HTMLElement>('[autofocus]') ??
-				el.querySelector<HTMLElement>('button.primary') ??
-				el.querySelector<HTMLElement>(FOCUSABLE) ??
-				el;
-			target.focus();
-		});
+		requestAnimationFrame(focusIn);
 		return () => {
 			if (before?.isConnected) before.focus();
 		};
@@ -107,6 +124,95 @@
 
 	let overlay: HTMLElement | undefined = $state();
 
+	// a field of a form counts as changed when its value differs from the
+	// one it had when the admin first pressed or focused it; values a
+	// dialog loads before that aren't changes
+	type Field = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+	const initial = new Map<Field, string | boolean>();
+	const touched = new Set<Field>();
+
+	function fieldOf(target: EventTarget | null): Field | null {
+		if (!(target instanceof Element)) return null;
+		// a click on a label changes its checkbox
+		const f = target.closest('label')?.control ?? target;
+		return (f instanceof HTMLInputElement ||
+			f instanceof HTMLSelectElement ||
+			f instanceof HTMLTextAreaElement) &&
+			f.form
+			? f
+			: null;
+	}
+
+	const valueOf = (f: Field) =>
+		f.type === 'checkbox' || f.type === 'radio'
+			? (f as HTMLInputElement).checked
+			: f.value;
+
+	function note(e: Event) {
+		const f = fieldOf(e.target);
+		if (f && !initial.has(f)) initial.set(f, valueOf(f));
+	}
+
+	function change(e: Event) {
+		const f = fieldOf(e.target);
+		if (!f) return;
+		// a checkbox can change without being pressed or focused
+		if (!initial.has(f) && f.type === 'checkbox')
+			initial.set(f, !valueOf(f));
+		touched.add(f);
+	}
+
+	// a saved form starts over with its values
+	setContext<DialogContext>('dialog', {
+		saved: form => {
+			for (const f of touched)
+				if (f.form === form) initial.set(f, valueOf(f));
+		},
+	});
+
+	function closable(): boolean {
+		if (keep?.() || el?.querySelector('form[aria-busy="true"]'))
+			return false;
+		return ![...touched].some(
+			f =>
+				f.isConnected &&
+				(!initial.has(f) || initial.get(f) !== valueOf(f)),
+		);
+	}
+
+	// a click beside it closes it like Cancel; with changes or a running
+	// request its title bar flashes like in Windows and it comes into
+	// view. A press that starts in the dialog (selecting text) and ends
+	// beside it is no click beside it.
+	let pressedBeside = false;
+	let inactive = $state(false);
+	let flashing: ReturnType<typeof setInterval> | undefined;
+
+	function press(e: PointerEvent) {
+		pressedBeside = e.target === overlay;
+	}
+
+	function clickBeside(e: MouseEvent) {
+		if (e.target !== overlay || !pressedBeside) return;
+		pressedBeside = false;
+		if (closable()) return onclose();
+
+		clearInterval(flashing);
+		inactive = false;
+		let n = 0;
+		flashing = setInterval(() => {
+			inactive = !inactive;
+			if (++n === 6) clearInterval(flashing);
+		}, 100);
+
+		const r = el!.getBoundingClientRect();
+		x = Math.min(Math.max(x ?? 0, 0), Math.max(0, innerWidth - r.width));
+		y = Math.min(Math.max(y, 0), Math.max(0, innerHeight - r.height));
+		focusIn();
+	}
+
+	$effect(() => () => clearInterval(flashing));
+
 	function drag(e: PointerEvent) {
 		const [sx, sy] = [x ?? 0, y];
 		track(e, (dx, dy) => {
@@ -131,7 +237,19 @@
 
 <svelte:window {onkeydown} />
 
-<div class="overlay dialog-overlay" bind:this={overlay}>
+<!-- a click beside it is a mouse thing, Escape closes it too -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+<div
+	class="overlay dialog-overlay"
+	bind:this={overlay}
+	onpointerdown={press}
+	onmousedown={e => {
+		// the field in the dialog keeps the focus
+		if (e.target === overlay) e.preventDefault();
+	}}
+	onclick={clickBeside}
+>
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
 		class="dialog"
 		bind:this={el}
@@ -144,8 +262,12 @@
 		aria-modal="true"
 		aria-label={title}
 		tabindex="-1"
+		onpointerdowncapture={note}
+		onfocusin={note}
+		oninput={change}
+		onchange={change}
 	>
-		<Window {title} {icon} {onclose} ondrag={drag}>
+		<Window {title} {icon} {onclose} {inactive} ondrag={drag}>
 			<div class="content">
 				{@render children()}
 			</div>

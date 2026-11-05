@@ -8,6 +8,7 @@
 		onclose,
 		onminimize,
 		ondrag,
+		inactive = false,
 		menu,
 		status,
 		children,
@@ -18,6 +19,8 @@
 		onminimize?: () => void;
 		/// the title bar was pressed, dialogs move with it
 		ondrag?: (e: PointerEvent) => void;
+		/// a grey title bar, a dialog flashes with it
+		inactive?: boolean;
 		/// menu bar below the title
 		menu?: Snippet;
 		/// status bar at the bottom
@@ -31,6 +34,7 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<header
 		class:draggable={!!ondrag}
+		class:inactive
 		onpointerdown={e => {
 			// the buttons of the title bar stay buttons
 			if (!(e.target as Element).closest('button')) ondrag?.(e);
@@ -87,6 +91,10 @@
 		background: $title;
 		color: $white;
 		flex-shrink: 0;
+
+		&.inactive {
+			background: $title-inactive;
+		}
 
 		&.draggable {
 			touch-action: none;
