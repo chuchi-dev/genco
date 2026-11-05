@@ -50,6 +50,8 @@ class Current {
 	chat = $state<number | null>(
 		Number(localStorage.getItem(CHAT_KEY)) || null,
 	);
+	/** the conversation came with a link, it opens even when it's old */
+	linked = false;
 }
 
 export const current = new Current();
@@ -223,6 +225,7 @@ export function startRouter(pages: Fallbacks, onfirst: () => void) {
 		const chat = Number(req.url.searchParams.get('chat'));
 		if (chat > 0) {
 			setChat(chat);
+			current.linked = true;
 			history.replaceState(history.state, '', current.path);
 		}
 	});

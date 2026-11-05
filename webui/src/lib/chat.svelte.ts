@@ -7,7 +7,10 @@ import {
 	type Routine,
 } from './api';
 import { conversations } from './conversations.svelte';
-import { go, setChat } from './router.svelte';
+import { current as page, go, setChat } from './router.svelte';
+
+/** a reload after this long without a message starts a new conversation */
+const STALE_MS = 60 * 60 * 1000;
 
 /**
  * The conversation the agent window shows: its messages, merged with
@@ -22,11 +25,24 @@ export class Chat {
 	// streamed text of the answer that is being written
 	streaming = $state('');
 	error = $state<string | null>(null);
+	// the messages of the conversation are on their way
+	loading = $state(true);
+	// the old conversation a new one replaced on a reload, to continue it
+	resume = $state<number | null>(null);
 
 	conversation = $derived(
 		conversations.list.find(c => c.id === this.current) ?? null,
 	);
 	running = $derived(this.conversation?.status === 'running');
+	// the agent works but has nothing to show yet: no text, no tool call
+	thinking = $derived.by(() => {
+		const last = this.messages.at(-1)?.kind;
+		return (
+			this.running &&
+			!this.streaming &&
+			(last === 'user' || last === 'toolOutput' || last === 'system')
+		);
+	});
 	// the output of each tool call, shown with the call
 	outputs = $derived(
 		new Map(
@@ -51,6 +67,7 @@ export class Chat {
 			this.routines = await get('/routines');
 		} catch (e: any) {
 			this.error = e.message;
+			this.loading = false;
 			return;
 		}
 		if (this.#first) {
@@ -59,7 +76,19 @@ export class Chat {
 			const known = list.some(c => c.id === this.current);
 			const latest = list.find(c => c.kind === 'chat')?.id ?? null;
 			const id = (known ? this.current : null) ?? latest;
-			if (id !== null) await this.select(id);
+			// after a break a new one, unless a link asked for this one
+			const c = list.find(c => c.id === id);
+			const stale =
+				c &&
+				!page.linked &&
+				c.status !== 'running' &&
+				Date.now() - c.updatedAt > STALE_MS;
+			if (stale) {
+				await this.select(null);
+				this.resume = c.id;
+			} else {
+				await this.select(id);
+			}
 		}
 		this.#first = false;
 	}
@@ -70,7 +99,9 @@ export class Chat {
 		this.streaming = '';
 		this.messages = [];
 		this.#follow();
+		this.loading = id !== null;
 		if (id === null) return;
+		this.resume = null;
 		try {
 			const resp = await get('/conversations/' + id);
 			if (this.current !== id) return;
@@ -84,6 +115,7 @@ export class Chat {
 		} catch (e: any) {
 			if (this.current === id) this.error = e.message;
 		}
+		if (this.current === id) this.loading = false;
 		this.#follow();
 	}
 

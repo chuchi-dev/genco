@@ -20,6 +20,10 @@
 	chat.load();
 	const conversation = $derived(chat.conversation);
 	const running = $derived(chat.running);
+	// the conversation a new one replaced after a break
+	const resume = $derived(
+		conversations.list.find(c => c.id === chat.resume) ?? null,
+	);
 
 	// another conversation opened elsewhere: the tray, a link of a mail
 	$effect(() => {
@@ -54,8 +58,23 @@
 	</div>
 
 	<div class="log-box">
-		<div class="log selectable" {@attach follow.attach}>
-			{#if chat.current === null}
+		<div
+			class="log selectable"
+			class:loading={chat.loading}
+			{@attach follow.attach}
+		>
+			{#if chat.loading}
+				<p class="hint">Loading conversation…</p>
+			{:else if chat.current === null}
+				{#if resume}
+					<p class="resume">
+						<button
+							class="link"
+							onclick={() => chat.select(resume.id)}
+							>Continue {resume.title}</button
+						>
+					</p>
+				{/if}
 				<p class="hint">
 					Ask the agent anything about this server: set up a domain,
 					check why a site is down, update packages. It has root
@@ -83,6 +102,9 @@
 					}}
 					live
 				/>
+			{/if}
+			{#if chat.thinking}
+				<p class="hint thinking">Thinking<span class="dots"></span></p>
 			{/if}
 		</div>
 		{#if follow.unseen}
@@ -137,6 +159,10 @@
 		overflow: auto;
 		padding: 6px 8px;
 		min-height: 0;
+
+		&.loading {
+			cursor: wait;
+		}
 	}
 
 	.unseen {
@@ -148,6 +174,27 @@
 	.hint {
 		color: $shadow;
 		margin: 4px 0;
+	}
+
+	.resume {
+		margin: 2px 0 8px;
+	}
+
+	.thinking .dots::after {
+		content: '';
+		animation: dots 1.2s steps(4) infinite;
+	}
+
+	@keyframes dots {
+		25% {
+			content: '.';
+		}
+		50% {
+			content: '..';
+		}
+		75% {
+			content: '...';
+		}
 	}
 
 	.send-error {

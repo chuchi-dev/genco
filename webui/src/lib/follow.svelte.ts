@@ -2,8 +2,9 @@
  * Keeps a growing log scrolled to its end, like a terminal: whatever
  * grows it (new text, a tool output, a loaded image) scrolls down while
  * the reader is at the end. Scrolling up stops it and new content sets
- * `unseen`, `down()` goes back to the end. `{@attach follow.attach}` on
- * the scrolling element.
+ * `unseen`, `down()` goes back to the end. What the reader opens with a
+ * click (a tool call's output) stays where it is. `{@attach
+ * follow.attach}` on the scrolling element.
  */
 export class Follow {
 	// the view sticks to the end
@@ -27,6 +28,8 @@ export class Follow {
 		let height = el.scrollHeight;
 		// no jumping while the reader selects text or drags the scrollbar
 		let holding = false;
+		// when the reader last clicked into the log
+		let clicked = 0;
 
 		const onscroll = () => {
 			const end = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -43,19 +46,27 @@ export class Follow {
 		const ongrow = () => {
 			const grew = el.scrollHeight > height;
 			height = el.scrollHeight;
-			if (this.stick) {
-				if (!holding) this.#schedule();
+			if (grew && performance.now() - clicked < 200) {
+				// the reader opened something, it opens below its row
+				this.stick = false;
+			} else if (this.stick) {
+				// right away, before this frame is painted
+				if (!holding) el.scrollTop = el.scrollHeight;
 			} else if (grew) {
 				this.unseen = true;
 			}
 		};
 
-		const ondown = () => (holding = true);
+		// a finger scrolls the log, it never selects or drags
+		const ondown = (e: PointerEvent) => {
+			if (e.pointerType === 'mouse') holding = true;
+		};
 		const onup = () => {
 			if (!holding) return;
 			holding = false;
 			if (this.stick && !hasSelection(el)) this.#schedule();
 		};
+		const onclick = () => (clicked = performance.now());
 
 		// text and elements change, children resize when they render or
 		// an image loads, the log itself when the window resizes
@@ -79,6 +90,7 @@ export class Follow {
 
 		el.addEventListener('scroll', onscroll, { passive: true });
 		el.addEventListener('pointerdown', ondown);
+		el.addEventListener('click', onclick, true);
 		window.addEventListener('pointerup', onup);
 		this.#schedule();
 
@@ -87,6 +99,7 @@ export class Follow {
 			mutation.disconnect();
 			el.removeEventListener('scroll', onscroll);
 			el.removeEventListener('pointerdown', ondown);
+			el.removeEventListener('click', onclick, true);
 			window.removeEventListener('pointerup', onup);
 			cancelAnimationFrame(this.#frame);
 			this.#el = null;
