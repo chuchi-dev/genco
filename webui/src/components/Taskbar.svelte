@@ -70,7 +70,7 @@
 			<button
 				class="approve"
 				title={waiting
-					.map(p => `${p.from}: ${p.text.split('\n')[0]}`)
+					.map(p => `#${p.id} ${p.from}: ${p.text.split('\n')[0]}`)
 					.join('\n')}
 				onclick={() => (dialogs.open = 'agents')}
 			>

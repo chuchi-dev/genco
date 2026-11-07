@@ -23,7 +23,9 @@ export const dialogs = $state<{
 	open: DialogKind | null;
 	/** the password the Passwords dialog selects when it opens */
 	password: number | null;
-}>({ open: null, password: null });
+	/** the proposal AI Agents selects when it opens */
+	proposal: number | null;
+}>({ open: null, password: null, proposal: null });
 
 /** what MessageBox shows: a message, a yes/no question or an input */
 type Box = {

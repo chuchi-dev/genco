@@ -16,7 +16,12 @@
 	}
 </script>
 
-<Dialog title="Reject Proposal" icon="agent" {onclose} width={440}>
+<Dialog
+	title="Reject Proposal #{proposal.id}"
+	icon="agent"
+	{onclose}
+	width={440}
+>
 	<Form onsubmit={reject} oncancel={onclose} ok="Reject">
 		<NoteField
 			id="rj-reason"

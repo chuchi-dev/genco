@@ -15,7 +15,7 @@
 	} = $props();
 </script>
 
-<p><b>{proposal.from}</b> proposes:</p>
+<p><b>{proposal.from}</b> proposes (#{proposal.id}):</p>
 {#if proposal.mixedScripts}
 	<p class="error">
 		Contains letters, digits or punctuation outside the usual European ones

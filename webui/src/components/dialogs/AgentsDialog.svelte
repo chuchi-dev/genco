@@ -3,7 +3,12 @@
 	import OneTimeSecret from '../OneTimeSecret.svelte';
 	import ProposalText from '../ProposalText.svelte';
 	import { formatTime, get, post, type Peer, type Proposal } from '@/lib/api';
-	import { message, confirmDelete, type Auth } from '@/lib/dialogs.svelte';
+	import {
+		dialogs,
+		message,
+		confirmDelete,
+		type Auth,
+	} from '@/lib/dialogs.svelte';
 	import { proposals } from '@/lib/proposals.svelte';
 	import { setChat } from '@/lib/router.svelte';
 	import Button from '../win/Button.svelte';
@@ -57,6 +62,14 @@
 	// opens on the proposals when one waits (the link of the mail)
 	load().then(() => {
 		if (proposals.waiting.length) tab = 'proposals';
+	});
+	// Find opens it on one proposal, also when it is open
+	$effect(() => {
+		const id = dialogs.proposal;
+		if (id === null) return;
+		tab = 'proposals';
+		selectedProposal = id;
+		dialogs.proposal = null;
 	});
 
 	function edit(p: Peer | null) {
@@ -294,6 +307,7 @@
 				key={p => p.id}
 				bind:selected={selectedProposal}
 				columns={[
+					{ label: '#', num: true },
 					{ label: 'From' },
 					{ label: 'Task' },
 					{ label: 'Mailed to' },
@@ -305,6 +319,7 @@
 				maxHeight={160}
 			>
 				{#snippet row(p)}
+					<td class="num">{p.id}</td>
 					<td>{p.from}</td>
 					<td class="task">{p.text.split('\n')[0]}</td>
 					<td>{p.approver ?? 'all admins'}</td>

@@ -27,7 +27,12 @@
 	}
 </script>
 
-<Dialog title="Approve Proposal" icon="agent" {onclose} width={440}>
+<Dialog
+	title="Approve Proposal #{proposal.id}"
+	icon="agent"
+	{onclose}
+	width={440}
+>
 	<p>
 		The server agent works on this task from {proposal.from} as if an admin asked.
 	</p>

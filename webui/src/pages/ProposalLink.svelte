@@ -94,7 +94,10 @@
 </script>
 
 <div class="page">
-	<Window title="Proposal" icon="agent">
+	<Window
+		title={link ? `Proposal #${link.proposal.id}` : 'Proposal'}
+		icon="agent"
+	>
 		<div class="content">
 			{#if gone || !link}
 				<p>

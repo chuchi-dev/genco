@@ -3,14 +3,16 @@
 	import { conversations, messageSearch } from '@/lib/conversations.svelte';
 	import { dialogs, type DialogKind } from '@/lib/dialogs.svelte';
 	import { GROUP_TABS } from '@/lib/groupTabs';
+	import { proposals } from '@/lib/proposals.svelte';
 	import { tree } from '@/lib/tree.svelte';
 	import Dialog from '../win/Dialog.svelte';
 	import Icon, { type IconName } from '../win/Icon.svelte';
 	import ListView from '../win/ListView.svelte';
 
-	// Start → Find (Ctrl+K): everything with a name, the passwords and the
-	// agent's conversations. The tree is searched here, passwords and
-	// messages on the server.
+	// Start → Find (Ctrl+K): everything with a name, the passwords, the AI
+	// agents' proposals (also by "#51") and the agent's conversations. The
+	// tree and proposals are searched here, passwords and messages on the
+	// server.
 	let {
 		onclose,
 		onpage,
@@ -223,6 +225,20 @@
 					},
 				});
 
+		for (const p of proposals.list)
+			if (has(`#${p.id}`, p.text, p.originalText))
+				out.push({
+					key: 'pr' + p.id,
+					icon: 'agent',
+					name: `#${p.id} ${p.text.split('\n')[0]}`,
+					kind: 'Proposal',
+					where: p.from,
+					open: () => {
+						dialogs.proposal = p.id;
+						dialogs.open = 'agents';
+					},
+				});
+
 		for (const c of conversations.list)
 			if (has(c.title) || found.ids.includes(c.id))
 				out.push({
@@ -280,7 +296,7 @@
 			type="search"
 			autofocus
 			autocomplete="off"
-			placeholder="domains, groups, databases, passwords, conversations…"
+			placeholder="domains, groups, databases, passwords, proposals, conversations…"
 			bind:value={query}
 			{onkeydown}
 		/>

@@ -28,11 +28,7 @@ pub(super) async fn mail(cfg: &Config, db: &Db, id: i64) {
 		}
 	};
 
-	let subject = format!(
-		"Proposal from {}: {}",
-		p.from,
-		crate::util::first_line(&p.text, 60)
-	);
+	let subject = subject(&p);
 	for (user_id, email) in to {
 		// without a domain there is no link to send
 		let link = cfg.panel_url("/proposal/").and_then(|base| {
@@ -50,6 +46,17 @@ pub(super) async fn mail(cfg: &Config, db: &Db, id: i64) {
 			tracing::error!("mail about proposal {id}: {e}");
 		}
 	}
+}
+
+/// "Proposal #51 from Corleone: Update Craft": agents name proposals by
+/// their number.
+fn subject(p: &Proposal) -> String {
+	format!(
+		"Proposal #{} from {}: {}",
+		p.id,
+		p.from,
+		crate::util::first_line(&p.text, 60)
+	)
 }
 
 /// The id and email of the proposal's approver, or of every admin.
@@ -106,12 +113,14 @@ fn mail_body(
 		);
 	}
 	format!(
-		"The AI agent {from} proposes a task for genco's agent.\n\n\
+		"The AI agent {from} proposes a task for genco's agent \
+		(proposal #{id}).\n\n\
 		{link}open Start → AI Agents → Proposals:\n\n{panel}Nothing happens \
 		without an approval. It expires in {VALID_DAYS} days.\n\n\
 		----------------------------------------\n\n\
 		{rewritten}{warnings}The proposal, as {from} wrote it (links in it \
 		aren't genco's):\n\n{text}\n",
+		id = p.id,
 		from = p.from,
 		text = p.text,
 	)
@@ -182,6 +191,16 @@ mod tests {
 	}
 
 	#[test]
+	fn the_subject_has_the_number() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let id =
+			add(&conn, peer(&conn), "Update Craft\n\nto 5.8", None).unwrap();
+		let p = get_one(&conn, id).unwrap();
+		assert_eq!(subject(&p), "Proposal #1 from Corleone: Update Craft");
+	}
+
+	#[test]
 	fn the_real_links_come_before_the_agents_text() {
 		let db = Db::memory();
 		let conn = db.conn();
@@ -194,7 +213,8 @@ mod tests {
 			Some("https://panel.example.ch/proposal/abc".into()),
 		);
 		assert!(body.starts_with(
-			"The AI agent Corleone proposes a task for genco's agent.\n\n\
+			"The AI agent Corleone proposes a task for genco's agent \
+			(proposal #1).\n\n\
 			Approve or reject: https://panel.example.ch/proposal/abc\n\
 			(works without logging in, once; shows the proposal first; \
 			approving asks for your 2FA code, or your password)\n\n\
