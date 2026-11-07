@@ -1,5 +1,5 @@
-# Every pull request: the server's tests and lints, the webui's checks,
-# and a build of the whole binary. Not on pushes to main, there are many.
+# Every pull request: the server's tests and lints, the webui's checks
+# and its build. Not on pushes to main, there are many.
 name: ci
 
 on:
@@ -27,7 +27,7 @@ jobs:
         run: |
           npm ci
           npx prettier --check src
-          npx svelte-check
+          npx svelte-check --fail-on-warnings
           npm run build
       - name: server
         working-directory: server
