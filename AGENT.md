@@ -41,3 +41,11 @@ Instructions for anyone (human or coding agent) changing this repository.
   is embedded, so a release is a single file.
 - `webui/`: Svelte 5 with the chuchi router, built into `webui/dist`.
 - `scripts/build.sh` builds both, `scripts/install.sh` sets up a server.
+
+## Changes and checks
+
+- Nothing goes to `main` directly: every change is a branch and a pull
+  request, reviewed (code and security) before it is squash merged.
+- The full checks, as CI runs them: in `webui/` `npm ci`, `npx prettier
+  --check src`, `npx svelte-check`, `npm run build`; in `server/` `cargo
+  fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
