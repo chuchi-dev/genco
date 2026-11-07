@@ -38,7 +38,7 @@ binary() {
 	fi
 	command -v ssh-keygen >/dev/null || {
 		echo "==> installing ssh-keygen to check the release"
-		apt-get install -y -qq openssh-client >/dev/null
+		apt-get -o DPkg::Lock::Timeout=300 install -y -qq openssh-client >/dev/null
 	}
 	echo "==> downloading genco"
 	tmp=$(mktemp -d)

@@ -85,7 +85,7 @@ pub(super) async fn postgres(r: &mut Report, groups: &[Group]) {
 			.run(&[
 				"sh",
 				"-c",
-				"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+				"DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
 				postgresql postgresql-client >/dev/null",
 			])
 			.await;

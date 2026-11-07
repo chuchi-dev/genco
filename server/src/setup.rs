@@ -41,7 +41,7 @@ pub async fn main(
 	}
 
 	step("updating the package lists");
-	sh("apt-get update -qq").await?;
+	sh("apt-get -o DPkg::Lock::Timeout=300 update -qq").await?;
 
 	step("inventory");
 	let inventory = inventory().await;
@@ -333,7 +333,7 @@ Unattended-Upgrade::Origins-Pattern {
 
 async fn apt(packages: &[&str]) -> Result<(), String> {
 	sh(&format!(
-		"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {} >/dev/null",
+		"DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq {} >/dev/null",
 		packages.join(" ")
 	))
 	.await
@@ -349,7 +349,7 @@ async fn php() -> Result<(), String> {
 			&& dpkg -i /tmp/debsuryorg-archive-keyring.deb >/dev/null \
 			&& echo \"deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] \
 			https://packages.sury.org/php/ $(. /etc/os-release && echo $VERSION_CODENAME) main\" \
-			>/etc/apt/sources.list.d/php.list && apt-get update -qq")
+			>/etc/apt/sources.list.d/php.list && apt-get -o DPkg::Lock::Timeout=300 update -qq")
 			.await?;
 	}
 
@@ -400,7 +400,7 @@ async fn node() -> Result<(), String> {
 			| gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg")
 		.await?;
 		write(list, &line)?;
-		sh("apt-get update -qq").await?;
+		sh("apt-get -o DPkg::Lock::Timeout=300 update -qq").await?;
 	}
 	apt(&["nodejs"]).await
 }

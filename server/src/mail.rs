@@ -373,7 +373,7 @@ pub async fn ensure_sasl() -> std::result::Result<bool, String> {
 		"sh",
 		"-c",
 		&format!(
-			"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+			"DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
 			{SASL_PACKAGE} >/dev/null"
 		),
 	])

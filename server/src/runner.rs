@@ -829,7 +829,7 @@ async fn install(user: &str) -> Result<(), String> {
 	println!("==> podman");
 	sh(
 		"command -v podman >/dev/null || command -v docker >/dev/null || \
-		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman uidmap passt",
+		DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq podman uidmap passt",
 	)
 	.await?;
 	println!("==> the user {user}");
