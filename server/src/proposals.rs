@@ -91,6 +91,8 @@ pub struct Proposal {
 	/// what the admin added when approving, it ranks above the text
 	pub comment: Option<String>,
 	pub created_at: i64,
+	/// when a pending one expires
+	pub expires_at: i64,
 	#[serde(skip)]
 	peer_id: i64,
 }
@@ -126,6 +128,7 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Proposal> {
 		conversation_id: row.get(5)?,
 		answer: row.get(6)?,
 		created_at,
+		expires_at: created_at + VALID_MS,
 		peer_id: row.get(8)?,
 		approver: row.get(9)?,
 		approver_email: row.get(10)?,
@@ -707,7 +710,13 @@ async fn approve_in_panel(
 			p.status
 		)));
 	}
-	let mailed = !crate::mail::off(db);
+	// a proposal mailed before mail was switched off still needs the code
+	let links: i64 = db.conn().query_row(
+		"SELECT count(*) FROM proposal_links WHERE proposal_id = ?1",
+		[id],
+		|r| r.get(0),
+	)?;
+	let mailed = links > 0 || !crate::mail::off(db);
 	crate::users::verify_approval(db, user, &req.password, &req.code, mailed)
 		.await?;
 	approved(&db.conn(), events, id, user, comment.as_deref())
@@ -1370,9 +1379,23 @@ mod tests {
 		);
 		assert_eq!(get_one(&db.conn(), id).unwrap().status, "pending");
 
-		// with mail off the password does, as before
+		// mail switched off after the mail went: still the link or 2FA
 		crate::db::set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#)
 			.unwrap();
+		db.conn()
+			.execute(
+				"INSERT INTO proposal_links (proposal_id, user_id, token_hash,
+				created_at) VALUES (?1, 961, 'h', 0)",
+				[id],
+			)
+			.unwrap();
+		let tried = approve_in_panel(&db, &events, id, &user, &req).await;
+		assert!(
+			matches!(tried, Err(Error::Invalid(e)) if e == crate::users::NO_2FA)
+		);
+		db.conn().execute("DELETE FROM proposal_links", []).unwrap();
+
+		// never mailed and mail off: the password does, as before
 		let wrong = ApproveReq {
 			password: "wrong".into(),
 			..Default::default()

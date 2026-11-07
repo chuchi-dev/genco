@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { session } from '@/lib/session.svelte';
 
-	// what confirms in Approvals, rows of a Form: the admin's password and,
+	// what confirms in Approvals and on a mail-off link, rows of a Form: the admin's password and,
 	// with 2FA, the code of the authenticator app
 	let {
 		password = $bindable(''),

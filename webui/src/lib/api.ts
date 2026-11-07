@@ -452,6 +452,8 @@ export type Proposal = {
 	/** what the admin added when approving, ranks above the text */
 	comment: string | null;
 	createdAt: number;
+	/** when a pending one expires */
+	expiresAt: number;
 };
 
 /** a deletion or another change that waits for an admin (actions.rs) */
