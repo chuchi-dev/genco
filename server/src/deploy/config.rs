@@ -129,8 +129,8 @@ pub struct Step {
 	/// waits in the queue until one takes it
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub on: Option<String>,
-	/// minutes a runner step may wait for a runner, by default the queue
-	/// timeout of Settings → Runners
+	/// minutes a runner step may wait for a runner, at most (and by
+	/// default) the queue timeout of Settings → Runners
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub wait: Option<u32>,
 	/// the runner's image, `{codename}` is this server's Debian release;

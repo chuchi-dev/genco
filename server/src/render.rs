@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::hosting::{Domain, Group, Kind, PhpSettings};
-use crate::procs::{Schedule, Worker};
+use crate::procs::{APP_PORTS, Schedule, TAKEN, Worker};
 
 pub const HEADER: &str = "# written by genco, changes here are overwritten";
 
@@ -216,11 +216,14 @@ pub const MAX_DOMAIN_ID: i64 = 9999;
 /// slot B on its own (workers can't take either, see procs).
 pub fn slot_port(domain: &Domain, slot: Slot) -> u16 {
 	let base = match slot {
-		Slot::A => 20000,
-		Slot::B => 30000,
+		Slot::A => *APP_PORTS.start(),
+		Slot::B => SLOT_B,
 	};
 	base + domain.id as u16
 }
+
+/// where slot B starts in `procs::APP_PORTS`
+pub const SLOT_B: u16 = 30000;
 
 /// The public ports of the workers, open in the firewall.
 pub fn public_ports(groups: &[Group]) -> Vec<u16> {
@@ -234,20 +237,23 @@ pub fn public_ports(groups: &[Group]) -> Vec<u16> {
 	ports
 }
 
-/// The ports genco's units listen on, kept out of the kernel's ephemeral
-/// range: an app may bind port 0 (see `sandbox`), without this it could do
-/// so until it gets another app's slot B or a worker's port while that
-/// one restarts. A unit that binds its port explicitly still gets it.
+/// The ports genco's units and services listen on, kept out of the
+/// kernel's ephemeral range: an app may bind port 0 (see `sandbox`),
+/// without this it could do so until it gets another app's slot B, a
+/// worker's port or Redis' while that one restarts, also when the range
+/// was widened. A unit that binds its port explicitly still gets it.
 /// Also for IPv6.
 pub fn reserved_ports(groups: &[Group], panel_port: u16) -> String {
 	let mut ports = public_ports(groups);
 	ports.push(panel_port);
-	ports.retain(|p| !(20000..=39999).contains(p));
+	// the databases, Redis, Rspamd, postsrsd, Dovecot's ManageSieve
+	ports.extend(TAKEN);
+	ports.retain(|p| !APP_PORTS.contains(p));
 	ports.sort();
 	ports.dedup();
 	let mut list: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
 	// the apps' slots A and B, see slot_port
-	list.push("20000-39999".into());
+	list.push(format!("{}-{}", APP_PORTS.start(), APP_PORTS.end()));
 	format!(
 		"{HEADER}
 net.ipv4.ip_local_reserved_ports = {}
@@ -1655,8 +1661,14 @@ mod tests {
 		let sysctl = reserved_ports(std::slice::from_ref(&g), 4100);
 		assert!(sysctl.starts_with(HEADER));
 		assert!(sysctl.ends_with(
-			"\nnet.ipv4.ip_local_reserved_ports = 4100,5426,20000-39999\n"
+			"\nnet.ipv4.ip_local_reserved_ports = 3306,4100,4190,5426,5432,\
+			6379,10001,10002,11332,11333,11334,20000-39999\n"
 		));
+		// from the constants: both slots inside the apps' range
+		let range = format!("{}-{}", APP_PORTS.start(), APP_PORTS.end());
+		assert!(sysctl.contains(&format!(",{range}\n")));
+		assert!(APP_PORTS.contains(&SLOT_B));
+		assert!(TAKEN.iter().all(|p| sysctl.contains(&format!("{p},"))));
 
 		let fw = firewall(&[g], 4100, &[]);
 		assert!(fw.contains("add element inet filter genco_public { 5426 }"));

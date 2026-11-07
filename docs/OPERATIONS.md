@@ -102,7 +102,7 @@ into the server's config, and the CLI does the same:
 | Build runners for `on = "runner"` steps | `genco runners list`, `genco runners add <name>` (prints the token), `genco runners remove <name>` |
 | Make a box a runner | on it: `genco runner install`, `genco runner register https://<panel> <token>`, `systemctl restart genco-runner` |
 | Update a runner | on it: `genco runner update` (a daily timer of `genco runner install` does it; Settings → Runners warns when a runner runs another version) |
-| Runner builds queue | a step with `on = "runner"` never builds on the server: its deploy waits in the queue until a runner takes it, oldest first; the log says the position and what the runners do. It fails after the queue timeout (Settings → Runners, 2 h; `wait = <minutes>` on the step), when no runner is online for 15 minutes, or at once without any runner. Cancel in the group's Deploy tab takes it out of the queue. Only detected steps (no genco.toml) build here, on a server without runners |
+| Runner builds queue | a step with `on = "runner"` never builds on the server: its deploy waits in the queue until a runner takes it, oldest first; the log says the position and what the runners do. It fails after the queue timeout (Settings → Runners, 2 h; `wait = <minutes>` on the step can only shorten it), when no runner is online for 15 minutes, or at once without any runner. Cancel in the group's Deploy tab takes it out of the queue. Only detected steps (no genco.toml) build here, on a server without runners |
 | Back up now | `genco backup` |
 | Copy the backups off the server (Backblaze B2, S3) | Settings → Backups, or `genco backup remote set --b2 --key-id <keyID> --bucket <bucket> [--path genco/<panel>]` (the application key on stdin; see "The remote copy" below); `genco backup remote show`, `genco backup remote test`, `genco backup remote off` |
 | List and restore snapshots | `genco backup snapshots [--tag group:shop] [--remote]`, `genco backup restore latest --tag group:shop,files --target /tmp/restore [--remote]`; anything else with `genco restic [--remote] ...` |
@@ -211,9 +211,11 @@ with two targets counts once; mail still being retried counts when it
 ends. Only counts and the time of each address's last mail are kept,
 never senders, subjects or message ids: the counts for 90 days, the last
 mail for 400 days (of rejected addresses 90). The mail domain's page
-shows the last 30 days per mailbox, forward (the catch-all sums up the
-addresses without their own) and send-only address with the last mail,
-the domain's totals, and the 10 refused unknown addresses tried most;
+shows the last 30 days per mailbox (received and sent), forward (the
+catch-all sums up the addresses without their own) and send-only address
+with the last mail, the domain's totals, and the 10 refused unknown
+addresses tried most (a domain keeps 200 of them per day, the rest count
+as `(others)@domain`);
 `genco mail stats [<domain>]` prints the same.
 
 Mail services follow the mail domains: without one, `genco apply` keeps
@@ -282,9 +284,11 @@ every other TCP bind is denied (`SocketBindDeny=tcp:1-65535`). Outgoing
 TCP connections (SMTP, HTTP) bind port 0 and get an ephemeral port. So
 that port 0 never lands on another unit's port while it restarts,
 `apply` reserves genco's ports (the panel, 20000 to 39999, the workers'
-ports) from the ephemeral range in `/etc/sysctl.d/60-genco.conf`
+ports, MariaDB, PostgreSQL, Redis, Rspamd, postsrsd, ManageSieve) from
+the ephemeral range in `/etc/sysctl.d/60-genco.conf`
 (`net.ipv4.ip_local_reserved_ports`, for IPv6 too); the owning unit
-still binds its port. Apps may use UDP freely for client traffic (DNS,
+still binds its port. `apply` warns when `ip_local_port_range` starts
+below Debian's 32768. Apps may use UDP freely for client traffic (DNS,
 NTP; resolvers like hickory that pick their own port work); inbound UDP
 stays closed by the firewall. To check a sandbox by hand:
 

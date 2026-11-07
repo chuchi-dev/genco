@@ -22,6 +22,13 @@ const KEEP_LAST: i64 = 400 * DAY;
 /// what the panel and `genco mail stats` sum up
 const SHOWN_DAYS: i64 = 30;
 const UNKNOWN_SHOWN: usize = 10;
+/// rejected addresses a domain keeps per day, the rest of the spammers'
+/// tries count as `(others)@domain`
+const REJECTED_PER_DAY: i64 = 200;
+const OTHERS: &str = "(others)";
+/// the domain of an address, a login without `@` is itself; the same
+/// expression as in the indexes, so the panel doesn't scan all addresses
+const DOMAIN: &str = "substr(address, instr(address, '@') + 1)";
 
 pub const SCHEMA: &str = "
 	CREATE TABLE IF NOT EXISTS mail_counts (
@@ -37,6 +44,10 @@ pub const SCHEMA: &str = "
 		at INTEGER NOT NULL,
 		PRIMARY KEY (address, kind)
 	);
+	CREATE INDEX IF NOT EXISTS mail_counts_domain
+		ON mail_counts (substr(address, instr(address, '@') + 1), day);
+	CREATE INDEX IF NOT EXISTS mail_last_domain
+		ON mail_last (substr(address, instr(address, '@') + 1));
 	CREATE TABLE IF NOT EXISTS mail_state (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
@@ -274,13 +285,18 @@ impl Counter {
 		}
 		let out = match crate::util::run(&args).await {
 			Ok(out) => out,
-			// the cursor is gone (journal vacuumed): on from now
-			Err(e) => {
-				tracing::warn!("mail counts: {e}");
+			// journalctl refuses the cursor: on from now
+			Err(e) if bad_cursor(&e, &args) => {
+				tracing::warn!("mail counts: {e}, counting on from now");
 				let conn = stats.conn();
 				let _ = conn
 					.execute("DELETE FROM mail_state WHERE key = 'cursor'", []);
 				let _ = set_state(&conn, "from", &now().to_string());
+				return;
+			}
+			// anything else: the same lines again next minute
+			Err(e) => {
+				tracing::warn!("mail counts: {e}");
 				return;
 			}
 		};
@@ -299,6 +315,16 @@ impl Counter {
 			tracing::error!("mail counts: {e}");
 		}
 	}
+}
+
+/// Whether journalctl failed on the cursor itself (`Failed to seek to
+/// cursor: Invalid argument`); only its message after the command line
+/// counts, which holds the cursor too. A well-formed cursor of vacuumed
+/// lines isn't an error, journalctl starts at the oldest line left.
+fn bad_cursor(err: &str, args: &[&str]) -> bool {
+	let prefix = format!("{} failed: ", args.join(" "));
+	err.strip_prefix(&prefix)
+		.is_some_and(|msg| msg.to_lowercase().contains("cursor"))
 }
 
 /// Time, program and message of journalctl's JSON lines, and the cursor
@@ -357,22 +383,62 @@ fn store(
 ) -> rusqlite::Result<()> {
 	let tx = conn.unchecked_transaction()?;
 	for c in counts {
+		let day = c.at / DAY * DAY;
+		let address = match c.kind {
+			Kind::Rejected => rejected_address(&tx, day, &c.address)?,
+			_ => c.address.clone(),
+		};
 		tx.execute(
 			"INSERT INTO mail_counts (day, address, kind, count)
 			VALUES (?1, ?2, ?3, 1)
 			ON CONFLICT (day, address, kind) DO UPDATE SET count = count + 1",
-			params![c.at / DAY * DAY, c.address, c.kind.as_str()],
+			params![day, address, c.kind.as_str()],
 		)?;
 		tx.execute(
 			"INSERT INTO mail_last (address, kind, at) VALUES (?1, ?2, ?3)
 			ON CONFLICT (address, kind) DO UPDATE SET at = max(at, excluded.at)",
-			params![c.address, c.kind.as_str(), c.at],
+			params![address, c.kind.as_str(), c.at],
 		)?;
 	}
 	if let Some(c) = cursor {
 		set_state(&tx, "cursor", c)?;
 	}
 	tx.commit()
+}
+
+/// The address a rejected mail counts for: its own, or `(others)@domain`
+/// once the domain has `REJECTED_PER_DAY` others that day.
+fn rejected_address(
+	conn: &Connection,
+	day: i64,
+	address: &str,
+) -> rusqlite::Result<String> {
+	let Some((_, domain)) = address.rsplit_once('@') else {
+		return Ok(address.into());
+	};
+	let others = format!("{OTHERS}@{domain}");
+	let known: bool = conn.query_row(
+		"SELECT EXISTS (SELECT 1 FROM mail_counts WHERE day = ?1
+		AND address = ?2 AND kind = 'rejected')",
+		params![day, address],
+		|r| r.get(0),
+	)?;
+	if known {
+		return Ok(address.into());
+	}
+	let n: i64 = conn.query_row(
+		&format!(
+			"SELECT count(*) FROM mail_counts WHERE {DOMAIN} = ?1
+			AND day = ?2 AND kind = 'rejected' AND address != ?3"
+		),
+		params![domain, day, others],
+		|r| r.get(0),
+	)?;
+	Ok(if n < REJECTED_PER_DAY {
+		address.into()
+	} else {
+		others
+	})
 }
 
 fn prune(conn: &Connection, at: i64) -> rusqlite::Result<()> {
@@ -412,12 +478,15 @@ pub struct DomainCounts {
 	pub rejected: i64,
 	pub bounced: i64,
 	pub mailboxes: Vec<AddressCount>,
+	/// what the mailboxes sent with their login, in the same order
+	pub mailboxes_sent: Vec<AddressCount>,
 	/// with the catch-all: the addresses without a mailbox or forward
 	pub forwards: Vec<AddressCount>,
 	pub send_only: Vec<AddressCount>,
 	/// what the group's SMTP login sent, as any of its addresses
 	pub login: Option<AddressCount>,
-	/// refused addresses without a mailbox or forward, the most first
+	/// refused addresses without a mailbox or forward, the most first;
+	/// `(others)@domain` sums up those beyond the daily cap
 	pub unknown: Vec<AddressCount>,
 }
 
@@ -431,15 +500,15 @@ fn totals(
 	at: i64,
 ) -> rusqlite::Result<Totals> {
 	let since = at / DAY * DAY - (SHOWN_DAYS - 1) * DAY;
-	let like = format!("%@{domain}");
 	let mut totals: Totals = HashMap::new();
 
-	let mut stmt = conn.prepare(
+	// the login has no `@`, its "domain" is the login itself
+	let mut stmt = conn.prepare(&format!(
 		"SELECT address, kind, sum(count) FROM mail_counts
-		WHERE day >= ?1 AND (address LIKE ?2 OR address = ?3)
-		GROUP BY address, kind",
-	)?;
-	let rows = stmt.query_map(params![since, like, login], |r| {
+		WHERE {DOMAIN} IN (?2, ?3) AND day >= ?1
+		GROUP BY address, kind"
+	))?;
+	let rows = stmt.query_map(params![since, domain, login], |r| {
 		Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?))
 	})?;
 	for row in rows {
@@ -452,11 +521,10 @@ fn totals(
 			.0 = count;
 	}
 
-	let mut stmt = conn.prepare(
-		"SELECT address, kind, at FROM mail_last
-		WHERE address LIKE ?1 OR address = ?2",
-	)?;
-	let rows = stmt.query_map(params![like, login], |r| {
+	let mut stmt = conn.prepare(&format!(
+		"SELECT address, kind, at FROM mail_last WHERE {DOMAIN} IN (?1, ?2)"
+	))?;
+	let rows = stmt.query_map(params![domain, login], |r| {
 		Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?))
 	})?;
 	for row in rows {
@@ -560,6 +628,11 @@ pub fn domain_counts(
 			.iter()
 			.map(|b| one(&b.address, &incoming))
 			.collect(),
+		mailboxes_sent: domain
+			.mailboxes
+			.iter()
+			.map(|b| one(&b.address, &[Kind::Sent]))
+			.collect(),
 		forwards: domain
 			.forwards
 			.iter()
@@ -623,6 +696,7 @@ pub(super) async fn stats_text(
 		));
 		let rows = [
 			("mailbox", "mails", &c.mailboxes),
+			("mailbox", "sent", &c.mailboxes_sent),
 			("forward", "mails", &c.forwards),
 			("send-only", "sent", &c.send_only),
 			("login", "sent", &c.login.iter().cloned().collect()),
@@ -887,6 +961,7 @@ postfix/lmtp[6861]: 2AA3111A4FEA: to=<Anna@shop.ch>, relay=mail.panel.test[priva
 			c.at += today;
 		}
 		counts.push(count(today - 40 * DAY, "old@shop.ch", Kind::Forwarded));
+		counts.push(count(today, "anna@shop.ch", Kind::Sent));
 		store(&conn, &counts, None).unwrap();
 
 		let mut d = domain();
@@ -897,6 +972,9 @@ postfix/lmtp[6861]: 2AA3111A4FEA: to=<Anna@shop.ch>, relay=mail.panel.test[priva
 			(3, 1, 2, 1)
 		);
 		assert_eq!(c.mailboxes[0].count, 2);
+		// what the mailbox sent with its login
+		assert_eq!(c.mailboxes_sent[0].count, 1);
+		assert_eq!(c.mailboxes_sent[0].address, "anna@shop.ch");
 		assert_eq!(c.forwards[0].count, 1);
 		// a month ago is too long, but its last mail stays
 		assert_eq!(c.forwards[1].count, 0);
@@ -918,5 +996,97 @@ postfix/lmtp[6861]: 2AA3111A4FEA: to=<Anna@shop.ch>, relay=mail.panel.test[priva
 		assert_eq!(c.forwards[2].count, 1);
 		assert!(c.unknown.is_empty());
 		assert!(c.login.is_none());
+	}
+
+	#[test]
+	fn only_a_refused_cursor_starts_over() {
+		let args = ["journalctl", "--after-cursor=s=a;i=1"];
+		let failed = |msg: &str| format!("{} failed: {msg}", args.join(" "));
+		assert!(bad_cursor(
+			&failed("Failed to seek to cursor: Invalid argument"),
+			&args
+		));
+		// the cursor in the command line doesn't count
+		assert!(!bad_cursor(
+			&failed("Failed to open journal: Too many open files"),
+			&args
+		));
+		assert!(!bad_cursor("journalctl: No such file or directory", &args));
+	}
+
+	#[test]
+	fn rejected_addresses_are_capped_per_domain_and_day() {
+		let stats = StatsDb::memory();
+		let conn = stats.conn();
+		let day = 20_000 * DAY;
+		let mut counts: Vec<Count> = (0..REJECTED_PER_DAY + 5)
+			.map(|i| count(day, &format!("spam{i}@shop.ch"), Kind::Rejected))
+			.collect();
+		// one kept before still counts as itself, other domains apart
+		counts.push(count(day, "spam0@shop.ch", Kind::Rejected));
+		counts.push(count(day, "x@other.ch", Kind::Rejected));
+		store(&conn, &counts, None).unwrap();
+
+		let n = |sql: &str| -> i64 {
+			conn.query_row(sql, [], |r| r.get(0)).unwrap()
+		};
+		assert_eq!(
+			n(
+				"SELECT count(*) FROM mail_counts WHERE address LIKE '%@shop.ch'"
+			),
+			REJECTED_PER_DAY + 1
+		);
+		assert_eq!(
+			n("SELECT count FROM mail_counts WHERE address = 'spam0@shop.ch'"),
+			2
+		);
+		assert_eq!(
+			n("SELECT count FROM mail_counts
+			WHERE address = '(others)@shop.ch'"),
+			5
+		);
+		assert_eq!(n("SELECT count(*) FROM mail_last"), REJECTED_PER_DAY + 2);
+
+		// the next day starts afresh, the totals have them all
+		store(
+			&conn,
+			&[count(day + DAY, "new@shop.ch", Kind::Rejected)],
+			None,
+		)
+		.unwrap();
+		assert_eq!(
+			n("SELECT count(*) FROM mail_counts WHERE address = 'new@shop.ch'"),
+			1
+		);
+		drop(conn);
+		let c =
+			domain_counts(&stats.conn(), &domain(), None, day + DAY).unwrap();
+		assert_eq!(c.rejected, REJECTED_PER_DAY + 7);
+		assert_eq!(c.unknown[0].address, "(others)@shop.ch");
+	}
+
+	#[test]
+	fn the_totals_use_the_domain_indexes() {
+		let stats = StatsDb::memory();
+		let conn = stats.conn();
+		let plan = |sql: String| -> String {
+			conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+				.unwrap()
+				.query_map(params!["shop.ch", "g-shop"], |r| {
+					r.get::<_, String>(3)
+				})
+				.unwrap()
+				.collect::<rusqlite::Result<Vec<_>>>()
+				.unwrap()
+				.join("\n")
+		};
+		let counts = plan(format!(
+			"SELECT * FROM mail_counts WHERE {DOMAIN} IN (?1, ?2) AND day >= 0"
+		));
+		assert!(counts.contains("INDEX mail_counts_domain"), "{counts}");
+		let last = plan(format!(
+			"SELECT * FROM mail_last WHERE {DOMAIN} IN (?1, ?2)"
+		));
+		assert!(last.contains("INDEX mail_last_domain"), "{last}");
 	}
 }

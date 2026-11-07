@@ -82,6 +82,9 @@
 			].map(c => [c.address, c]),
 		),
 	);
+	const sentBy = $derived(
+		new Map((counts?.mailboxesSent ?? []).map(c => [c.address, c.count])),
+	);
 	const sent = $derived(
 		(counts?.sendOnly ?? []).reduce((n, c) => n + c.count, 0),
 	);
@@ -221,6 +224,7 @@
 			{ label: 'Address' },
 			{ label: 'Quota', num: true },
 			...COUNT_COLUMNS,
+			{ label: 'Sent (30 days)', num: true },
 		]}
 		empty="No mailboxes yet."
 		ondblclick={b => (editing = b)}
@@ -230,6 +234,7 @@
 			<td>{b.address}</td>
 			<td class="num">{b.quotaMb} MB</td>
 			{@render countCells(byAddress.get(b.address))}
+			<td class="num">{sentBy.get(b.address) ?? ''}</td>
 		{/snippet}
 	</ListView>
 	<div class="row-buttons">

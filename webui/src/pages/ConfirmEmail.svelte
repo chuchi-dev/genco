@@ -36,7 +36,13 @@
 	}
 </script>
 
-<Dialog title="Confirm Email" icon="key" onclose={() => go('/')} width={420}>
+<Dialog
+	title="Confirm Email"
+	icon="key"
+	onclose={() => go('/')}
+	keep={() => busy}
+	width={420}
+>
 	<div class="msg">
 		<Icon name="key" size={32} />
 		<p>

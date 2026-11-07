@@ -288,10 +288,13 @@ export type MailCounts = {
 	rejected: number;
 	bounced: number;
 	mailboxes: AddressCount[];
+	/** what the mailboxes sent with their login, same order */
+	mailboxesSent: AddressCount[];
 	forwards: AddressCount[];
 	sendOnly: AddressCount[];
 	login: AddressCount | null;
-	/** rejected addresses without a mailbox or forward */
+	/** rejected addresses without a mailbox or forward, `(others)@domain`
+	 * beyond the daily cap */
 	unknown: AddressCount[];
 };
 

@@ -241,11 +241,11 @@ pub(super) async fn rollback_group(
 
 /// Takes a deploy's build out of the runners' queue, the deploy fails.
 pub(super) async fn cancel_deploy(
-	authed: Authed,
+	_authed: Authed,
 	State(db): State<Db>,
 	UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<()>> {
-	crate::runners::cancel(&db.conn(), id, &authed.user.name)?;
+	crate::runners::cancel(&db.conn(), id)?;
 	Ok(Json(()))
 }
 

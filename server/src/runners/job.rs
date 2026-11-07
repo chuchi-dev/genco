@@ -83,7 +83,7 @@ pub async fn build(
 			runner (Settings → Runners)"
 			.into());
 	}
-	let limit = req.wait.unwrap_or(settings.queue_minutes);
+	let limit = queue_limit(req.wait, settings.queue_minutes);
 	let limit = Duration::from_secs(u64::from(limit) * 60);
 	let target = target().await;
 	let image = image(req.image, req.dir, &target.codename);
@@ -276,8 +276,9 @@ pub(super) struct Queue {
 pub(super) struct QueueRunner {
 	pub(super) name: String,
 	pub(super) last_seen: Option<i64>,
-	/// the group it builds for right now
-	pub(super) busy: Option<String>,
+	/// whether it builds something right now; never for which group, the
+	/// log goes to the waiting group's deploy token
+	pub(super) busy: bool,
 }
 
 impl Queue {
@@ -287,10 +288,8 @@ impl Queue {
 			let position = position(&conn, id)?;
 			let mut stmt = conn.prepare(
 				"SELECT r.name, r.last_seen,
-				(SELECT coalesce(g.name, '?') FROM build_jobs j
-				LEFT JOIN deploys d ON d.id = j.deploy_id
-				LEFT JOIN domain_groups g ON g.id = d.group_id
-				WHERE j.runner_id = r.id AND j.status = 'running' LIMIT 1)
+				EXISTS (SELECT 1 FROM build_jobs j
+				WHERE j.runner_id = r.id AND j.status = 'running')
 				FROM runners r ORDER BY r.name",
 			)?;
 			let runners = stmt
@@ -343,14 +342,14 @@ impl QueueRunner {
 
 	fn text(&self, now: i64, times: bool) -> String {
 		let name = &self.name;
-		match (&self.busy, self.last_seen) {
-			(Some(group), _) => format!("{name} busy with group {group}"),
+		match (self.busy, self.last_seen) {
+			(true, _) => format!("{name} busy with another build"),
 			_ if self.online(now) => format!("{name} online"),
-			(None, Some(seen)) if times => {
+			(false, Some(seen)) if times => {
 				format!("{name} offline for {}", span(now - seen))
 			}
-			(None, Some(_)) => format!("{name} offline"),
-			(None, None) => format!("{name} never connected"),
+			(false, Some(_)) => format!("{name} offline"),
+			(false, None) => format!("{name} never connected"),
 		}
 	}
 }
@@ -364,6 +363,12 @@ pub(super) fn position(conn: &Connection, id: i64) -> rusqlite::Result<i64> {
 		[id],
 		|r| r.get(0),
 	)
+}
+
+/// The minutes a job waits in the queue: a step's `wait` only shortens
+/// the admin's setting, a repo can't hold the queue longer than that.
+fn queue_limit(wait: Option<u32>, setting: u32) -> u32 {
+	wait.map_or(setting, |w| w.min(setting))
 }
 
 /// Milliseconds like `2 h`, `1 h 5 min` or `40 min`.
@@ -422,12 +427,14 @@ pub(super) fn drop_queued(
 }
 
 /// Takes the deploy's job out of the queue; an error if it doesn't wait
-/// for a runner (anymore). Its deploy fails at its next look.
-pub fn cancel(conn: &Connection, deploy_id: i64, by: &str) -> Result<()> {
+/// for a runner (anymore). Its deploy fails at its next look. The deploy
+/// log, which the group's deploy token reads, names no one; the activity
+/// log keeps who.
+pub fn cancel(conn: &Connection, deploy_id: i64) -> Result<()> {
 	let n = conn.execute(
 		"UPDATE build_jobs SET status = 'cancelled', message = ?2,
 		finished_at = ?3 WHERE deploy_id = ?1 AND status = 'queued'",
-		params![deploy_id, format!("cancelled by {by}"), now()],
+		params![deploy_id, "cancelled by an admin", now()],
 	)?;
 	if n == 0 {
 		return Err(Error::Invalid(
@@ -650,8 +657,11 @@ mod tests {
 		assert_eq!(
 			q.describe(2000).1,
 			"waiting for a runner (position 2 in the queue, perf busy with \
-			group shop)"
+			another build)"
 		);
+		// no other group's name in the log, also not when giving up
+		let why = give_up(&q, 2000, Duration::MAX, Duration::ZERO, None);
+		assert!(!why.unwrap().contains("shop"));
 		assert_eq!(position(&db.conn(), busy).unwrap(), 0);
 		// the deploy's view shows it (deploy ids are the job ids here)
 		let deploy = |id| crate::deploy::get(&db.conn(), id).unwrap().queue;
@@ -672,7 +682,7 @@ mod tests {
 			runners: vec![QueueRunner {
 				name: "performance".into(),
 				last_seen: Some(0),
-				busy: None,
+				busy: false,
 			}],
 		};
 		let limit = Duration::from_secs(2 * 60 * 60);
@@ -700,6 +710,13 @@ mod tests {
 	}
 
 	#[test]
+	fn a_steps_wait_only_shortens_the_setting() {
+		assert_eq!(queue_limit(None, 120), 120);
+		assert_eq!(queue_limit(Some(30), 120), 30);
+		assert_eq!(queue_limit(Some(600), 120), 120);
+	}
+
+	#[test]
 	fn a_cancel_takes_the_job_out_of_the_queue() {
 		let db = Db::memory();
 		let id = add_job(&db, "shop", "queued", None);
@@ -707,17 +724,17 @@ mod tests {
 			.conn()
 			.query_row("SELECT deploy_id FROM build_jobs", [], |r| r.get(0))
 			.unwrap();
-		cancel(&db.conn(), deploy, "soeren").unwrap();
+		cancel(&db.conn(), deploy).unwrap();
 		let job = JobRow::read(&db, id).unwrap();
 		assert_eq!(verdict(&job, 0), Verdict::Cancelled);
-		assert_eq!(job.message.as_deref(), Some("cancelled by soeren"));
+		assert_eq!(job.message.as_deref(), Some("cancelled by an admin"));
 		// no runner gets it, and twice is an error
 		create(&db.conn(), "perf").unwrap();
 		assert!(api::claim(&db, 1).unwrap().is_none());
-		assert!(cancel(&db.conn(), deploy, "soeren").is_err());
+		assert!(cancel(&db.conn(), deploy).is_err());
 		// a job a runner took already isn't cancelled
 		add_job(&db, "blog", "running", Some(1));
-		assert!(cancel(&db.conn(), deploy + 1, "soeren").is_err());
+		assert!(cancel(&db.conn(), deploy + 1).is_err());
 	}
 
 	#[tokio::test]

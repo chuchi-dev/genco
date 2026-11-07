@@ -14,7 +14,14 @@
 		.catch(e => (error = e.message));
 </script>
 
-<Dialog title="Apply Changes" resizable icon="gear" {onclose} width={560}>
+<Dialog
+	title="Apply Changes"
+	resizable
+	icon="gear"
+	{onclose}
+	keep={() => !report && !error}
+	width={560}
+>
 	{#if error}
 		<p class="error">{error}</p>
 	{:else if !report}

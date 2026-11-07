@@ -638,7 +638,8 @@ fn approved(
 		params![comment, id],
 	)?;
 	let p = get_one(&tx, id)?;
-	// short, a conversation's title ends after 60 characters
+	// the first line; `convs::create` cuts the whole title, `#N from: `
+	// included, after 60 characters
 	let c = convs::create(
 		&tx,
 		&format!(

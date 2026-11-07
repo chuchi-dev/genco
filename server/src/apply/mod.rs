@@ -233,6 +233,10 @@ async fn sync(
 	if changed.contains(Path::new(render::RESERVED_PORTS)) {
 		r.run(&["sysctl", "-q", "-p", render::RESERVED_PORTS]).await;
 	}
+	let range = std::fs::read_to_string(EPHEMERAL).unwrap_or_default();
+	if let Some(warning) = ephemeral_warning(&range) {
+		r.info(warning);
+	}
 	if !mail_files.is_empty() {
 		mail_services(r, cfg, groups, &changed).await;
 	}
@@ -253,6 +257,22 @@ async fn sync(
 }
 
 /// The panel's site and the redirects of its old names to it.
+const EPHEMERAL: &str = "/proc/sys/net/ipv4/ip_local_port_range";
+
+/// The kernel's ports for bind(0) and outgoing connections start at 32768
+/// on Debian; lower, they reach ports that aren't in `reserved_ports`
+/// (Docker's, an ssh tunnel's).
+fn ephemeral_warning(range: &str) -> Option<String> {
+	let start: u32 = range.split_whitespace().next()?.parse().ok()?;
+	(start < 32768).then(|| {
+		format!(
+			"warning: the kernel's ephemeral ports ({EPHEMERAL}) start at \
+			{start}, below 32768: they can take the port of a service \
+			genco doesn't reserve"
+		)
+	})
+}
+
 fn panel_files(cfg: &Config, old_names: &[String]) -> Vec<File> {
 	let Some(domain) = &cfg.domain else {
 		return vec![];
@@ -442,4 +462,16 @@ async fn remove_stale(r: &mut Report, keep: &HashSet<&Path>) -> Vec<String> {
 		}
 	}
 	units
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_widened_ephemeral_range_warns() {
+		assert_eq!(ephemeral_warning("32768\t60999\n"), None);
+		assert!(ephemeral_warning("1024\t65535\n").unwrap().contains("1024"));
+		assert_eq!(ephemeral_warning(""), None);
+	}
 }

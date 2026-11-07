@@ -1,8 +1,9 @@
 //! A small model rewrites a proposal into a short formatted version. A
 //! rewrite that adds a name, address, number or command, or drops every
 //! negation of the original, is refused: the admin would approve
-//! something the agent didn't ask for. Then the model is told what was
-//! refused and asked once more; when that is refused too the original
+//! something the agent didn't ask for. Only then the model is told what
+//! was refused and asked once more; when that is refused too, or the
+//! first answer is empty or too long (or the model fails), the original
 //! stays and the panel shows why.
 
 use std::collections::HashSet;
