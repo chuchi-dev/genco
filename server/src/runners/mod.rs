@@ -337,10 +337,10 @@ async fn save_settings(
 #[derive(Deserialize)]
 struct CreateReq {
 	name: String,
-	/// the admin's password and code: a runner token takes the groups'
+	/// the admin's step-up: a runner token takes the groups'
 	/// sources
 	#[serde(flatten)]
-	auth: crate::users::PasswordOnly,
+	auth: crate::users::StepUp,
 }
 
 async fn create_route(
@@ -348,8 +348,7 @@ async fn create_route(
 	State(db): State<Db>,
 	Json(req): Json<CreateReq>,
 ) -> Result<Json<String>> {
-	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
-		.await?;
+	crate::users::verify_step_up(&db, &authed.user, &req.auth).await?;
 	Ok(Json(create(&db.conn(), &req.name)?))
 }
 

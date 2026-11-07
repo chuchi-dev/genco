@@ -35,7 +35,7 @@ type Box = {
 	kind: 'message' | 'confirm' | 'ask' | 'password';
 	/** the input's value of an `ask` */
 	value: string;
-	/** a `password` box asks for the two-factor code too */
+	/** a `password` box asks for the two-factor code instead */
 	code: boolean;
 	done: (answer: string | null, code: string) => void;
 };
@@ -83,14 +83,14 @@ class Message {
 	}
 
 	/**
-	 * The admin's own password, and the two-factor code when 2FA is on,
-	 * for what a stolen session and password mustn't do (invites, tokens,
-	 * mail settings), null for Cancel.
+	 * One more factor for what a stolen session alone mustn't do (invites,
+	 * tokens, mail settings): the two-factor code when 2FA is on, else the
+	 * admin's password; null for Cancel.
 	 */
 	password(title: string, what: string): Promise<Auth | null> {
 		const code = session.user?.totp ?? false;
 		const text = code
-			? `Your password and a two-factor code, to ${what}:`
+			? `Enter the code from your authenticator app, to ${what}:`
 			: `Your password, to ${what}:`;
 		return new Promise(done =>
 			this.box({

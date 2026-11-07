@@ -17,7 +17,7 @@
 
 	// the link of a confirmation mail: an admin confirms a deletion or the
 	// agent's change of the remote backup; with mail off nothing was
-	// mailed, the password and code confirm it
+	// mailed, the 2FA code (the password without 2FA) confirms it
 	let {
 		token,
 		action,

@@ -30,7 +30,7 @@
 				<Icon name="agent" size={32} />
 				<div class="text">
 					<p class="selectable">{box.text}</p>
-					{#if box.kind === 'ask' || box.kind === 'password'}
+					{#if box.kind === 'ask' || (box.kind === 'password' && !box.code)}
 						<input
 							aria-label={box.text}
 							type={box.kind === 'password' ? 'password' : 'text'}
@@ -55,6 +55,9 @@
 							inputmode="numeric"
 							autocomplete="one-time-code"
 							bind:value={code}
+							{@attach el => {
+								requestAnimationFrame(() => el.focus());
+							}}
 						/>
 					{/if}
 				</div>

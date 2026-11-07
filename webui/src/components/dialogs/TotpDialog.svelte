@@ -35,7 +35,7 @@
 	}
 
 	async function disable() {
-		await post('/users/totp/disable', { code, password });
+		await post('/users/totp/disable', { code });
 		session.user = { ...session.user!, totp: false };
 		done = 'Two-factor login is off.';
 	}
@@ -49,21 +49,19 @@
 		</div>
 	{:else if enabled}
 		<p>
-			Two-factor login is on. To turn it off, type your password and a
-			current code.
+			Two-factor login is on. To turn it off, enter the code from your
+			authenticator app.
 		</p>
 		<Form onsubmit={disable} oncancel={onclose} ok="Turn Off">
-			<label for="t-pw">Password:</label>
+			<label for="t-code">Code:</label>
 			<!-- svelte-ignore a11y_autofocus -->
 			<input
-				id="t-pw"
+				id="t-code"
 				autofocus
-				type="password"
-				autocomplete="current-password"
-				bind:value={password}
+				inputmode="numeric"
+				autocomplete="one-time-code"
+				bind:value={code}
 			/>
-			<label for="t-code">Code:</label>
-			<input id="t-code" inputmode="numeric" bind:value={code} />
 		</Form>
 	{:else if setup}
 		<p>

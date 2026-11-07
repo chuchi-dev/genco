@@ -4,7 +4,7 @@
 //! repository password are sealed with the secrets key, the API only says
 //! whether they are set, and restic gets them through its environment.
 //! Where the copy goes decides where all data goes: the panel asks for the
-//! password and code, the agent's changes wait for an admin's confirmation
+//! step-up (2FA code, or password), the agent's changes wait for an admin's confirmation
 //! (actions.rs), and every change or stop is sent to all admins.
 
 use std::path::{Path, PathBuf};
@@ -946,9 +946,9 @@ async fn get_settings(
 struct SaveReq {
 	#[serde(flatten)]
 	settings: Settings,
-	/// the admin's password and code: it decides where all data goes
+	/// the admin's step-up: it decides where all data goes
 	#[serde(flatten)]
-	auth: crate::users::PasswordOnly,
+	auth: crate::users::StepUp,
 }
 
 async fn save_settings(
@@ -957,8 +957,7 @@ async fn save_settings(
 	State(db): State<Db>,
 	Json(req): Json<SaveReq>,
 ) -> Result<Json<Option<String>>> {
-	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
-		.await?;
+	crate::users::verify_step_up(&db, &authed.user, &req.auth).await?;
 	let key_file = crate::secrets::key_file();
 	let by = &authed.user.name;
 	let generated = change(&cfg, &db, key_file, req.settings, by).await?;
@@ -970,9 +969,9 @@ async fn save_settings(
 async fn new_password(
 	authed: Authed,
 	State(db): State<Db>,
-	Json(auth): Json<crate::users::PasswordOnly>,
+	Json(auth): Json<crate::users::StepUp>,
 ) -> Result<Json<String>> {
-	crate::users::verify_password_and_code(&db, &authed.user, &auth).await?;
+	crate::users::verify_step_up(&db, &authed.user, &auth).await?;
 	let conn = db.conn();
 	let sealed: Vec<u8> = get_json(&conn, NEW_PASSWORD)
 		.ok_or_else(|| Error::Invalid("it was shown already".into()))?;

@@ -231,9 +231,9 @@ struct CreateReq {
 	webhook_url: String,
 	#[serde(default)]
 	webhook_all: bool,
-	/// the admin's password and code: a key is lasting access
+	/// the admin's step-up: a key is lasting access
 	#[serde(flatten)]
-	auth: crate::users::PasswordOnly,
+	auth: crate::users::StepUp,
 }
 
 async fn create_route(
@@ -241,8 +241,7 @@ async fn create_route(
 	State(db): State<Db>,
 	Json(req): Json<CreateReq>,
 ) -> Result<Json<String>> {
-	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
-		.await?;
+	crate::users::verify_step_up(&db, &authed.user, &req.auth).await?;
 	let (_, key) = create(
 		&db.conn(),
 		&req.name,
@@ -260,12 +259,10 @@ struct ChangeReq {
 	webhook_url: String,
 	#[serde(default)]
 	webhook_all: bool,
-	/// the admin's, and the 2FA code, when the webhook changes: genco
-	/// sends the key there
-	#[serde(default)]
-	password: String,
-	#[serde(default)]
-	code: String,
+	/// the admin's step-up when the webhook changes: genco sends the key
+	/// there
+	#[serde(flatten)]
+	auth: crate::users::StepUp,
 }
 
 async fn change_route(
@@ -278,8 +275,7 @@ async fn change_route(
 	let url = req.webhook_url.trim();
 	check(&peer.name, url)?;
 	if url != peer.webhook_url {
-		crate::users::verify_password(&db, &authed.user, &req.password).await?;
-		crate::users::verify_code(&db, &authed.user, &req.code).await?;
+		crate::users::verify_step_up(&db, &authed.user, &req.auth).await?;
 	}
 	let conn = db.conn();
 	conn.execute(
@@ -294,9 +290,9 @@ async fn new_key_route(
 	authed: Authed,
 	State(db): State<Db>,
 	Path(id): Path<i64>,
-	Json(req): Json<crate::users::PasswordOnly>,
+	Json(req): Json<crate::users::StepUp>,
 ) -> Result<Json<String>> {
-	crate::users::verify_password_and_code(&db, &authed.user, &req).await?;
+	crate::users::verify_step_up(&db, &authed.user, &req).await?;
 	let key = tokens::new_token();
 	let changed = db.conn().execute(
 		"UPDATE peers SET key = ?1, key_hash = ?2 WHERE id = ?3",

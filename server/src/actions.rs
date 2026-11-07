@@ -1,8 +1,8 @@
 //! Deleting a domain, a database or a group doesn't happen right away: it
 //! becomes a pending action ("A12") and every admin gets a mail with their
 //! own link. It runs when the admin opens the link while logged in and
-//! confirms, or confirms it in Start → Approvals with their password and
-//! two-factor code (approvals.rs); any admin may reject it there, the
+//! confirms, or confirms it in Start → Approvals with their two-factor
+//! code (approvals.rs); any admin may reject it there, the
 //! conversation of genco's agent that asked for it gets the reason. What
 //! it deletes goes to the trash first (dump, archive), kept 30 days.
 //! With mail off (Settings → Mail) the password confirms it in the panel,
@@ -434,8 +434,8 @@ fn mail_body(cfg: &Config, action: &Action, token: &str) -> String {
 		Confirm: {link}\n\
 		(open it while logged in to the panel; your own link, it works for \
 		24 hours)\n\n\
-		Or open Start → Approvals, confirming there asks for your password \
-		and 2FA code; you can reject it there too:\n\n{panel}\n\n\
+		Or open Start → Approvals, confirming there asks for your 2FA code; \
+		you can reject it there too:\n\n{panel}\n\n\
 		Nothing happens without a confirmation. If you didn't expect this, \
 		reject it or ignore it.\n\n\
 		----------------------------------------\n\n\
@@ -957,7 +957,7 @@ fn pending(action: &Action) -> Result<()> {
 }
 
 /// The link of the mail proves the mailbox of its admin, without one the
-/// admin's password and code do.
+/// admin's step-up does (`users::verify_step_up`).
 async fn check_confirm(
 	db: &Db,
 	authed: &Authed,
@@ -974,14 +974,18 @@ async fn check_confirm(
 		));
 	}
 	if action.by_password {
-		users::verify_password(db, &authed.user, &req.password).await?;
-		users::verify_code(db, &authed.user, &req.code).await?;
+		let auth = users::StepUp {
+			password: req.password.clone(),
+			code: req.code.clone(),
+		};
+		users::verify_step_up(db, &authed.user, &auth).await?;
 	}
 	Ok(action)
 }
 
-/// Confirming in Approvals: the password and 2FA code, like a proposal
-/// (`users::verify_approval`); the password alone when nothing was mailed.
+/// Confirming in Approvals: the 2FA code, like a proposal
+/// (`users::verify_approval`); without 2FA the password when nothing was
+/// mailed.
 /// Mail switched off later doesn't count, the mailed links stay the way
 /// without 2FA.
 async fn check_panel(
@@ -1357,12 +1361,11 @@ mod tests {
 		let tried = check_panel(&db, &authed(&a), id, &password).await;
 		assert!(matches!(tried, Err(Error::Invalid(e)) if e == users::NO_2FA));
 
+		// with 2FA the code alone, the password doesn't help
 		let code = with_2fa(&db, &mut a);
-		for wrong in [req("admin password", ""), req("wrong", &code())] {
-			let tried = check_panel(&db, &authed(&a), id, &wrong).await;
-			assert!(tried.is_err());
-		}
-		let right = req("admin password", &code());
+		let wrong = req("admin password", "");
+		assert!(check_panel(&db, &authed(&a), id, &wrong).await.is_err());
+		let right = req("", &code());
 		let action = check_panel(&db, &authed(&a), id, &right).await.unwrap();
 		assert_eq!(action.id, id);
 		// the code is used up

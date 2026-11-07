@@ -7,7 +7,8 @@
 
 	// approves a proposal, the comment changes the task: genco's agent
 	// follows it where it differs from the proposal, and the proposing
-	// agent gets it with the answer. The password and 2FA code confirm it.
+	// agent gets it with the answer. The 2FA code (the password
+	// without 2FA) confirms it.
 	let {
 		proposal,
 		onapproved,

@@ -116,7 +116,7 @@ into the server's config, and the CLI does the same:
 | DNS for genco's own mails (genco@<panel>, signed with selector `genco-panel`) | Settings → Mail: SPF, DKIM, DMARC and PTR with their state |
 | Send genco's mails through a relay as its account | Settings → Mail → Through an SMTP relay, Sender `ie@example.ch` (From and bounce address; signed by genco only as the panel's own domain) |
 | Why a mail doesn't arrive | Settings → Mail → Send Test Mail or `genco mail test <to>` waits for postfix and shows its reason (deferred, bounced, a failed relay login; the command exits non-zero then); the panel also says when outgoing port 25 seems blocked (`genco setup` checks it too) |
-| A server without mail (port 25 blocked, no relay) | Settings → Mail → No mail: deletions are confirmed in the panel with password and 2FA code, no invites, no new mail domains, reports only in the panel and webhooks |
+| A server without mail (port 25 blocked, no relay) | Settings → Mail → No mail: deletions are confirmed in the panel with the 2FA code (the password without 2FA), no invites, no new mail domains, reports only in the panel and webhooks |
 | genco sends mail but hosts none | Settings → Mail → uncheck Mail hosting: no new mail domains, mailboxes, forwards or send-only addresses (panel, CLI and agent refuse them); genco's own mails (confirmations, invites, proposal links) keep going. Existing mail domains stay and keep running until deleted; without any, Dovecot, Rspamd and the submission ports stay off as always. No mail implies hosting off |
 | A PostgreSQL database | `genco database add <name> --group <g> --postgres`, then `genco apply` (installs PostgreSQL the first time) |
 | Environment variables of an app | `genco domain env <name> --set NAME=value --secret NAME=value --unset NAME`, then `genco apply` |
@@ -173,15 +173,15 @@ days, an action after 24 hours). Below are the decided and expired ones
 of the last 30 days. Find (Ctrl+K) finds both by number ("A12", "#12")
 and text.
 
-Confirming in the panel takes a second factor, the same for both kinds:
+Confirming in the panel takes one more factor, the same for both kinds
+(the session already proves the password):
 
-- an admin with two-factor login confirms with their password and a 2FA
-  code (the code is used up, wrong passwords and codes count toward the
-  login's limits);
+- an admin with two-factor login confirms with a 2FA code (the code is
+  used up, wrong codes count toward the login's limit);
 - an admin without 2FA can only reject in the panel; the link in the mail
   confirms (turn on Start → Two-Factor Login to confirm in the panel);
 - with mail off (Settings → Mail) nothing is mailed, so the password
-  confirms, with the 2FA code when the admin has 2FA.
+  confirms, or the 2FA code when the admin has 2FA.
 
 The mails stay the way to confirm from a phone: each admin gets their own
 link, the real link comes first and the description (it may hold names
@@ -544,7 +544,7 @@ weekly and 12 monthly per group and kind). Everything is in the backup's
 log. A failed copy doesn't fail the backup but is a problem of its own,
 like no successful copy for more than 2 days.
 
-Set it up in Settings → Backups (your password and 2FA code) or as root:
+Set it up in Settings → Backups (your 2FA code, or password without 2FA) or as root:
 
 ```sh
 # Backblaze B2: a bucket and an application key for it (read, write, delete)
@@ -558,7 +558,7 @@ genco backup remote test    # connects, creates the repository if there is none
 ```
 
 Where the copy goes decides where all data goes. The panel asks for your
-password and 2FA code; when the agent runs `genco backup remote set` or
+2FA code (your password without 2FA); when the agent runs `genco backup remote set` or
 `off`, it only asks: it waits in Start → Approvals with a number and every
 admin gets a mail to confirm it (with mail off, the agent gets a link where
 an admin confirms it with their password), the same as a deletion. Root in a terminal changes it directly. Whoever does
@@ -573,8 +573,8 @@ panel shows neither.
 
 genco makes the remote repository's own password and shows it **once**,
 when you save. When an admin confirmed the agent's request, the agent
-never sees it: Settings → Backups shows "Show Password" (your password
-and 2FA code) to the first admin who opens it, once. Keep it outside the server with the bucket's key, in your
+never sees it: Settings → Backups shows "Show Password" (your 2FA code,
+or password without 2FA) to the first admin who opens it, once. Keep it outside the server with the bucket's key, in your
 password manager: if the server is lost, the remote copy is useless
 without it. To take over an existing remote repository (a new server, see
 [section 4](#4-moving-or-rebuilding-the-whole-server)), enter its password
@@ -865,7 +865,7 @@ agent may:
   follows it where the two differ, and the answer to the webhook
   starts with "<admin> approved it with a comment: <comment>", the
   proposal's `comment` holds it. Approving in the panel takes the
-  admin's password and 2FA code (see [Approvals](#approvals)). Nobody decided within 7 days, the
+  admin's 2FA code (see [Approvals](#approvals)). Nobody decided within 7 days, the
   status becomes `expired` and the webhook gets "The proposal expired
   after 7 days without a decision." once.
 

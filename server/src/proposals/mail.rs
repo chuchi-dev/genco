@@ -115,8 +115,8 @@ fn mail_body(
 	format!(
 		"The AI agent {from} proposes a task for genco's agent \
 		(proposal #{id}).\n\n\
-		{link}open Start → Approvals (approving there asks for your password \
-		and 2FA code):\n\n{panel}Nothing happens \
+		{link}open Start → Approvals (approving there asks for your 2FA \
+		code):\n\n{panel}Nothing happens \
 		without an approval. It expires in {VALID_DAYS} days.\n\n\
 		----------------------------------------\n\n\
 		{rewritten}{warnings}The proposal, as {from} wrote it (links in it \
@@ -219,8 +219,8 @@ mod tests {
 			Approve or reject: https://panel.example.ch/proposal/abc\n\
 			(works without logging in, once; shows the proposal first; \
 			approving asks for your 2FA code, or your password)\n\n\
-			Or open Start → Approvals (approving there asks for your password \
-			and 2FA code):\n\n\
+			Or open Start → Approvals (approving there asks for your 2FA \
+			code):\n\n\
 			https://panel.example.ch/approvals\n\n"
 		));
 		let line = body.find("\n-----").unwrap();

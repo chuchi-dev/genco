@@ -453,10 +453,10 @@ struct SaveReq {
 	/// hosting has its own route, here it is refused instead of ignored
 	#[serde(default)]
 	hosting: Option<serde_json::Value>,
-	/// the admin's password and code: a relay of a stolen session would
+	/// the admin's step-up: a relay of a stolen session would
 	/// get the mails that confirm deletions
 	#[serde(flatten)]
-	auth: crate::users::PasswordOnly,
+	auth: crate::users::StepUp,
 }
 
 async fn save_settings(
@@ -469,8 +469,7 @@ async fn save_settings(
 			"hosting is switched with POST /settings/mail/hosting".into(),
 		));
 	}
-	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
-		.await?;
+	crate::users::verify_step_up(&db, &authed.user, &req.auth).await?;
 	let mut new = req.settings;
 	match new.mode.as_str() {
 		"direct" | "off" => {}
@@ -688,7 +687,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn saving_needs_the_password_and_code() {
+	async fn saving_needs_the_code_with_2fa() {
 		let db = Db::memory();
 		let hash = crate::users::hash_password("admin password").unwrap();
 		let a = crate::users::create(&db.conn(), "m@example.ch", "A", &hash)
@@ -710,6 +709,7 @@ mod tests {
 				"relayHost": "evil.example.ch",
 				"relayPort": 587,
 				"password": password,
+				"code": "000000",
 			});
 			save_settings(
 				authed(),
@@ -718,10 +718,9 @@ mod tests {
 			)
 		};
 
-		let wrong = save("wrong").await.unwrap_err().to_string();
-		assert!(wrong.contains("password is wrong"), "{wrong}");
-		let no_code = save("admin password").await.unwrap_err().to_string();
-		assert!(no_code.contains("two-factor"), "{no_code}");
+		// the password doesn't help, the code is wrong
+		let wrong = save("admin password").await.unwrap_err().to_string();
+		assert!(wrong.contains("two-factor code is wrong"), "{wrong}");
 		assert_ne!(settings(&db).unwrap().relay_host, "evil.example.ch");
 	}
 

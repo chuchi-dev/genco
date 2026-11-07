@@ -5,6 +5,7 @@
 	import { session } from '@/lib/session.svelte';
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
+	import SecondFactor from '../SecondFactor.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 
@@ -45,23 +46,7 @@
 		<label for="acc-email">Email:</label>
 		<!-- svelte-ignore a11y_autofocus -->
 		<input id="acc-email" type="email" autofocus bind:value={email} />
-		<label for="acc-current">Current password:</label>
-		<input
-			id="acc-current"
-			type="password"
-			autocomplete="current-password"
-			bind:value={password}
-		/>
-		{#if session.user?.totp}
-			<label for="acc-code">Two-factor code:</label>
-			<input
-				id="acc-code"
-				inputmode="numeric"
-				autocomplete="one-time-code"
-				placeholder="For a new email"
-				bind:value={code}
-			/>
-		{/if}
+		<SecondFactor bind:password bind:code />
 	</Form>
 </Dialog>
 
