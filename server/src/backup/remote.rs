@@ -4,8 +4,9 @@
 //! repository password are sealed with the secrets key, the API only says
 //! whether they are set, and restic gets them through its environment.
 //! Where the copy goes decides where all data goes: the panel asks for the
-//! step-up (2FA code, or password), the agent's changes wait for an admin's confirmation
-//! (actions.rs), and every change or stop is sent to all admins.
+//! step-up (the 2FA code, or the password), the agent's changes wait for
+//! an admin's confirmation (actions.rs), and every change or stop is sent
+//! to all admins.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

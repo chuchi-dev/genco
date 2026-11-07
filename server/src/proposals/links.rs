@@ -132,12 +132,9 @@ struct ApproveReq {
 	/// the admin's change to the task, empty for none
 	#[serde(default)]
 	comment: String,
-	/// of the authenticator app, when the admin has 2FA
-	#[serde(default)]
-	code: String,
-	/// the admin's own, when the admin has no 2FA
-	#[serde(default)]
-	password: String,
+	/// the session-less step-up: the code with 2FA, else the password
+	#[serde(flatten)]
+	auth: users::StepUp,
 }
 
 /// Approves as the link's admin with the second factor, returns the
@@ -154,12 +151,7 @@ async fn approve_link(
 	let (p, user) = check(cfg, db, headers, token).await?;
 	let comment = admin_note(&req.comment)?;
 	let action = "Approve proposal via the mail link";
-	let verified = if user.totp {
-		users::verify_code(db, &user, &req.code).await
-	} else {
-		users::verify_password(db, &user, &req.password).await
-	};
-	if let Err(e) = verified {
+	if let Err(e) = users::verify_step_up(db, &user, &req.auth).await {
 		log(&db.conn(), &user, action, &p, false);
 		return Err(e);
 	}
@@ -303,14 +295,20 @@ mod tests {
 
 	fn code(code: &str) -> ApproveReq {
 		ApproveReq {
-			code: code.into(),
+			auth: users::StepUp {
+				code: code.into(),
+				..Default::default()
+			},
 			..Default::default()
 		}
 	}
 
 	fn password(password: &str) -> ApproveReq {
 		ApproveReq {
-			password: password.into(),
+			auth: users::StepUp {
+				password: password.into(),
+				..Default::default()
+			},
 			..Default::default()
 		}
 	}
@@ -581,8 +579,10 @@ mod tests {
 
 		let mut req = ApproveReq {
 			comment: "x".repeat(MAX_NOTE + 1),
-			code: now_code(),
-			..Default::default()
+			auth: users::StepUp {
+				code: now_code(),
+				..Default::default()
+			},
 		};
 		let tried = approve_link(&cfg, &db, &events, &h, &token, &req).await;
 		assert!(

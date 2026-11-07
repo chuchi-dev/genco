@@ -9,9 +9,12 @@
 	let value = $state('');
 	let code = $state('');
 
-	// a new box starts without the code of the last one
+	// a new box starts with its own value and without the code of the
+	// last one
 	$effect.pre(() => {
-		if (box) code = '';
+		if (!box) return;
+		value = box.value;
+		code = '';
 	});
 
 	function submit(e: SubmitEvent) {
@@ -40,7 +43,6 @@
 							bind:value
 							{@attach el => {
 								// the typing goes here, a given value is selected
-								value = box.value;
 								requestAnimationFrame(() => {
 									el.focus();
 									el.select();

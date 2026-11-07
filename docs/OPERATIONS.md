@@ -544,7 +544,8 @@ weekly and 12 monthly per group and kind). Everything is in the backup's
 log. A failed copy doesn't fail the backup but is a problem of its own,
 like no successful copy for more than 2 days.
 
-Set it up in Settings → Backups (your 2FA code, or password without 2FA) or as root:
+Set it up in Settings → Backups (your 2FA code, or password without
+2FA) or as root:
 
 ```sh
 # Backblaze B2: a bucket and an application key for it (read, write, delete)
@@ -558,8 +559,8 @@ genco backup remote test    # connects, creates the repository if there is none
 ```
 
 Where the copy goes decides where all data goes. The panel asks for your
-2FA code (your password without 2FA); when the agent runs `genco backup remote set` or
-`off`, it only asks: it waits in Start → Approvals with a number and every
+2FA code (your password without 2FA); when the agent runs `genco backup
+remote set` or `off`, it only asks: it waits in Start → Approvals with a number and every
 admin gets a mail to confirm it (with mail off, the agent gets a link where
 an admin confirms it with their password), the same as a deletion. Root in a terminal changes it directly. Whoever does
 it, every admin gets a mail (and the AI agents' webhooks a notice) when
@@ -574,7 +575,8 @@ panel shows neither.
 genco makes the remote repository's own password and shows it **once**,
 when you save. When an admin confirmed the agent's request, the agent
 never sees it: Settings → Backups shows "Show Password" (your 2FA code,
-or password without 2FA) to the first admin who opens it, once. Keep it outside the server with the bucket's key, in your
+or password without 2FA) to the first admin who opens it, once. Keep it
+outside the server with the bucket's key, in your
 password manager: if the server is lost, the remote copy is useless
 without it. To take over an existing remote repository (a new server, see
 [section 4](#4-moving-or-rebuilding-the-whole-server)), enter its password
@@ -865,7 +867,8 @@ agent may:
   follows it where the two differ, and the answer to the webhook
   starts with "<admin> approved it with a comment: <comment>", the
   proposal's `comment` holds it. Approving in the panel takes the
-  admin's 2FA code (see [Approvals](#approvals)). Nobody decided within 7 days, the
+  admin's 2FA code (see [Approvals](#approvals)). Nobody decided within
+  7 days, the
   status becomes `expired` and the webhook gets "The proposal expired
   after 7 days without a decision." once.
 

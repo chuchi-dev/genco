@@ -1,8 +1,8 @@
 //! Mail goes through the local postfix, which delivers it directly or
 //! relays it through an external SMTP server (Settings → Mail). The sites
 //! use the same postfix for their mails. With mail off (port 25 blocked
-//! and no relay) genco sends none: deletions are confirmed with the
-//! password and reports only show in the panel.
+//! and no relay) genco sends none: deletions are confirmed with the 2FA
+//! code (the password without 2FA) and reports only show in the panel.
 
 use axum::extract::State;
 use axum::routing::{get, post};
@@ -709,7 +709,7 @@ mod tests {
 				"relayHost": "evil.example.ch",
 				"relayPort": 587,
 				"password": password,
-				"code": "000000",
+				"code": "wrong",
 			});
 			save_settings(
 				authed(),
