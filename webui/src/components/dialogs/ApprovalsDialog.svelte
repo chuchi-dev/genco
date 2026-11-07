@@ -8,8 +8,12 @@
 		approvalKind,
 		approvalNumber,
 		approvalTitle,
+		canConfirm as confirmable,
+		createdAt,
+		expiresAt,
 		requestedBy,
 		status,
+		statusText,
 	} from '@/lib/approvals.svelte';
 	import { conversations } from '@/lib/conversations.svelte';
 	import { dialogs } from '@/lib/dialogs.svelte';
@@ -50,7 +54,7 @@
 	const pending = $derived(item ? status(item) === 'pending' : false);
 	// without 2FA the mail's link confirms; with no mail the password does
 	const canConfirm = $derived(
-		session.user?.totp || mail.off || !!action?.byPassword,
+		!!item && confirmable(item, !!session.user?.totp, mail.off),
 	);
 
 	async function load() {
@@ -90,31 +94,6 @@
 		rejecting = null;
 		load();
 	}
-
-	const PROPOSAL_STATUS: Record<string, string> = {
-		pending: 'waiting',
-		approved: 'the agent works on it',
-		answered: 'answered',
-		rejected: 'rejected',
-		expired: 'expired',
-	};
-	const ACTION_STATUS: Record<string, string> = {
-		pending: 'waiting',
-		running: 'running',
-		done: 'done',
-		failed: 'failed',
-		rejected: 'rejected',
-		expired: 'expired',
-	};
-	const statusText = (a: Approval) =>
-		(a.kind === 'proposal' ? PROPOSAL_STATUS : ACTION_STATUS)[status(a)];
-	const created = (a: Approval) =>
-		a.kind === 'proposal' ? a.proposal.createdAt : a.action.createdAt;
-	// a proposal waits 7 days, an action 24 hours
-	const expires = (a: Approval) =>
-		a.kind === 'proposal'
-			? a.proposal.createdAt + 7 * 24 * 60 * 60 * 1000
-			: a.action.expiresAt;
 </script>
 
 <!-- room to read a proposal -->
@@ -149,8 +128,8 @@
 			<td>{approvalKind(a)}</td>
 			<td class="what">{approvalTitle(a)}</td>
 			<td class="what">{by(a)}</td>
-			<td>{formatTime(created(a), true)}</td>
-			<td>{formatTime(expires(a), true)}</td>
+			<td>{formatTime(createdAt(a), true)}</td>
+			<td>{formatTime(expiresAt(a), true)}</td>
 		{/snippet}
 	</ListView>
 	<p>Decided and expired, last 30 days:</p>
@@ -176,7 +155,7 @@
 			<td class="what">{approvalTitle(a)}</td>
 			<td class="what">{by(a)}</td>
 			<td>{statusText(a)}</td>
-			<td>{formatTime(created(a), true)}</td>
+			<td>{formatTime(createdAt(a), true)}</td>
 		{/snippet}
 	</ListView>
 	{#if error}<p class="error">{error}</p>{/if}

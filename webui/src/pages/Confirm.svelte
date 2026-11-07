@@ -9,11 +9,11 @@
 <script lang="ts">
 	import { post, type PendingAction } from '@/lib/api';
 	import { go } from '@/lib/router.svelte';
-	import { session } from '@/lib/session.svelte';
 	import Button from '@/components/win/Button.svelte';
 	import Dialog from '@/components/win/Dialog.svelte';
 	import Form from '@/components/win/Form.svelte';
 	import Icon from '@/components/win/Icon.svelte';
+	import SecondFactor from '@/components/SecondFactor.svelte';
 
 	// the link of a confirmation mail: an admin confirms a deletion or the
 	// agent's change of the remote backup; with mail off nothing was
@@ -82,24 +82,7 @@
 		</div>
 	{:else if action.byPassword}
 		<Form onsubmit={confirmWithPassword} oncancel={() => go('/')} ok={verb}>
-			<label for="c-password">Your password:</label>
-			<!-- svelte-ignore a11y_autofocus -->
-			<input
-				id="c-password"
-				type="password"
-				autocomplete="current-password"
-				autofocus
-				bind:value={password}
-			/>
-			{#if session.user?.totp}
-				<label for="c-code">Two-factor code:</label>
-				<input
-					id="c-code"
-					inputmode="numeric"
-					autocomplete="one-time-code"
-					bind:value={code}
-				/>
-			{/if}
+			<SecondFactor bind:password bind:code autofocus />
 		</Form>
 	{:else}
 		{#if error}<p class="error">{error}</p>{/if}

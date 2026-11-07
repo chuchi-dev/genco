@@ -1,4 +1,4 @@
-import { get, type Approval, type PendingAction, type Proposal } from './api';
+import { get, type Approval, type PendingAction } from './api';
 
 // Start → Approvals: the AI agents' proposals and the pending actions
 // (deletions, the agent's remote backup changes); the taskbar shows the
@@ -12,12 +12,6 @@ class ApprovalStore {
 
 	get waiting(): Approval[] {
 		return this.list.filter(a => status(a) === 'pending');
-	}
-
-	get proposals(): Proposal[] {
-		return this.list.flatMap(a =>
-			a.kind === 'proposal' ? [a.proposal] : [],
-		);
 	}
 }
 
@@ -35,6 +29,46 @@ export function approvalNumber(a: Approval): string {
 
 export function status(a: Approval): string {
 	return a.kind === 'proposal' ? a.proposal.status : a.action.status;
+}
+
+const PROPOSAL_STATUS: Record<string, string> = {
+	pending: 'waiting',
+	approved: 'the agent works on it',
+	answered: 'answered',
+	rejected: 'rejected',
+	expired: 'expired',
+};
+
+const ACTION_STATUS: Record<PendingAction['status'], string> = {
+	pending: 'waiting',
+	running: 'running',
+	done: 'done',
+	failed: 'failed',
+	rejected: 'rejected',
+	expired: 'expired',
+};
+
+/** the status as the list shows it */
+export function statusText(a: Approval): string {
+	return a.kind === 'proposal'
+		? PROPOSAL_STATUS[a.proposal.status]
+		: ACTION_STATUS[a.action.status];
+}
+
+export function createdAt(a: Approval): number {
+	return a.kind === 'proposal' ? a.proposal.createdAt : a.action.createdAt;
+}
+
+export function expiresAt(a: Approval): number {
+	return a.kind === 'proposal' ? a.proposal.expiresAt : a.action.expiresAt;
+}
+
+/** whether this admin can confirm it in the panel: with 2FA, or the
+ * password when nothing was mailed (mailed before mail went off still
+ * needs 2FA, the server says so) */
+export function canConfirm(a: Approval, totp: boolean, mailOff: boolean) {
+	if (totp) return true;
+	return a.kind === 'proposal' ? mailOff : a.action.byPassword;
 }
 
 const KINDS: Record<PendingAction['kind'], string> = {
