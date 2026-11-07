@@ -5,8 +5,8 @@
 	import Form from '../win/Form.svelte';
 	import SecondFactor from '../SecondFactor.svelte';
 
-	// confirms a pending action in Approvals with the password and 2FA
-	// code, then shows what it did
+	// confirms a pending action in Approvals with the 2FA code (the
+	// password without 2FA), then shows what it did
 	let { action, onclose }: { action: PendingAction; onclose: () => void } =
 		$props();
 

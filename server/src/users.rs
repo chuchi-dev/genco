@@ -510,12 +510,12 @@ async fn delete_user(
 	authed: Authed,
 	State(db): State<Db>,
 	Path(id): Path<i64>,
-	Json(req): Json<PasswordOnly>,
+	Json(req): Json<StepUp>,
 ) -> Result<Json<()>> {
 	if id == authed.user.id {
 		return Err(Error::Invalid("you can't delete yourself".into()));
 	}
-	verify_password_and_code(&db, &authed.user, &req).await?;
+	verify_step_up(&db, &authed.user, &req).await?;
 	db.conn().execute("DELETE FROM users WHERE id = ?1", [id])?;
 	Ok(Json(()))
 }
@@ -561,10 +561,11 @@ pub async fn verify_password(
 	Ok(())
 }
 
-/// What a dangerous request sends along: the admin's password, and the
-/// 2FA code when the admin has 2FA (`verify_password_and_code`).
+/// What a dangerous request sends along: the 2FA code when the admin
+/// has 2FA, else the password (`verify_step_up`).
 #[derive(Debug, Default, Deserialize)]
-pub struct PasswordOnly {
+pub struct StepUp {
+	#[serde(default)]
 	pub password: String,
 	#[serde(default)]
 	pub code: String,
@@ -593,10 +594,8 @@ async fn change_password(
 struct AccountReq {
 	email: String,
 	name: String,
-	password: String,
-	/// of the authenticator app, for a new email when the admin has 2FA
-	#[serde(default)]
-	code: String,
+	#[serde(flatten)]
+	auth: StepUp,
 }
 
 #[derive(Debug, Serialize)]
@@ -609,9 +608,9 @@ struct AccountResp {
 
 /// An admin changes their own name, and email: the new one only counts
 /// once the link mailed to it is opened, then the old address hears of
-/// it. With 2FA a stolen session and password alone can't move the
-/// account and its confirmation mails away. With mail off no link can
-/// go, password and code change it right away.
+/// it. With the step-up a stolen session alone can't move the account
+/// and its confirmation mails away. With mail off no link can go, the
+/// step-up changes it right away.
 async fn change_account(
 	authed: Authed,
 	State(cfg): State<Arc<Config>>,
@@ -619,17 +618,15 @@ async fn change_account(
 	Json(req): Json<AccountReq>,
 ) -> Result<Json<AccountResp>> {
 	let user = authed.user;
-	verify_password(&db, &user, &req.password).await?;
+	verify_step_up(&db, &user, &req.auth).await?;
 	let (email, name) = normalize(&req.email, &req.name)?;
 
 	let confirm_sent = if email == user.email {
 		None
 	} else if mail::off(&db) {
-		verify_code(&db, &user, &req.code).await?;
 		set_email(&db.conn(), user.id, &email)?;
 		None
 	} else {
-		verify_code(&db, &user, &req.code).await?;
 		send_email_link(&cfg, &db, &user, &email, &name).await?;
 		Some(email)
 	};
@@ -792,10 +789,10 @@ const INVITE_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 struct InviteReq {
 	email: String,
 	name: String,
-	/// the inviting admin's password and code: a new admin is lasting
+	/// the inviting admin's step-up: a new admin is lasting
 	/// access
 	#[serde(flatten)]
-	auth: PasswordOnly,
+	auth: StepUp,
 }
 
 /// Adds an admin without a password, the mail has a link to set one.
@@ -808,7 +805,7 @@ async fn invite(
 	if mail::off(&db) {
 		return Err(mail::off_error("add the admin with a password"));
 	}
-	verify_password_and_code(&db, &authed.user, &req.auth).await?;
+	verify_step_up(&db, &authed.user, &req.auth).await?;
 	// nobody knows this password, the invite sets the real one
 	let hash = hash_password_async(util::random_hex(32)).await?;
 	let user = create(&db.conn(), &req.email, &req.name, &hash)?;
@@ -832,7 +829,7 @@ struct AddReq {
 	new_password: String,
 	/// the adding admin's, as for an invite
 	#[serde(flatten)]
-	auth: PasswordOnly,
+	auth: StepUp,
 }
 
 /// Adds an admin with a password, who can log in right away, for a
@@ -844,7 +841,7 @@ async fn add(
 	State(db): State<Db>,
 	Json(req): Json<AddReq>,
 ) -> Result<Json<User>> {
-	verify_password_and_code(&db, &authed.user, &req.auth).await?;
+	verify_step_up(&db, &authed.user, &req.auth).await?;
 	let hash = hash_password_async(req.new_password).await?;
 	let user = create(&db.conn(), &req.email, &req.name, &hash)?;
 
@@ -880,9 +877,9 @@ async fn reinvite(
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	Path(id): Path<i64>,
-	Json(req): Json<PasswordOnly>,
+	Json(req): Json<StepUp>,
 ) -> Result<Json<()>> {
-	verify_password_and_code(&db, &authed.user, &req).await?;
+	verify_step_up(&db, &authed.user, &req).await?;
 	let user = by_id(&db.conn(), id)?;
 	send_invite(&cfg, &db, &user, &authed.user.name).await?;
 	Ok(Json(()))
@@ -994,11 +991,11 @@ pub fn attempt_failed(key: &str, max: u32) {
 	// unknown emails would grow the map without end
 	failures.retain(|_, (_, last)| *last + CODE_LOCK_MS > now());
 	let entry = failures.entry(key.to_string()).or_insert((0, 0));
-	// after the wait the count starts over
-	if entry.0 >= max {
-		entry.0 = 0;
+	// a try while it waits neither restarts the count nor the wait; after
+	// the wait the entry is gone and the count starts over
+	if entry.0 < max {
+		*entry = (entry.0 + 1, now());
 	}
-	*entry = (entry.0 + 1, now());
 }
 
 fn totp(secret: &str, email: &str) -> Option<TOTP> {
@@ -1071,34 +1068,32 @@ fn use_step(db: &Db, user_id: i64, step: u64) -> rusqlite::Result<bool> {
 	Ok(changed == 1)
 }
 
-/// The admin's password and, with 2FA on, a code of the authenticator
-/// app: for what a stolen session and password mustn't do either.
-pub async fn verify_password_and_code(
-	db: &Db,
-	user: &User,
-	req: &PasswordOnly,
-) -> Result<()> {
-	verify_password(db, user, &req.password).await?;
-	verify_code(db, user, &req.code).await
+/// A step-up for what a stolen session alone mustn't do: the session
+/// already proves the password, so one more factor. With 2FA on that is
+/// a code of the authenticator app, else the password; the other field
+/// is ignored.
+pub async fn verify_step_up(db: &Db, user: &User, req: &StepUp) -> Result<()> {
+	if user.totp {
+		verify_code(db, user, &req.code).await
+	} else {
+		verify_password(db, user, &req.password).await
+	}
 }
 
 /// Confirming in the panel (Approvals) what a mail link confirms too: a
-/// proposal or a pending action. It needs the password and the 2FA code,
-/// a stolen session and password mustn't do it. Without 2FA the panel
-/// only rejects and the mail's link confirms; with nothing `mailed` (mail
-/// is off) the password alone does.
+/// proposal or a pending action, with a step-up (`verify_step_up`).
+/// Without 2FA the panel only rejects and the mail's link confirms; with
+/// nothing `mailed` (mail is off) the password does.
 pub async fn verify_approval(
 	db: &Db,
 	user: &User,
-	password: &str,
-	code: &str,
+	req: &StepUp,
 	mailed: bool,
 ) -> Result<()> {
 	if !user.totp && mailed {
 		return Err(Error::Invalid(NO_2FA.into()));
 	}
-	verify_password(db, user, password).await?;
-	verify_code(db, user, code).await
+	verify_step_up(db, user, req).await
 }
 
 pub const NO_2FA: &str = "Turn on two-factor login to confirm here, or use \
@@ -1156,12 +1151,12 @@ async fn enable_totp(
 async fn disable_totp(
 	authed: Authed,
 	State(db): State<Db>,
-	Json(req): Json<PasswordOnly>,
+	Json(req): Json<StepUp>,
 ) -> Result<Json<()>> {
 	if !authed.user.totp {
 		return Err(Error::Invalid("two-factor login is off".into()));
 	}
-	verify_password_and_code(&db, &authed.user, &req).await?;
+	verify_step_up(&db, &authed.user, &req).await?;
 	db.conn().execute(
 		"UPDATE users SET totp_secret = NULL WHERE id = ?1",
 		[authed.user.id],
@@ -1250,8 +1245,8 @@ mod tests {
 		assert!(normalize("a@example.ch", " ").is_err());
 	}
 
-	fn auth(password: &str, code: &str) -> PasswordOnly {
-		PasswordOnly {
+	fn auth(password: &str, code: &str) -> StepUp {
+		StepUp {
 			password: password.into(),
 			code: code.into(),
 		}
@@ -1422,8 +1417,7 @@ mod tests {
 		let req = AccountReq {
 			email: "new@example.ch".into(),
 			name: "A".into(),
-			password: "admin password".into(),
-			code: String::new(),
+			auth: auth("admin password", ""),
 		};
 		let resp =
 			change_account(authed(), State(cfg), State(db.clone()), Json(req))
@@ -1505,7 +1499,7 @@ mod tests {
 			authed(),
 			State(db.clone()),
 			Path(new.id),
-			Json(auth("admin password", &code(0))),
+			Json(auth("", &code(0))),
 		)
 		.await
 		.unwrap()
@@ -1524,6 +1518,48 @@ mod tests {
 		assert!(is_code_error(off(code(0)).await));
 		off(code(30)).await.unwrap().0;
 		assert!(!by_id(&db.conn(), admin.id).unwrap().totp);
+	}
+
+	#[tokio::test]
+	async fn a_step_up_asks_one_factor() {
+		let db = Db::memory();
+		let (admin, secret) = admin_with_2fa(&db, 711, "step@example.ch");
+		let code = code_at(&secret, &admin.email, 0);
+
+		// with 2FA the code alone, the password doesn't help
+		let wrong = auth("admin password", "");
+		assert!(verify_step_up(&db, &admin, &wrong).await.is_err());
+		let failures = CODE_FAILURES.lock().unwrap().get("code:711").copied();
+		assert_eq!(failures.map(|f| f.0), Some(1));
+		verify_step_up(&db, &admin, &auth("wrong", &code))
+			.await
+			.unwrap();
+		assert!(!CODE_FAILURES.lock().unwrap().contains_key("code:711"));
+		// used up
+		let again = auth("", &code);
+		assert!(verify_step_up(&db, &admin, &again).await.is_err());
+
+		// without 2FA the password, the code doesn't matter
+		let hash = hash_password("other password").unwrap();
+		let b = create(&db.conn(), "b@example.ch", "B", &hash).unwrap();
+		let wrong = auth("", &code);
+		assert!(verify_step_up(&db, &b, &wrong).await.is_err());
+		verify_step_up(&db, &b, &auth("other password", ""))
+			.await
+			.unwrap();
+	}
+
+	#[test]
+	fn tries_while_locked_dont_restart_the_count() {
+		let key = "test:lock";
+		for _ in 0..MAX_CODE_FAILURES {
+			attempt_failed(key, MAX_CODE_FAILURES);
+		}
+		assert!(!attempts_allowed(key, MAX_CODE_FAILURES));
+		// a refused try counts too, the lock holds
+		attempt_failed(key, MAX_CODE_FAILURES);
+		assert!(!attempts_allowed(key, MAX_CODE_FAILURES));
+		CODE_FAILURES.lock().unwrap().remove(key);
 	}
 
 	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]

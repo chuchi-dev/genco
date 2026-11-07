@@ -684,11 +684,8 @@ struct ApproveReq {
 	/// the admin's change to the task, empty for none
 	#[serde(default)]
 	comment: String,
-	#[serde(default)]
-	password: String,
-	/// of the authenticator app
-	#[serde(default)]
-	code: String,
+	#[serde(flatten)]
+	auth: crate::users::StepUp,
 }
 
 /// Approves in the panel with the second factor
@@ -717,8 +714,7 @@ async fn approve_in_panel(
 		|r| r.get(0),
 	)?;
 	let mailed = links > 0 || !crate::mail::off(db);
-	crate::users::verify_approval(db, user, &req.password, &req.code, mailed)
-		.await?;
+	crate::users::verify_approval(db, user, &req.auth, mailed).await?;
 	approved(&db.conn(), events, id, user, comment.as_deref())
 }
 
@@ -1368,7 +1364,10 @@ mod tests {
 			.unwrap();
 		let user = crate::users::by_id(&db.conn(), 961).unwrap();
 		let req = ApproveReq {
-			password: "pw".into(),
+			auth: crate::users::StepUp {
+				password: "pw".into(),
+				..Default::default()
+			},
 			..Default::default()
 		};
 
@@ -1397,7 +1396,10 @@ mod tests {
 
 		// never mailed and mail off: the password does, as before
 		let wrong = ApproveReq {
-			password: "wrong".into(),
+			auth: crate::users::StepUp {
+				password: "wrong".into(),
+				..Default::default()
+			},
 			..Default::default()
 		};
 		assert!(

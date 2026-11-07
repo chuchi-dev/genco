@@ -2,7 +2,7 @@
 //! proposals (proposals.rs, "#12") and the pending actions (actions.rs,
 //! "A12": deletions, the agent's remote backup changes), newest first,
 //! with the decided and expired ones of the last 30 days below. Both
-//! confirm in the panel the same way: the password and the 2FA code
+//! confirm in the panel the same way: the 2FA code
 //! (`users::verify_approval`).
 
 use axum::extract::State;

@@ -9,9 +9,12 @@
 	let value = $state('');
 	let code = $state('');
 
-	// a new box starts without the code of the last one
+	// a new box starts with its own value and without the code of the
+	// last one
 	$effect.pre(() => {
-		if (box) code = '';
+		if (!box) return;
+		value = box.value;
+		code = '';
 	});
 
 	function submit(e: SubmitEvent) {
@@ -30,7 +33,7 @@
 				<Icon name="agent" size={32} />
 				<div class="text">
 					<p class="selectable">{box.text}</p>
-					{#if box.kind === 'ask' || box.kind === 'password'}
+					{#if box.kind === 'ask' || (box.kind === 'password' && !box.code)}
 						<input
 							aria-label={box.text}
 							type={box.kind === 'password' ? 'password' : 'text'}
@@ -40,7 +43,6 @@
 							bind:value
 							{@attach el => {
 								// the typing goes here, a given value is selected
-								value = box.value;
 								requestAnimationFrame(() => {
 									el.focus();
 									el.select();
@@ -55,6 +57,9 @@
 							inputmode="numeric"
 							autocomplete="one-time-code"
 							bind:value={code}
+							{@attach el => {
+								requestAnimationFrame(() => el.focus());
+							}}
 						/>
 					{/if}
 				</div>

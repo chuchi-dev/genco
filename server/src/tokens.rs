@@ -272,9 +272,9 @@ async fn list_tokens(
 struct CreateReq {
 	name: String,
 	scopes: Vec<String>,
-	/// the admin's password and code: a token is lasting access
+	/// the admin's step-up: a token is lasting access
 	#[serde(flatten)]
-	auth: crate::users::PasswordOnly,
+	auth: crate::users::StepUp,
 }
 
 async fn create_token(
@@ -282,8 +282,7 @@ async fn create_token(
 	State(db): State<Db>,
 	Json(req): Json<CreateReq>,
 ) -> Result<Json<String>> {
-	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
-		.await?;
+	crate::users::verify_step_up(&db, &authed.user, &req.auth).await?;
 	Ok(Json(create(
 		&db.conn(),
 		&req.name,

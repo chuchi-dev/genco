@@ -1,13 +1,13 @@
 //! Deleting a domain, a database or a group doesn't happen right away: it
 //! becomes a pending action ("A12") and every admin gets a mail with their
 //! own link. It runs when the admin opens the link while logged in and
-//! confirms, or confirms it in Start → Approvals with their password and
-//! two-factor code (approvals.rs); any admin may reject it there, the
+//! confirms, or confirms it in Start → Approvals with their two-factor
+//! code (approvals.rs); any admin may reject it there, the
 //! conversation of genco's agent that asked for it gets the reason. What
 //! it deletes goes to the trash first (dump, archive), kept 30 days.
 //! With mail off (Settings → Mail) the password confirms it in the panel,
-//! the two-factor code too when the admin has 2FA. The agent's changes of
-//! the remote backup go the same way (backup/remote.rs).
+//! the two-factor code instead when the admin has 2FA. The agent's changes
+//! of the remote backup go the same way (backup/remote.rs).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -434,8 +434,8 @@ fn mail_body(cfg: &Config, action: &Action, token: &str) -> String {
 		Confirm: {link}\n\
 		(open it while logged in to the panel; your own link, it works for \
 		24 hours)\n\n\
-		Or open Start → Approvals, confirming there asks for your password \
-		and 2FA code; you can reject it there too:\n\n{panel}\n\n\
+		Or open Start → Approvals, confirming there asks for your 2FA code; \
+		you can reject it there too:\n\n{panel}\n\n\
 		Nothing happens without a confirmation. If you didn't expect this, \
 		reject it or ignore it.\n\n\
 		----------------------------------------\n\n\
@@ -936,16 +936,6 @@ async fn get_action(
 	Ok(Json(find(&db.conn(), &token)?.0))
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct ConfirmReq {
-	/// the admin's, in Approvals or for an action that wasn't mailed
-	#[serde(default)]
-	password: String,
-	/// of the authenticator app when the admin has 2FA
-	#[serde(default)]
-	code: String,
-}
-
 fn pending(action: &Action) -> Result<()> {
 	if action.status != "pending" {
 		return Err(Error::Invalid(format!(
@@ -957,12 +947,12 @@ fn pending(action: &Action) -> Result<()> {
 }
 
 /// The link of the mail proves the mailbox of its admin, without one the
-/// admin's password and code do.
+/// admin's step-up does (`users::verify_step_up`).
 async fn check_confirm(
 	db: &Db,
 	authed: &Authed,
 	token: &str,
-	req: &ConfirmReq,
+	req: &users::StepUp,
 ) -> Result<Action> {
 	let (action, link_user) = find(&db.conn(), token)?;
 	pending(&action)?;
@@ -974,27 +964,26 @@ async fn check_confirm(
 		));
 	}
 	if action.by_password {
-		users::verify_password(db, &authed.user, &req.password).await?;
-		users::verify_code(db, &authed.user, &req.code).await?;
+		users::verify_step_up(db, &authed.user, req).await?;
 	}
 	Ok(action)
 }
 
-/// Confirming in Approvals: the password and 2FA code, like a proposal
-/// (`users::verify_approval`); the password alone when nothing was mailed.
+/// Confirming in Approvals: the 2FA code, like a proposal
+/// (`users::verify_approval`); without 2FA the password when nothing was
+/// mailed.
 /// Mail switched off later doesn't count, the mailed links stay the way
 /// without 2FA.
 async fn check_panel(
 	db: &Db,
 	authed: &Authed,
 	id: i64,
-	req: &ConfirmReq,
+	req: &users::StepUp,
 ) -> Result<Action> {
 	let action = get_one(&db.conn(), id)?;
 	pending(&action)?;
 	let mailed = !action.by_password;
-	users::verify_approval(db, &authed.user, &req.password, &req.code, mailed)
-		.await?;
+	users::verify_approval(db, &authed.user, req, mailed).await?;
 	Ok(action)
 }
 
@@ -1010,7 +999,7 @@ async fn confirm(
 	State(db): State<Db>,
 	State(events): State<Events>,
 	Path(key): Path<String>,
-	Json(req): Json<ConfirmReq>,
+	Json(req): Json<users::StepUp>,
 ) -> Result<Json<Outcome>> {
 	let action = match action_id(&key) {
 		Some(id) => check_panel(&db, &authed, id, &req).await?,
@@ -1247,9 +1236,9 @@ mod tests {
 		let token = path.strip_prefix("/confirm/").unwrap();
 		assert!(find(&db.conn(), token).unwrap().0.by_password);
 
-		let none = ConfirmReq::default();
+		let none = users::StepUp::default();
 		assert!(check_confirm(&db, &authed, token, &none).await.is_err());
-		let right = ConfirmReq {
+		let right = users::StepUp {
 			password: "admin password".into(),
 			code: String::new(),
 		};
@@ -1321,8 +1310,8 @@ mod tests {
 		conn.last_insert_rowid()
 	}
 
-	fn req(password: &str, code: &str) -> ConfirmReq {
-		ConfirmReq {
+	fn req(password: &str, code: &str) -> users::StepUp {
+		users::StepUp {
 			password: password.into(),
 			code: code.into(),
 		}
@@ -1357,12 +1346,11 @@ mod tests {
 		let tried = check_panel(&db, &authed(&a), id, &password).await;
 		assert!(matches!(tried, Err(Error::Invalid(e)) if e == users::NO_2FA));
 
+		// with 2FA the code alone, the password doesn't help
 		let code = with_2fa(&db, &mut a);
-		for wrong in [req("admin password", ""), req("wrong", &code())] {
-			let tried = check_panel(&db, &authed(&a), id, &wrong).await;
-			assert!(tried.is_err());
-		}
-		let right = req("admin password", &code());
+		let wrong = req("admin password", "");
+		assert!(check_panel(&db, &authed(&a), id, &wrong).await.is_err());
+		let right = req("", &code());
 		let action = check_panel(&db, &authed(&a), id, &right).await.unwrap();
 		assert_eq!(action.id, id);
 		// the code is used up
@@ -1429,7 +1417,7 @@ mod tests {
 
 		let (action, user) = find(&db.conn(), &token).unwrap();
 		assert_eq!((action.id, user), (id, Some(a.id)));
-		let none = ConfirmReq::default();
+		let none = users::StepUp::default();
 		let other = check_confirm(&db, &authed(&b), &token, &none).await;
 		assert!(
 			matches!(other, Err(Error::Invalid(e)) if e.contains("another"))
@@ -1506,7 +1494,7 @@ mod tests {
 
 		// decided once, and nothing to confirm any more
 		assert!(rejected(&db.conn(), &events, id, &a, "").is_err());
-		let none = ConfirmReq::default();
+		let none = users::StepUp::default();
 		let tried = check_panel(&db, &authed(&a), id, &none).await;
 		assert!(tried.is_err());
 	}

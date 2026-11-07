@@ -30,8 +30,8 @@
 	// Start → Approvals: the AI agents' proposals (#12) and the pending
 	// actions (A12: deletions, the agent's remote backup changes) that wait
 	// for an admin, the decided ones of 30 days below. Confirming here
-	// takes the password and 2FA code; without 2FA only the mail's link
-	// confirms, rejecting works here for any admin.
+	// takes the 2FA code; without 2FA only the mail's link confirms,
+	// rejecting works here for any admin.
 	let { onclose }: { onclose: () => void } = $props();
 
 	let selected = $state<string | null>(null);
