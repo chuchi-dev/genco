@@ -15,6 +15,7 @@
 	import TotpDialog from '@/components/dialogs/TotpDialog.svelte';
 	import TokensDialog from '@/components/dialogs/TokensDialog.svelte';
 	import AgentsDialog from '@/components/dialogs/AgentsDialog.svelte';
+	import ApprovalsDialog from '@/components/dialogs/ApprovalsDialog.svelte';
 	import FindDialog from '@/components/dialogs/FindDialog.svelte';
 	import ActivityDialog from '@/components/dialogs/ActivityDialog.svelte';
 	import PasswordsDialog from '@/components/dialogs/PasswordsDialog.svelte';
@@ -106,6 +107,8 @@
 	<FindDialog onclose={() => (dialogs.open = null)} {onpage} {onchat} />
 {:else if dialogs.open === 'agents'}
 	<AgentsDialog onclose={() => (dialogs.open = null)} />
+{:else if dialogs.open === 'approvals'}
+	<ApprovalsDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'passwords'}
 	<PasswordsDialog onclose={() => (dialogs.open = null)} />
 {:else if dialogs.open === 'activity'}

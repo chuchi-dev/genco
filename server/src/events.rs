@@ -39,8 +39,9 @@ pub enum Event {
 	/// streamed assistant text which is not stored yet
 	#[serde(rename_all = "camelCase")]
 	Delta { conversation_id: i64, text: String },
-	/// a proposal of an AI agent came in or was decided
-	Proposals,
+	/// a proposal of an AI agent or a pending action came in or was
+	/// decided (Approvals)
+	Approvals,
 }
 
 /// Broadcasts every event to every connected browser.

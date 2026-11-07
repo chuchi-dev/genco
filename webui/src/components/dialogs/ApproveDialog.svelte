@@ -3,10 +3,11 @@
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
 	import NoteField from '../NoteField.svelte';
+	import SecondFactor from '../SecondFactor.svelte';
 
 	// approves a proposal, the comment changes the task: genco's agent
 	// follows it where it differs from the proposal, and the proposing
-	// agent gets it with the answer
+	// agent gets it with the answer. The password and 2FA code confirm it.
 	let {
 		proposal,
 		onapproved,
@@ -19,10 +20,16 @@
 	} = $props();
 
 	let comment = $state('');
+	let password = $state('');
+	let code = $state('');
 
 	async function approve() {
 		onapproved(
-			await post(`/proposals/${proposal.id}/approve`, { comment }),
+			await post(`/proposals/${proposal.id}/approve`, {
+				comment,
+				password,
+				code,
+			}),
 		);
 	}
 </script>
@@ -44,6 +51,7 @@
 			autofocus
 			bind:value={comment}
 		/>
+		<SecondFactor bind:password bind:code />
 	</Form>
 </Dialog>
 

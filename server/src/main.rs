@@ -3,6 +3,7 @@ mod activity;
 mod agent;
 mod appenv;
 mod apply;
+mod approvals;
 mod attachments;
 mod backup;
 mod chat;
@@ -338,7 +339,7 @@ async fn run(args: Args) -> Result<(), String> {
 		let (kind, id) =
 			cli::deletion(&db.conn(), &args.cmd).map_err(|e| e.to_string())?;
 		let who = std::env::var("GENCO_AGENT")
-			.map(|_| "the agent")
+			.map(|_| "genco's agent")
 			.unwrap_or("the terminal");
 		let req = actions::request(&cfg, &db, kind, id, who)
 			.await

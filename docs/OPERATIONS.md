@@ -154,9 +154,54 @@ gets it. On a redirect domain that is beside the `location /` with the
 redirect, e.g. a header or a `location = /robots.txt`. ACME challenges
 are a `^~` location, a regex location there can't take them.
 
-Delete commands only send the admins a confirmation mail; the deletion
-happens when someone opens the link. With mail off they print the link
-instead, an admin confirms it there with their password.
+Delete commands only ask: the deletion gets a number (`A12`), waits in
+Start → Approvals and every admin gets a mail with their own link; it
+happens when an admin confirms it. With mail off they print a link
+instead, an admin confirms it there or in Approvals with their password.
+
+### Approvals
+
+Start → Approvals (and the "N to approve" in the taskbar, its tooltip
+lists them) shows what waits for an admin, newest first: the AI agents'
+proposals (`#12`, see [AI agents](#ai-agents)) and the pending actions
+(`A12`): deletions of domains, databases, groups, mail domains and
+mailboxes, and the agent's changes of the remote backup. Each says who
+asked (an admin, the terminal, an AI agent, or genco's agent with its
+conversation, "Open Chat"), what exactly happens (for a database its
+size), when it was requested and when it expires (a proposal after 7
+days, an action after 24 hours). Below are the decided and expired ones
+of the last 30 days. Find (Ctrl+K) finds both by number ("A12", "#12")
+and text.
+
+Confirming in the panel takes a second factor, the same for both kinds:
+
+- an admin with two-factor login confirms with their password and a 2FA
+  code (the code is used up, wrong passwords and codes count toward the
+  login's limits);
+- an admin without 2FA can only reject in the panel; the link in the mail
+  confirms (turn on Start → Two-Factor Login to confirm in the panel);
+- with mail off (Settings → Mail) nothing is mailed, so the password
+  confirms, with the 2FA code when the admin has 2FA.
+
+The mails stay the way to confirm from a phone: each admin gets their own
+link, the real link comes first and the description (it may hold names
+the agent chose) below a line. A deletion's link (`/confirm/…`) works for
+the admin it was mailed to, logged in to the panel; a proposal's link
+works without a login (see below). Links stop working once anybody
+decided, or it expired.
+
+Rejecting needs no second factor, it can't make anything run. The
+reason is optional (at most 2000 characters): a proposal's goes to the
+proposing agent, an action's into the conversation of genco's agent that
+asked for it (as a system message, "<admin> rejected A12 (…), it won't
+run. The reason: …"). The activity log has every confirmation and
+rejection ("Confirm request", "Reject request" with the number).
+
+API (an admin's session): `GET /api/approvals` lists both kinds with a
+`kind` field (`proposal` with `proposal`, `action` with `action`), `POST
+/api/actions/<id>/confirm` with `{"password", "code"}`, `POST
+/api/actions/<id>/reject` with `{"message"}` (optional), and `POST
+/api/proposals/<id>/approve` with `{"comment", "password", "code"}`.
 
 `genco apply` never takes over a database it didn't create: when a
 PostgreSQL or MariaDB database of a genco database's name exists already
@@ -514,9 +559,9 @@ genco backup remote test    # connects, creates the repository if there is none
 
 Where the copy goes decides where all data goes. The panel asks for your
 password and 2FA code; when the agent runs `genco backup remote set` or
-`off`, it only asks: every admin gets a mail to confirm it (with mail off,
-the agent gets a link where an admin confirms it with their password), the
-same as a deletion. Root in a terminal changes it directly. Whoever does
+`off`, it only asks: it waits in Start → Approvals with a number and every
+admin gets a mail to confirm it (with mail off, the agent gets a link where
+an admin confirms it with their password), the same as a deletion. Root in a terminal changes it directly. Whoever does
 it, every admin gets a mail (and the AI agents' webhooks a notice) when
 the copy goes somewhere else or is turned off, and a turned off copy is a
 problem for a week (`backup:remote-off`), so it can't stop silently.
@@ -806,7 +851,7 @@ agent may:
   minutes (at most 1440), meanwhile the taskbar shows "1 to approve" to
   every admin. With mail off (Settings → Mail) no mail goes out, the
   answer has a `note` saying so and only the taskbar shows it. The task
-  waits in the Proposals tab (it shows who got
+  waits in Start → Approvals (it shows who got
   the mail) until it is approved or rejected, it expires after
   7 days. Approved, it becomes a conversation of the
   server agent; when the agent is done, its answer goes to the agent's
@@ -819,7 +864,8 @@ agent may:
   genco's agent gets it after the proposal as the admin's change and
   follows it where the two differ, and the answer to the webhook
   starts with "<admin> approved it with a comment: <comment>", the
-  proposal's `comment` holds it. Nobody decided within 7 days, the
+  proposal's `comment` holds it. Approving in the panel takes the
+  admin's password and 2FA code (see [Approvals](#approvals)). Nobody decided within 7 days, the
   status becomes `expired` and the webhook gets "The proposal expired
   after 7 days without a decision." once.
 

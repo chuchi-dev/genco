@@ -5,7 +5,11 @@
 	import { conversations } from '@/lib/conversations.svelte';
 	import { connection } from '@/lib/events.svelte';
 	import { dialogs } from '@/lib/dialogs.svelte';
-	import { proposals } from '@/lib/proposals.svelte';
+	import {
+		approvalKey,
+		approvalLine,
+		approvals,
+	} from '@/lib/approvals.svelte';
 	import { formatHour } from '@/lib/format';
 
 	let {
@@ -26,7 +30,7 @@
 	} = $props();
 
 	const attention = $derived(conversations.attention);
-	const waiting = $derived(proposals.waiting);
+	const waiting = $derived(approvals.waiting);
 
 	let time = $state(formatHour(Date.now()));
 
@@ -69,10 +73,13 @@
 		{#if waiting.length}
 			<button
 				class="approve"
-				title={waiting
-					.map(p => `#${p.id} ${p.from}: ${p.text.split('\n')[0]}`)
-					.join('\n')}
-				onclick={() => (dialogs.open = 'agents')}
+				title={waiting.map(approvalLine).join('\n')}
+				onclick={() => {
+					// the only one waiting opens selected
+					if (waiting.length === 1)
+						dialogs.approval = approvalKey(waiting[0]);
+					dialogs.open = 'approvals';
+				}}
 			>
 				<Icon name="agent" />
 				{waiting.length} to approve

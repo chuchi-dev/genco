@@ -418,6 +418,7 @@ pub fn spawn(
 			crate::update::due(&db).await;
 			crate::proposals::due_mails(&cfg, &db).await;
 			crate::proposals::due_expiries(&cfg, &db, &events);
+			crate::actions::due(&db, &events);
 			crate::firewall::due(&cfg, &db).await;
 		}
 	});

@@ -1,13 +1,13 @@
 <script lang="ts" module>
 	import { dialogs } from '@/lib/dialogs.svelte';
 
-	// the link of a proposal's mail: opens Start → AI Agents over the
-	// server's page
+	// the panel's link in the mails of proposals and deletions: opens
+	// Start → Approvals over the server's page
 	export function loadProps(
 		_: object,
 		lp: { setRedirect: (path: string) => void },
 	) {
-		dialogs.open = 'agents';
+		dialogs.open = 'approvals';
 		lp.setRedirect('/');
 	}
 </script>

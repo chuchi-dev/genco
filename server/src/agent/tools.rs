@@ -87,14 +87,15 @@ pub fn definitions() -> Vec<Tool> {
 	TOOLS.clone()
 }
 
-/// Runs a tool call, long outputs get truncated.
+/// Runs a tool call of the conversation, long outputs get truncated.
 pub async fn call(
 	name: &str,
 	input: Value,
 	workspace: &Path,
+	conversation: i64,
 ) -> Result<String, String> {
 	let out = match name {
-		"shell" => shell(parse(input)?, workspace).await,
+		"shell" => shell(parse(input)?, workspace, conversation).await,
 		"read_file" => read_file(parse(input)?, workspace).await,
 		"write_file" => write_file(parse(input)?, workspace).await,
 		"edit_file" => edit_file(parse(input)?, workspace).await,
@@ -159,7 +160,11 @@ impl Drop for KillGroup {
 	}
 }
 
-async fn shell(p: ShellParams, workspace: &Path) -> Result<String, String> {
+async fn shell(
+	p: ShellParams,
+	workspace: &Path,
+	conversation: i64,
+) -> Result<String, String> {
 	let cwd = p
 		.cwd
 		.map(|c| resolve(&c, workspace))
@@ -171,6 +176,8 @@ async fn shell(p: ShellParams, workspace: &Path) -> Result<String, String> {
 		.arg(&p.command)
 		// commands like `genco domain delete` say who asked
 		.env("GENCO_AGENT", "1")
+		// a rejected deletion is answered in this conversation (actions.rs)
+		.env("GENCO_CONVERSATION", conversation.to_string())
 		.current_dir(&cwd)
 		.stdin(Stdio::null())
 		.stdout(Stdio::piped())
@@ -333,17 +340,19 @@ mod tests {
 	async fn shell_reports_exit_code_and_output() {
 		let out = shell(
 			ShellParams {
-				command: "echo hi; echo err >&2; exit 3".into(),
+				command: "echo hi $GENCO_CONVERSATION; echo err >&2; exit 3"
+					.into(),
 				cwd: None,
 				timeout_secs: None,
 			},
 			Path::new("/tmp"),
+			7,
 		)
 		.await
 		.unwrap();
 
 		assert!(out.contains("exit code: 3"));
-		assert!(out.contains("stdout:\nhi"));
+		assert!(out.contains("stdout:\nhi 7"));
 		assert!(out.contains("stderr:\nerr"));
 	}
 
@@ -356,6 +365,7 @@ mod tests {
 				timeout_secs: Some(1),
 			},
 			Path::new("/tmp"),
+			1,
 		)
 		.await
 		.unwrap_err();

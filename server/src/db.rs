@@ -485,6 +485,22 @@ const MIGRATIONS: &[&str] = &[
 	r#"
 	ALTER TABLE pending_actions ADD COLUMN payload BLOB;
 "#,
+	// an action in Approvals: the conversation of genco's agent that asked
+	// for it, who decided, the reason of a rejection, and a personal link
+	// for each admin in its mail (actions.rs)
+	r#"
+	ALTER TABLE pending_actions ADD COLUMN conversation_id INTEGER;
+	ALTER TABLE pending_actions ADD COLUMN decided_by TEXT;
+	ALTER TABLE pending_actions ADD COLUMN reason TEXT;
+	CREATE TABLE action_links (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		action_id INTEGER NOT NULL
+			REFERENCES pending_actions(id) ON DELETE CASCADE,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		token_hash TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL
+	);
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

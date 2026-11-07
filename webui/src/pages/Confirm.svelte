@@ -7,7 +7,7 @@
 </script>
 
 <script lang="ts">
-	import { post } from '@/lib/api';
+	import { post, type PendingAction } from '@/lib/api';
 	import { go } from '@/lib/router.svelte';
 	import { session } from '@/lib/session.svelte';
 	import Button from '@/components/win/Button.svelte';
@@ -23,14 +23,7 @@
 		action,
 	}: {
 		token: string;
-		action: {
-			description: string;
-			requestedBy: string;
-			status: string;
-			createdAt: number;
-			byPassword: boolean;
-			deletion: boolean;
-		};
+		action: PendingAction;
 	} = $props();
 
 	// the link's token doesn't stay in the address bar and the history
@@ -59,7 +52,7 @@
 </script>
 
 <Dialog
-	title="Confirm"
+	title="Confirm {action.number}"
 	resizable
 	icon="key"
 	onclose={() => go('/')}

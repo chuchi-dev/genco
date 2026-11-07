@@ -15,6 +15,7 @@ export type DialogKind =
 	| 'totp'
 	| 'tokens'
 	| 'agents'
+	| 'approvals'
 	| 'find'
 	| 'activity'
 	| 'passwords';
@@ -23,9 +24,9 @@ export const dialogs = $state<{
 	open: DialogKind | null;
 	/** the password the Passwords dialog selects when it opens */
 	password: number | null;
-	/** the proposal AI Agents selects when it opens */
-	proposal: number | null;
-}>({ open: null, password: null, proposal: null });
+	/** what Approvals selects when it opens: "p12", "a3" */
+	approval: string | null;
+}>({ open: null, password: null, approval: null });
 
 /** what MessageBox shows: a message, a yes/no question or an input */
 type Box = {
@@ -154,7 +155,7 @@ export async function requestDelete(path: string, what: string) {
 		'Delete',
 		mail.off
 			? `Delete ${what}? You confirm it with your password next.`
-			: `Delete ${what}? Every admin gets a mail to confirm it.`,
+			: `Delete ${what}? Every admin gets a mail to confirm it, it waits in Start → Approvals.`,
 	);
 	if (!yes) return;
 	try {

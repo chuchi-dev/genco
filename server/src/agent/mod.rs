@@ -381,7 +381,7 @@ impl Runner {
 				"shown".to_string()
 			})
 		} else {
-			tools::call(name, input, Path::new(WORKSPACE)).await
+			tools::call(name, input, Path::new(WORKSPACE), id).await
 		};
 		let is_error = res.is_err();
 		let output = res.unwrap_or_else(|e| e);

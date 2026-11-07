@@ -102,6 +102,7 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("GET", "/databases/*/dump", "Download database"),
 		("PUT", "/databases/*/import", "Import database"),
 		("POST", "/actions/*/confirm", "Confirm request"),
+		("POST", "/actions/*/reject", "Reject request"),
 		("POST", "/backups", "Back up now"),
 		("POST", "/groups/*/backup", "Back up group"),
 		("POST", "/deploy", "Deploy (CI)"),
@@ -250,6 +251,7 @@ fn target(conn: &Connection, path: &str) -> String {
 		}
 		"conversations" => "SELECT title FROM conversations WHERE id = ?1",
 		"peers" => "SELECT name FROM peers WHERE id = ?1",
+		"actions" => "SELECT 'A' || id FROM pending_actions WHERE id = ?1",
 		"proposals" => {
 			"SELECT p.name FROM proposals r JOIN peers p ON p.id = r.peer_id
 			WHERE r.id = ?1"

@@ -259,6 +259,16 @@ fn list(conn: &Connection) -> rusqlite::Result<Vec<Proposal>> {
 	stmt.query_map([], from_row)?.collect()
 }
 
+/// The waiting ones and those of the last `days`, newest first.
+pub fn recent(conn: &Connection, days: i64) -> rusqlite::Result<Vec<Proposal>> {
+	let since = now() - days * 24 * 60 * 60 * 1000;
+	let mut stmt = conn.prepare(&format!(
+		"{SELECT} WHERE r.status = 'pending' OR r.created_at > ?1
+		ORDER BY r.id DESC LIMIT 200"
+	))?;
+	stmt.query_map([since], from_row)?.collect()
+}
+
 fn get_one(conn: &Connection, id: i64) -> Result<Proposal> {
 	conn.query_row(&format!("{SELECT} WHERE r.id = ?1"), [id], from_row)
 		.optional()?
@@ -580,7 +590,7 @@ async fn propose(
 		}
 		id
 	};
-	events.send(Event::Proposals);
+	events.send(Event::Approvals);
 
 	// the agent gets its answer right away, a slow mail server mustn't
 	// hold its request
@@ -662,7 +672,7 @@ fn approved(
 	for message in messages {
 		events.send(Event::Message { message });
 	}
-	events.send(Event::Proposals);
+	events.send(Event::Approvals);
 	Ok(c)
 }
 
@@ -671,21 +681,49 @@ struct ApproveReq {
 	/// the admin's change to the task, empty for none
 	#[serde(default)]
 	comment: String,
+	#[serde(default)]
+	password: String,
+	/// of the authenticator app
+	#[serde(default)]
+	code: String,
 }
 
-/// The proposal becomes a conversation, returns its id. The comment is
-/// optional, old clients send `{}`.
+/// Approves in the panel with the second factor
+/// (`users::verify_approval`), returns the conversation for the runner.
+/// The comment is checked first: a comment too long mustn't use up the
+/// code.
+async fn approve_in_panel(
+	db: &Db,
+	events: &Events,
+	id: i64,
+	user: &crate::users::User,
+	req: &ApproveReq,
+) -> Result<i64> {
+	let comment = admin_note(&req.comment)?;
+	let p = get_one(&db.conn(), id)?;
+	if p.status != "pending" {
+		return Err(Error::Invalid(format!(
+			"the proposal is {} already",
+			p.status
+		)));
+	}
+	let mailed = !crate::mail::off(db);
+	crate::users::verify_approval(db, user, &req.password, &req.code, mailed)
+		.await?;
+	approved(&db.conn(), events, id, user, comment.as_deref())
+}
+
+/// The proposal becomes a conversation, returns its id.
 async fn approve(
 	authed: Authed,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	State(runner): State<Runner>,
 	Path(id): Path<i64>,
-	req: Option<Json<ApproveReq>>,
+	Json(req): Json<ApproveReq>,
 ) -> Result<Json<i64>> {
-	let comment = admin_note(&req.unwrap_or_default().0.comment)?;
 	let conversation =
-		approved(&db.conn(), &events, id, &authed.user, comment.as_deref())?;
+		approve_in_panel(&db, &events, id, &authed.user, &req).await?;
 	runner.start(conversation);
 	Ok(Json(conversation))
 }
@@ -699,7 +737,7 @@ struct RejectReq {
 
 /// The reason of a rejection or the comment of an approval as the agents
 /// get it, cleaned like a proposal; `None` when there is none.
-fn admin_note(note: &str) -> Result<Option<String>> {
+pub(crate) fn admin_note(note: &str) -> Result<Option<String>> {
 	let (text, _) = clean_text(note);
 	let text = text.trim();
 	if text.chars().count() > MAX_NOTE {
@@ -745,7 +783,7 @@ async fn reject_as(
 ) -> Result<()> {
 	let reason = admin_note(message)?;
 	let p = rejected(&db.conn(), id, by, reason.as_deref())?;
-	events.send(Event::Proposals);
+	events.send(Event::Approvals);
 	tell(cfg, db, &p, rejected_text(&by.name, reason.as_deref())).await;
 	Ok(())
 }
@@ -802,7 +840,7 @@ pub fn due_expiries(cfg: &Arc<Config>, db: &Db, events: &Events) {
 	if expired.is_empty() {
 		return;
 	}
-	events.send(Event::Proposals);
+	events.send(Event::Approvals);
 	let (cfg, db) = (cfg.clone(), db.clone());
 	tokio::spawn(async move {
 		for p in expired {
@@ -1303,5 +1341,50 @@ mod tests {
 		assert_eq!(p.original_text, "Update Craft");
 		assert_eq!(p.rewritten_by, None);
 		assert!(!p.rewrite_tried);
+	}
+
+	#[tokio::test]
+	async fn approving_in_the_panel_needs_2fa() {
+		let db = Db::memory();
+		let events = Events::new();
+		let peer = peer(&db.conn());
+		let id = add(&db.conn(), peer, "Update Craft", None).unwrap();
+		let hash = bcrypt::hash("pw", 4).unwrap();
+		db.conn()
+			.execute(
+				"INSERT INTO users (id, email, name, password_hash, created_at)
+				VALUES (961, 'panel@example.ch', 'panel', ?1, 0)",
+				[hash],
+			)
+			.unwrap();
+		let user = crate::users::by_id(&db.conn(), 961).unwrap();
+		let req = ApproveReq {
+			password: "pw".into(),
+			..Default::default()
+		};
+
+		// mail is on: without 2FA only the link approves
+		let tried = approve_in_panel(&db, &events, id, &user, &req).await;
+		assert!(
+			matches!(tried, Err(Error::Invalid(e)) if e == crate::users::NO_2FA)
+		);
+		assert_eq!(get_one(&db.conn(), id).unwrap().status, "pending");
+
+		// with mail off the password does, as before
+		crate::db::set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#)
+			.unwrap();
+		let wrong = ApproveReq {
+			password: "wrong".into(),
+			..Default::default()
+		};
+		assert!(
+			approve_in_panel(&db, &events, id, &user, &wrong)
+				.await
+				.is_err()
+		);
+		approve_in_panel(&db, &events, id, &user, &req)
+			.await
+			.unwrap();
+		assert_eq!(get_one(&db.conn(), id).unwrap().status, "approved");
 	}
 }

@@ -3,16 +3,22 @@
 	import { conversations, messageSearch } from '@/lib/conversations.svelte';
 	import { dialogs, type DialogKind } from '@/lib/dialogs.svelte';
 	import { GROUP_TABS } from '@/lib/groupTabs';
-	import { proposals } from '@/lib/proposals.svelte';
+	import {
+		approvalKey,
+		approvalKind,
+		approvalNumber,
+		approvalTitle,
+		approvals,
+	} from '@/lib/approvals.svelte';
 	import { tree } from '@/lib/tree.svelte';
 	import Dialog from '../win/Dialog.svelte';
 	import Icon, { type IconName } from '../win/Icon.svelte';
 	import ListView from '../win/ListView.svelte';
 
-	// Start → Find (Ctrl+K): everything with a name, the passwords, the AI
-	// agents' proposals (also by "#51") and the agent's conversations. The
-	// tree and proposals are searched here, passwords and messages on the
-	// server.
+	// Start → Find (Ctrl+K): everything with a name, the passwords, what
+	// waits in Approvals and was decided in 30 days (proposals also by
+	// "#51", actions by "A12") and the agent's conversations. The tree and
+	// approvals are searched here, passwords and messages on the server.
 	let {
 		onclose,
 		onpage,
@@ -65,10 +71,11 @@
 		{ name: 'Passwords', also: 'secrets logins', dialog: 'passwords' },
 		{ name: 'API Tokens', also: 'keys', dialog: 'tokens' },
 		{
-			name: 'AI Agents',
-			also: 'proposals webhooks keys',
-			dialog: 'agents',
+			name: 'Approvals',
+			also: 'proposals deletions confirm',
+			dialog: 'approvals',
 		},
+		{ name: 'AI Agents', also: 'webhooks keys', dialog: 'agents' },
 		{ name: 'Activity Log', also: 'history', dialog: 'activity' },
 		{ name: 'Two-Factor Login', also: 'totp 2fa', dialog: 'totp' },
 		{ name: 'Change Email', also: 'name account', dialog: 'account' },
@@ -225,19 +232,27 @@
 					},
 				});
 
-		for (const p of proposals.list)
-			if (has(`#${p.id}`, p.text, p.originalText))
+		for (const a of approvals.list) {
+			const texts =
+				a.kind === 'proposal'
+					? [a.proposal.text, a.proposal.originalText]
+					: [a.action.description];
+			if (has(approvalNumber(a), ...texts))
 				out.push({
-					key: 'pr' + p.id,
+					key: approvalKey(a),
 					icon: 'agent',
-					name: `#${p.id} ${p.text.split('\n')[0]}`,
-					kind: 'Proposal',
-					where: p.from,
+					name: `${approvalNumber(a)} ${approvalTitle(a)}`,
+					kind: approvalKind(a),
+					where:
+						a.kind === 'proposal'
+							? a.proposal.from
+							: a.action.requestedBy,
 					open: () => {
-						dialogs.proposal = p.id;
-						dialogs.open = 'agents';
+						dialogs.approval = approvalKey(a);
+						dialogs.open = 'approvals';
 					},
 				});
+		}
 
 		for (const c of conversations.list)
 			if (has(c.title) || found.ids.includes(c.id))

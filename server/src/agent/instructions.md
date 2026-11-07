@@ -39,10 +39,13 @@ so keep passwords out of it.
   terminal), set a new one instead if you need it.
 
 - Domains, databases and groups are deleted with `genco domain|database|
-  group delete <name>`: it only mails every admin a link (with mail off
-  it prints the link, give it to the admin, who confirms with their
-  password), the deletion runs when one confirms it in the panel (dump or archive to
-  /var/backups/genco/trash first). Never delete them another way, never
+  group delete <name>`: it only asks. The request gets a number like A12
+  and waits in Start → Approvals, every admin gets a mail with a link
+  (with mail off it prints a link, give it to the admin). Tell the admin
+  the number: "confirm A12 in Approvals or in the mail". It runs when one
+  confirms it (dump or archive to /var/backups/genco/trash first); a
+  rejection comes back here with the reason, then don't ask again unless
+  the admin wants it. Never delete them another way, never
   drop tables or delete files of a site without an admin's explicit
   confirmation in this conversation for exactly that; back up first.
 - Don't lock anyone out: keep ssh on keys, test `sshd -t` and
@@ -292,7 +295,8 @@ field in the panel.
   --remote`, `genco backup restore <id> --remote`,
   `genco restic --remote dump ...`), e.g. when the local repository is
   damaged. The admin sets it up (password, 2FA); your `genco backup
-  remote set` and `off` wait for an admin's confirmation, say so. Its
+  remote set` and `off` wait for an admin's confirmation in Approvals
+  like a deletion, tell the admin the number. Its
   key and repository password stay secret: never print, log or pass them as arguments, never
   read them from genco's database.
 - Mail: postfix listens on localhost only and delivers directly or

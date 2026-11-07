@@ -40,7 +40,9 @@ export function registerRoutes() {
 				/^\/passwords\/(?<id>\d+)$/,
 				() => import('./PasswordLink.svelte'),
 			],
-			['/agents', () => import('./AgentsLink.svelte')],
+			// the panel's link in the mails, older proposal mails say /agents
+			['/approvals', () => import('./ApprovalsLink.svelte')],
+			['/agents', () => import('./ApprovalsLink.svelte')],
 			[
 				/^\/confirm\/(?<token>[0-9a-f]+)$/,
 				() => import('./Confirm.svelte'),

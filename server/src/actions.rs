@@ -1,12 +1,16 @@
 //! Deleting a domain, a database or a group doesn't happen right away: it
-//! becomes a pending action and every admin gets a mail with a link. It
-//! runs when an admin opens the link while logged in and confirms. What
+//! becomes a pending action ("A12") and every admin gets a mail with their
+//! own link. It runs when the admin opens the link while logged in and
+//! confirms, or confirms it in Start → Approvals with their password and
+//! two-factor code (approvals.rs); any admin may reject it there, the
+//! conversation of genco's agent that asked for it gets the reason. What
 //! it deletes goes to the trash first (dump, archive), kept 30 days.
-//! With mail off (Settings → Mail) the admin confirms it in the panel
-//! with their password and two-factor code instead. The agent's changes
-//! of the remote backup go the same way (backup/remote.rs).
+//! With mail off (Settings → Mail) the password confirms it in the panel,
+//! the two-factor code too when the admin has 2FA. The agent's changes of
+//! the remote backup go the same way (backup/remote.rs).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use axum::extract::{Path, State};
 use axum::routing::{delete, get, post};
@@ -24,7 +28,7 @@ use crate::hosting;
 use crate::mail;
 use crate::render;
 use crate::tokens;
-use crate::users::{self, Authed};
+use crate::users::{self, Authed, User};
 use crate::util;
 
 pub const TRASH: &str = "/var/backups/genco/trash";
@@ -73,24 +77,110 @@ impl Kind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Action {
+	pub id: i64,
+	/// "A12", how the admins and the agent name it
+	pub number: String,
+	/// delete_domain, delete_database, …, backup_remote_set
+	pub kind: String,
 	pub description: String,
 	pub requested_by: String,
-	/// pending, done, failed, expired
+	/// the conversation of genco's agent that asked for it
+	pub conversation_id: Option<i64>,
+	/// pending, running, done, failed, rejected, expired
 	pub status: String,
 	pub created_at: i64,
+	pub expires_at: i64,
+	/// who confirmed or rejected it
+	pub decided_by: Option<String>,
+	pub decided_at: Option<i64>,
+	/// the admin's reason of a rejection
+	pub reason: Option<String>,
 	/// confirmed with the password, it wasn't mailed
 	pub by_password: bool,
 	/// the panel's button says Delete, else Confirm
 	pub deletion: bool,
-	#[serde(skip)]
-	id: i64,
-	#[serde(skip)]
-	kind: String,
+	/// of a database to delete, filled in for the list
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub size_bytes: Option<i64>,
 	#[serde(skip)]
 	target_id: i64,
 	/// sealed with the secrets key, what the action needs beyond its target
 	#[serde(skip)]
 	payload: Option<Vec<u8>>,
+}
+
+/// The number of an action, apart from the proposals' "#12".
+pub fn number(id: i64) -> String {
+	format!("A{id}")
+}
+
+const SELECT: &str = "SELECT id, kind, target_id, description, requested_by,
+	status, created_at, by_password, payload, conversation_id, decided_by,
+	done_at, reason FROM pending_actions";
+
+fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Action> {
+	let id: i64 = row.get(0)?;
+	let kind: String = row.get(1)?;
+	let status: String = row.get(5)?;
+	let created_at: i64 = row.get(6)?;
+	let expired = status == "pending" && created_at + VALID_MS < now();
+	Ok(Action {
+		id,
+		number: number(id),
+		deletion: kind.starts_with("delete_"),
+		kind,
+		target_id: row.get(2)?,
+		description: row.get(3)?,
+		requested_by: row.get(4)?,
+		status: if expired { "expired".into() } else { status },
+		created_at,
+		expires_at: created_at + VALID_MS,
+		by_password: row.get(7)?,
+		payload: row.get(8)?,
+		conversation_id: row.get(9)?,
+		decided_by: row.get(10)?,
+		decided_at: row.get(11)?,
+		reason: row.get(12)?,
+		size_bytes: None,
+	})
+}
+
+pub fn get_one(conn: &Connection, id: i64) -> Result<Action> {
+	conn.query_row(&format!("{SELECT} WHERE id = ?1"), [id], from_row)
+		.optional()?
+		.ok_or(Error::NotFound)
+}
+
+/// The waiting ones and those of the last `days`, newest first.
+pub fn recent(conn: &Connection, days: i64) -> Result<Vec<Action>> {
+	let since = now() - days * 24 * 60 * 60 * 1000;
+	let list = conn
+		.prepare(&format!(
+			"{SELECT} WHERE status = 'pending' OR created_at > ?1
+			ORDER BY id DESC LIMIT 200"
+		))?
+		.query_map([since], from_row)?
+		.collect::<rusqlite::Result<Vec<_>>>()?;
+	Ok(list)
+}
+
+/// The size of each waiting database deletion, for the list.
+pub async fn add_sizes(db: &Db, actions: &mut [Action]) {
+	for a in actions.iter_mut() {
+		if a.kind != Kind::Database.as_str() || a.status != "pending" {
+			continue;
+		}
+		let Ok((group, d)) =
+			hosting::find_database(&db.conn(), |d| d.id == a.target_id)
+		else {
+			continue;
+		};
+		let infos = crate::host::databases(&group).await.unwrap_or_default();
+		a.size_bytes = infos
+			.into_iter()
+			.find(|i| i.name == d.name && i.exists)
+			.map(|i| i.size_bytes);
+	}
 }
 
 /// What the action does, also checks that it may happen.
@@ -209,6 +299,34 @@ pub async fn ask(
 	sealed: Option<Vec<u8>>,
 	requested_by: &str,
 ) -> Result<Requested> {
+	let new = New {
+		kind,
+		target_id,
+		description: description.into(),
+		sealed,
+		requested_by: requested_by.into(),
+		conversation_id: agent_conversation(),
+	};
+	create(cfg, db, new).await
+}
+
+/// The conversation of genco's agent that runs this `genco` command, its
+/// shell says it (agent/tools.rs).
+fn agent_conversation() -> Option<i64> {
+	std::env::var_os("GENCO_AGENT")?;
+	std::env::var("GENCO_CONVERSATION").ok()?.parse().ok()
+}
+
+struct New {
+	kind: Kind,
+	target_id: i64,
+	description: String,
+	sealed: Option<Vec<u8>>,
+	requested_by: String,
+	conversation_id: Option<i64>,
+}
+
+async fn create(cfg: &Config, db: &Db, new: New) -> Result<Requested> {
 	let by_password = mail::off(db);
 	let domain = cfg.domain.as_deref().unwrap_or_default();
 	if domain.is_empty() && !by_password {
@@ -216,58 +334,47 @@ pub async fn ask(
 			"the panel has no domain for the link".into(),
 		));
 	}
+	// mailed actions get a link per admin, this one is never given out
 	let token = util::random_hex(24);
+	let description = &new.description;
 
 	let id = {
 		let conn = db.conn();
 		conn.execute(
 			"INSERT INTO pending_actions (kind, target_id, description,
 			token_hash, requested_by, status, created_at, by_password,
-			payload)
-			VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
+			payload, conversation_id)
+			VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9)",
 			params![
-				kind.as_str(),
-				target_id,
+				new.kind.as_str(),
+				new.target_id,
 				description,
 				tokens::hash(&token),
-				requested_by,
+				new.requested_by,
 				now(),
 				by_password,
-				sealed
+				new.sealed,
+				new.conversation_id
 			],
 		)?;
 		conn.last_insert_rowid()
 	};
+	let n = number(id);
 
 	if by_password {
 		let path = format!("/confirm/{token}");
 		let link = cfg.panel_url(&path).unwrap_or(path.clone());
 		return Ok(Requested {
 			message: format!(
-				"Waiting for confirmation: mail is off, an admin confirms \
-				it with their password at {link} ({description})"
+				"Waiting for confirmation of {n}: mail is off, an admin \
+				confirms it with their password in Start → Approvals or at \
+				{link} ({description})"
 			),
 			confirm: Some(path),
 		});
 	}
 
-	let body = format!(
-		"{requested_by} asked genco on {domain} for this:\n\n{description}\n\n\
-		To confirm it, open this link while logged in to the panel:\n\n\
-		https://{domain}/confirm/{token}\n\n\
-		The link works for 24 hours. If you didn't expect this, ignore it:\n\
-		nothing happens without a confirmation.\n"
-	);
-	let first = description.split('.').next().unwrap_or(description);
-	let sent = mail::send(
-		cfg,
-		db,
-		&mail::admins(db)?,
-		&format!("Confirm: {first}"),
-		&body,
-	)
-	.await;
-	if let Err(e) = sent {
+	if let Err(e) = mail_admins(cfg, db, id).await {
 		db.conn()
 			.execute("DELETE FROM pending_actions WHERE id = ?1", [id])?;
 		return Err(e);
@@ -275,49 +382,100 @@ pub async fn ask(
 
 	Ok(Requested {
 		message: format!(
-			"Waiting for confirmation: every admin got a mail with a link \
-			to confirm it ({description})"
+			"Waiting for confirmation of {n}: every admin got a mail with a \
+			link to confirm it, an admin with two-factor login can confirm \
+			it in Start → Approvals too ({description})"
 		),
 		confirm: None,
 	})
 }
 
-fn find(conn: &Connection, token: &str) -> Result<Action> {
-	let action = conn
+/// Mails every admin their own link; an error only when no mail went.
+async fn mail_admins(cfg: &Config, db: &Db, id: i64) -> Result<()> {
+	let (action, admins) = {
+		let conn = db.conn();
+		(get_one(&conn, id)?, users::list(&conn)?)
+	};
+	let first = first_sentence(&action.description);
+	let subject = format!("Confirm {}: {first}", action.number);
+	let mut error = None;
+	let mut sent = false;
+	for admin in admins {
+		let token = util::random_hex(32);
+		db.conn().execute(
+			"INSERT INTO action_links (action_id, user_id, token_hash,
+			created_at) VALUES (?1, ?2, ?3, ?4)",
+			params![id, admin.id, tokens::hash(&token), now()],
+		)?;
+		let body = mail_body(cfg, &action, &token);
+		match mail::send(cfg, db, &[admin.email], &subject, &body).await {
+			Ok(()) => sent = true,
+			Err(e) => {
+				tracing::error!("mail about {}: {e}", action.number);
+				error = Some(e);
+			}
+		}
+	}
+	match error {
+		Some(e) if !sent => Err(e),
+		_ => Ok(()),
+	}
+}
+
+/// Like a proposal's mail: the real link first, the description (with
+/// names the agent chose, e.g. a bucket's address) after a line.
+fn mail_body(cfg: &Config, action: &Action, token: &str) -> String {
+	let link = cfg
+		.panel_url(&format!("/confirm/{token}"))
+		.unwrap_or_default();
+	let panel = cfg.panel_url("/approvals").unwrap_or_default();
+	format!(
+		"{by} asked genco for this ({n}).\n\n\
+		Confirm: {link}\n\
+		(open it while logged in to the panel; your own link, it works for \
+		24 hours)\n\n\
+		Or open Start → Approvals, confirming there asks for your password \
+		and 2FA code; you can reject it there too:\n\n{panel}\n\n\
+		Nothing happens without a confirmation. If you didn't expect this, \
+		reject it or ignore it.\n\n\
+		----------------------------------------\n\n\
+		{description}\n",
+		by = action.requested_by,
+		n = action.number,
+		description = action.description,
+	)
+}
+
+/// "Delete the domain shop.ch of the group shop" of its description, the
+/// dot of a name doesn't end it.
+fn first_sentence(description: &str) -> &str {
+	let first = description.split(". ").next().unwrap_or_default();
+	first.strip_suffix('.').unwrap_or(first)
+}
+
+/// The action of a link: the requester's link (mail off, or of an older
+/// mail every admin got), or an admin's own with that admin.
+fn find(conn: &Connection, token: &str) -> Result<(Action, Option<i64>)> {
+	let hash = tokens::hash(token);
+	let own: Option<i64> = conn
 		.query_row(
-			"SELECT id, kind, target_id, description, requested_by, status,
-			created_at, by_password, payload FROM pending_actions
-			WHERE token_hash = ?1",
-			[tokens::hash(token)],
-			|row| {
-				let kind: String = row.get(1)?;
-				Ok(Action {
-					id: row.get(0)?,
-					deletion: kind.starts_with("delete_"),
-					kind,
-					target_id: row.get(2)?,
-					description: row.get(3)?,
-					requested_by: row.get(4)?,
-					status: row.get(5)?,
-					created_at: row.get(6)?,
-					by_password: row.get(7)?,
-					payload: row.get(8)?,
-				})
-			},
+			"SELECT id FROM pending_actions WHERE token_hash = ?1",
+			[&hash],
+			|r| r.get(0),
+		)
+		.optional()?;
+	if let Some(id) = own {
+		return Ok((get_one(conn, id)?, None));
+	}
+	let (id, user): (i64, i64) = conn
+		.query_row(
+			"SELECT action_id, user_id FROM action_links WHERE token_hash = ?1",
+			[&hash],
+			|r| Ok((r.get(0)?, r.get(1)?)),
 		)
 		.optional()?
 		.ok_or(Error::NotFound)?;
-
-	let expired =
-		action.status == "pending" && action.created_at + VALID_MS < now();
-	Ok(Action {
-		status: if expired {
-			"expired".into()
-		} else {
-			action.status.clone()
-		},
-		..action
-	})
+	Ok((get_one(conn, id)?, Some(user)))
 }
 
 #[derive(Debug, Serialize)]
@@ -340,13 +498,17 @@ async fn execute(
 	// only one confirmation runs it, two at the same moment would both pass
 	// the check in `confirm`
 	let claimed = db.conn().execute(
-		"UPDATE pending_actions SET status = 'running'
-		WHERE id = ?1 AND status = 'pending'",
-		[action.id],
+		"UPDATE pending_actions SET status = 'running', decided_by = ?1
+		WHERE id = ?2 AND status = 'pending'",
+		params![confirmed_by, action.id],
 	)?;
 	if claimed != 1 {
-		return Err(Error::Invalid("this action runs already".into()));
+		return Err(Error::Invalid(format!(
+			"{} runs already or was decided",
+			action.number
+		)));
 	}
+	end_links(&db.conn(), action.id)?;
 
 	let mut log = vec![format!("confirmed by {confirmed_by}")];
 	let by = format!("{}, confirmed by {confirmed_by}", action.requested_by);
@@ -767,12 +929,12 @@ async fn get_action(
 	State(db): State<Db>,
 	Path(token): Path<String>,
 ) -> Result<Json<Action>> {
-	Ok(Json(find(&db.conn(), &token)?))
+	Ok(Json(find(&db.conn(), &token)?.0))
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct ConfirmReq {
-	/// the admin's, for an action that wasn't mailed
+	/// the admin's, in Approvals or for an action that wasn't mailed
 	#[serde(default)]
 	password: String,
 	/// of the authenticator app when the admin has 2FA
@@ -780,20 +942,32 @@ struct ConfirmReq {
 	code: String,
 }
 
-/// The link of the mail proves the mailbox, without it the admin's
-/// password and code do.
+fn pending(action: &Action) -> Result<()> {
+	if action.status != "pending" {
+		return Err(Error::Invalid(format!(
+			"{} is {} already",
+			action.number, action.status
+		)));
+	}
+	Ok(())
+}
+
+/// The link of the mail proves the mailbox of its admin, without one the
+/// admin's password and code do.
 async fn check_confirm(
 	db: &Db,
 	authed: &Authed,
 	token: &str,
 	req: &ConfirmReq,
 ) -> Result<Action> {
-	let action = find(&db.conn(), token)?;
-	if action.status != "pending" {
-		return Err(Error::Invalid(format!(
-			"this action is {} already",
-			action.status
-		)));
+	let (action, link_user) = find(&db.conn(), token)?;
+	pending(&action)?;
+	if link_user.is_some_and(|u| u != authed.user.id) {
+		return Err(Error::Invalid(
+			"this link was mailed to another admin, open your own or \
+			confirm it in Start → Approvals"
+				.into(),
+		));
 	}
 	if action.by_password {
 		users::verify_password(db, &authed.user, &req.password).await?;
@@ -802,18 +976,156 @@ async fn check_confirm(
 	Ok(action)
 }
 
+/// Confirming in Approvals: the password and 2FA code, like a proposal
+/// (`users::verify_approval`); the password alone when nothing was mailed.
+async fn check_panel(
+	db: &Db,
+	authed: &Authed,
+	id: i64,
+	req: &ConfirmReq,
+) -> Result<Action> {
+	let action = get_one(&db.conn(), id)?;
+	pending(&action)?;
+	let mailed = !action.by_password && !mail::off(db);
+	users::verify_approval(db, &authed.user, &req.password, &req.code, mailed)
+		.await?;
+	Ok(action)
+}
+
+/// A number is the action's id (Approvals), anything else a link's token:
+/// the old route of the mail links stays.
+fn action_id(key: &str) -> Option<i64> {
+	(key.len() < 16).then(|| key.parse().ok()).flatten()
+}
+
 async fn confirm(
 	authed: Authed,
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
-	Path(token): Path<String>,
+	Path(key): Path<String>,
 	Json(req): Json<ConfirmReq>,
 ) -> Result<Json<Outcome>> {
-	let action = check_confirm(&db, &authed, &token, &req).await?;
+	let action = match action_id(&key) {
+		Some(id) => check_panel(&db, &authed, id, &req).await?,
+		None => check_confirm(&db, &authed, &key, &req).await?,
+	};
 	let outcome = execute(&cfg, &db, &action, &authed.user.name).await?;
 	events.send(Event::Tree);
+	events.send(Event::Approvals);
 	Ok(Json(outcome))
+}
+
+/// The links of a decided or expired action stop working.
+fn end_links(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+	conn.execute("DELETE FROM action_links WHERE action_id = ?1", [id])?;
+	Ok(())
+}
+
+/// Cancels the action. If genco's agent asked for it, its conversation
+/// gets the rejection with the reason.
+fn rejected(
+	conn: &Connection,
+	events: &Events,
+	id: i64,
+	by: &User,
+	message: &str,
+) -> Result<Action> {
+	let reason = crate::proposals::admin_note(message)?;
+	let changed = conn.execute(
+		"UPDATE pending_actions SET status = 'rejected', decided_by = ?1,
+		reason = ?2, done_at = ?3
+		WHERE id = ?4 AND status = 'pending' AND created_at > ?5",
+		params![by.name, reason, now(), id, now() - VALID_MS],
+	)?;
+	if changed != 1 {
+		pending(&get_one(conn, id)?)?;
+		return Err(Error::Invalid("it was decided meanwhile".into()));
+	}
+	end_links(conn, id)?;
+	let action = get_one(conn, id)?;
+
+	let conversation = action
+		.conversation_id
+		.filter(|c| crate::conversations::get(conn, *c).is_ok());
+	if let Some(c) = conversation {
+		let first = first_sentence(&action.description);
+		let text = match &reason {
+			Some(reason) => format!(
+				"{} rejected {} ({first}), it won't run. The reason: {reason}",
+				by.name, action.number
+			),
+			None => format!(
+				"{} rejected {} ({first}), it won't run. No reason given.",
+				by.name, action.number
+			),
+		};
+		let message = crate::conversations::insert_message(
+			conn,
+			c,
+			crate::conversations::MessageData::System { text },
+		)?;
+		events.send(Event::Message { message });
+	}
+	events.send(Event::Approvals);
+	Ok(action)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RejectReq {
+	/// the reason, empty for none
+	#[serde(default)]
+	message: String,
+}
+
+/// Any admin rejects, no second factor: a rejection can't do harm.
+async fn reject(
+	authed: Authed,
+	State(db): State<Db>,
+	State(events): State<Events>,
+	Path(id): Path<i64>,
+	req: Option<Json<RejectReq>>,
+) -> Result<Json<Action>> {
+	let message = req.unwrap_or_default().0.message;
+	let action = rejected(&db.conn(), &events, id, &authed.user, &message)?;
+	Ok(Json(action))
+}
+
+/// Every minute: actions nobody confirmed in time are marked expired, and
+/// the browsers hear of new ones, also of those a `genco` command (the
+/// agent's) asked for in its own process.
+pub fn due(db: &Db, events: &Events) {
+	static LAST: AtomicI64 = AtomicI64::new(0);
+	let res = (|| -> rusqlite::Result<bool> {
+		let conn = db.conn();
+		let old = conn
+			.prepare(
+				"SELECT id FROM pending_actions
+				WHERE status = 'pending' AND created_at <= ?1",
+			)?
+			.query_map([now() - VALID_MS], |r| r.get(0))?
+			.collect::<rusqlite::Result<Vec<i64>>>()?;
+		for id in &old {
+			conn.execute(
+				"UPDATE pending_actions SET status = 'expired', done_at = ?1
+				WHERE id = ?2 AND status = 'pending'",
+				params![now(), id],
+			)?;
+			end_links(&conn, *id)?;
+		}
+		let newest: i64 = conn.query_row(
+			"SELECT coalesce(max(id), 0) FROM pending_actions",
+			[],
+			|r| r.get(0),
+		)?;
+		let seen = LAST.swap(newest, Ordering::Relaxed);
+		Ok(!old.is_empty() || (seen != 0 && newest != seen))
+	})();
+	match res {
+		Ok(true) => events.send(Event::Approvals),
+		Ok(false) => {}
+		Err(e) => tracing::error!("pending actions: {e}"),
+	}
 }
 
 pub fn routes() -> Router<AppState> {
@@ -823,8 +1135,9 @@ pub fn routes() -> Router<AppState> {
 		.route("/groups/{id}", delete(delete_group_route))
 		.route("/mail-domains/{id}", delete(delete_mail_domain_route))
 		.route("/mailboxes/{id}", delete(delete_mailbox_route))
-		.route("/actions/{token}", get(get_action))
-		.route("/actions/{token}/confirm", post(confirm))
+		.route("/actions/{key}", get(get_action))
+		.route("/actions/{key}/confirm", post(confirm))
+		.route("/actions/{key}/reject", post(reject))
 }
 
 #[cfg(test)]
@@ -883,7 +1196,7 @@ mod tests {
 			[tokens::hash("tok")],
 		)
 		.unwrap();
-		assert_eq!(find(&conn, "tok").unwrap().status, "expired");
+		assert_eq!(find(&conn, "tok").unwrap().0.status, "expired");
 		assert!(matches!(find(&conn, "other"), Err(Error::NotFound)));
 	}
 
@@ -913,7 +1226,7 @@ mod tests {
 		let path = req.confirm.unwrap();
 		assert!(req.message.contains("https://panel.example.ch/confirm/"));
 		let token = path.strip_prefix("/confirm/").unwrap();
-		assert!(find(&db.conn(), token).unwrap().by_password);
+		assert!(find(&db.conn(), token).unwrap().0.by_password);
 
 		let none = ConfirmReq::default();
 		assert!(check_confirm(&db, &authed, token, &none).await.is_err());
@@ -922,5 +1235,262 @@ mod tests {
 			code: String::new(),
 		};
 		check_confirm(&db, &authed, token, &right).await.unwrap();
+	}
+
+	/// An admin with the password "admin password", cheap to hash. Wrong
+	/// codes count per id over all tests: each test has its own ids.
+	fn admin(db: &Db, id: i64, name: &str) -> User {
+		let hash = bcrypt::hash("admin password", 4).unwrap();
+		db.conn()
+			.execute(
+				"INSERT INTO users (id, email, name, password_hash, created_at)
+				VALUES (?1, ?2, ?3, ?4, 0)",
+				params![id, format!("{name}@actions.example.ch"), name, hash],
+			)
+			.unwrap();
+		users::by_id(&db.conn(), id).unwrap()
+	}
+
+	fn authed(user: &User) -> Authed {
+		Authed {
+			token: String::new(),
+			user: user.clone(),
+		}
+	}
+
+	/// Turns on 2FA for the admin, returns a function for its codes.
+	fn with_2fa(db: &Db, user: &mut User) -> impl Fn() -> String + use<> {
+		use totp_rs::{Algorithm, Secret, TOTP};
+		let secret = Secret::generate_secret().to_encoded().to_string();
+		db.conn()
+			.execute(
+				"UPDATE users SET totp_secret = ?1 WHERE id = ?2",
+				params![secret, user.id],
+			)
+			.unwrap();
+		user.totp = true;
+		let bytes = Secret::Encoded(secret).to_bytes().unwrap();
+		let totp = TOTP::new(
+			Algorithm::SHA1,
+			6,
+			1,
+			30,
+			bytes,
+			Some("genco".into()),
+			user.email.clone(),
+		)
+		.unwrap();
+		move || totp.generate((now() / 1000) as u64)
+	}
+
+	/// A mailed deletion of a domain, as if `create` had sent the mails.
+	fn mailed(db: &Db, conversation: Option<i64>) -> i64 {
+		let conn = db.conn();
+		conn.execute(
+			"INSERT INTO pending_actions (kind, target_id, description,
+			token_hash, requested_by, status, created_at, conversation_id)
+			VALUES ('delete_domain', 1, ?1, ?2, 'genco''s agent', 'pending',
+			?3, ?4)",
+			params![
+				"Delete the domain shop.ch of the group shop. Its files stay.",
+				tokens::hash(&util::random_hex(24)),
+				now(),
+				conversation
+			],
+		)
+		.unwrap();
+		conn.last_insert_rowid()
+	}
+
+	fn req(password: &str, code: &str) -> ConfirmReq {
+		ConfirmReq {
+			password: password.into(),
+			code: code.into(),
+		}
+	}
+
+	#[test]
+	fn actions_have_their_own_numbers() {
+		assert_eq!(number(12), "A12");
+		let db = Db::memory();
+		let id = mailed(&db, None);
+		let a = get_one(&db.conn(), id).unwrap();
+		assert_eq!(a.number, format!("A{id}"));
+		assert_eq!(a.expires_at, a.created_at + VALID_MS);
+		assert_eq!(
+			first_sentence(&a.description),
+			"Delete the domain shop.ch of the group shop"
+		);
+		// the route takes a number or a link's token
+		assert_eq!(action_id("12"), Some(12));
+		assert_eq!(action_id(&util::random_hex(24)), None);
+		assert_eq!(action_id(&"1".repeat(48)), None);
+	}
+
+	#[tokio::test]
+	async fn confirming_in_the_panel_needs_2fa() {
+		let db = Db::memory();
+		let id = mailed(&db, None);
+		let mut a = admin(&db, 901, "panel-2fa");
+
+		// without 2FA only the mail's link confirms
+		let password = req("admin password", "");
+		let tried = check_panel(&db, &authed(&a), id, &password).await;
+		assert!(matches!(tried, Err(Error::Invalid(e)) if e == users::NO_2FA));
+
+		let code = with_2fa(&db, &mut a);
+		for wrong in [req("admin password", ""), req("wrong", &code())] {
+			let tried = check_panel(&db, &authed(&a), id, &wrong).await;
+			assert!(tried.is_err());
+		}
+		let right = req("admin password", &code());
+		let action = check_panel(&db, &authed(&a), id, &right).await.unwrap();
+		assert_eq!(action.id, id);
+		// the code is used up
+		let again = check_panel(&db, &authed(&a), id, &right).await;
+		assert!(again.is_err());
+	}
+
+	#[tokio::test]
+	async fn wrong_codes_in_the_panel_count() {
+		let db = Db::memory();
+		let id = mailed(&db, None);
+		let mut a = admin(&db, 911, "panel-count");
+		let code = with_2fa(&db, &mut a);
+		let key = format!("code:{}", a.id);
+		for _ in 0..users::MAX_CODE_FAILURES - 1 {
+			users::attempt_failed(&key, users::MAX_CODE_FAILURES);
+		}
+
+		let wrong = req("admin password", "000000");
+		assert!(check_panel(&db, &authed(&a), id, &wrong).await.is_err());
+		// the last one used up the rest, the right code waits too
+		let right = req("admin password", &code());
+		assert!(check_panel(&db, &authed(&a), id, &right).await.is_err());
+		assert_eq!(get_one(&db.conn(), id).unwrap().status, "pending");
+	}
+
+	#[tokio::test]
+	async fn with_mail_off_the_password_confirms_in_the_panel() {
+		let db = Db::memory();
+		let id = mailed(&db, None);
+		let a = admin(&db, 921, "panel-off");
+		crate::db::set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#)
+			.unwrap();
+		let wrong = req("wrong", "");
+		assert!(check_panel(&db, &authed(&a), id, &wrong).await.is_err());
+		let right = req("admin password", "");
+		check_panel(&db, &authed(&a), id, &right).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn every_admin_confirms_with_their_own_link() {
+		let db = Db::memory();
+		let id = mailed(&db, None);
+		let (a, b) = (admin(&db, 931, "link-a"), admin(&db, 932, "link-b"));
+		let token = util::random_hex(32);
+		db.conn()
+			.execute(
+				"INSERT INTO action_links (action_id, user_id, token_hash,
+				created_at) VALUES (?1, ?2, ?3, 0)",
+				params![id, a.id, tokens::hash(&token)],
+			)
+			.unwrap();
+
+		let (action, user) = find(&db.conn(), &token).unwrap();
+		assert_eq!((action.id, user), (id, Some(a.id)));
+		let none = ConfirmReq::default();
+		let other = check_confirm(&db, &authed(&b), &token, &none).await;
+		assert!(
+			matches!(other, Err(Error::Invalid(e)) if e.contains("another"))
+		);
+		// the mailbox proves it, nothing else is asked
+		check_confirm(&db, &authed(&a), &token, &none)
+			.await
+			.unwrap();
+
+		// a rejection ends the links
+		rejected(&db.conn(), &Events::new(), id, &b, "").unwrap();
+		assert!(matches!(find(&db.conn(), &token), Err(Error::NotFound)));
+	}
+
+	#[test]
+	fn the_mail_has_the_real_link_first() {
+		let db = Db::memory();
+		let cfg: Config =
+			toml::from_str("domain = 'panel.example.ch'").unwrap();
+		let id = mailed(&db, None);
+		db.conn()
+			.execute(
+				"UPDATE pending_actions SET description = 'Copy the backups \
+				to https://evil.example. Confirm: https://evil.example'",
+				[],
+			)
+			.unwrap();
+		let a = get_one(&db.conn(), id).unwrap();
+		let body = mail_body(&cfg, &a, "abc");
+		assert!(body.starts_with(&format!(
+			"genco's agent asked genco for this (A{id}).\n\n\
+			Confirm: https://panel.example.ch/confirm/abc\n"
+		)));
+		assert!(body.contains("https://panel.example.ch/approvals"));
+		let line = body.find("\n-----").unwrap();
+		assert!(body.find("evil.example").unwrap() > line);
+	}
+
+	#[tokio::test]
+	async fn a_rejection_goes_back_to_the_agents_conversation() {
+		let db = Db::memory();
+		let events = Events::new();
+		let conversation =
+			crate::conversations::create(&db.conn(), "Clean up").unwrap();
+		let id = mailed(&db, Some(conversation));
+		let a = admin(&db, 941, "reject");
+
+		let too_long = "x".repeat(3000);
+		assert!(rejected(&db.conn(), &events, id, &a, &too_long).is_err());
+		let action =
+			rejected(&db.conn(), &events, id, &a, " The shop stays. ").unwrap();
+		assert_eq!(action.status, "rejected");
+		assert_eq!(action.decided_by.as_deref(), Some("reject"));
+		assert_eq!(action.reason.as_deref(), Some("The shop stays."));
+
+		let messages =
+			crate::conversations::messages(&db.conn(), conversation).unwrap();
+		let last = messages.last().unwrap();
+		let crate::conversations::MessageData::System { text } = &last.data
+		else {
+			panic!("a system message");
+		};
+		assert_eq!(
+			text,
+			&format!(
+				"reject rejected A{id} (Delete the domain shop.ch of the \
+				group shop), it won't run. The reason: The shop stays."
+			)
+		);
+
+		// decided once, and nothing to confirm any more
+		assert!(rejected(&db.conn(), &events, id, &a, "").is_err());
+		let none = ConfirmReq::default();
+		let tried = check_panel(&db, &authed(&a), id, &none).await;
+		assert!(tried.is_err());
+	}
+
+	#[test]
+	fn expired_actions_are_marked_and_cant_be_rejected() {
+		let db = Db::memory();
+		let id = mailed(&db, None);
+		db.conn()
+			.execute("UPDATE pending_actions SET created_at = 0", [])
+			.unwrap();
+		let a = admin(&db, 951, "expire");
+		assert!(rejected(&db.conn(), &Events::new(), id, &a, "").is_err());
+		due(&db, &Events::new());
+		let stored: String = db
+			.conn()
+			.query_row("SELECT status FROM pending_actions", [], |r| r.get(0))
+			.unwrap();
+		assert_eq!(stored, "expired");
 	}
 }

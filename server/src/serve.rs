@@ -216,6 +216,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.merge(llm::routes())
 		.merge(peers::routes())
 		.merge(proposals::routes())
+		.merge(approvals::routes())
 		.merge(update::routes())
 		.merge(appenv::routes())
 		.merge(procs::routes())

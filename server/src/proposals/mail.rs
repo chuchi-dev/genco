@@ -40,7 +40,7 @@ pub(super) async fn mail(cfg: &Config, db: &Db, id: i64) {
 				}
 			}
 		});
-		let body = mail_body(&p, cfg.panel_url("/agents"), link);
+		let body = mail_body(&p, cfg.panel_url("/approvals"), link);
 		let sent = crate::mail::send(cfg, db, &[email], &subject, &body).await;
 		if let Err(e) = sent {
 			tracing::error!("mail about proposal {id}: {e}");
@@ -115,7 +115,8 @@ fn mail_body(
 	format!(
 		"The AI agent {from} proposes a task for genco's agent \
 		(proposal #{id}).\n\n\
-		{link}open Start → AI Agents → Proposals:\n\n{panel}Nothing happens \
+		{link}open Start → Approvals (approving there asks for your password \
+		and 2FA code):\n\n{panel}Nothing happens \
 		without an approval. It expires in {VALID_DAYS} days.\n\n\
 		----------------------------------------\n\n\
 		{rewritten}{warnings}The proposal, as {from} wrote it (links in it \
@@ -209,7 +210,7 @@ mod tests {
 		let p = get_one(&conn, id).unwrap();
 		let body = mail_body(
 			&p,
-			Some("https://panel.example.ch/agents".into()),
+			Some("https://panel.example.ch/approvals".into()),
 			Some("https://panel.example.ch/proposal/abc".into()),
 		);
 		assert!(body.starts_with(
@@ -218,8 +219,9 @@ mod tests {
 			Approve or reject: https://panel.example.ch/proposal/abc\n\
 			(works without logging in, once; shows the proposal first; \
 			approving asks for your 2FA code, or your password)\n\n\
-			Or open Start → AI Agents → Proposals:\n\n\
-			https://panel.example.ch/agents\n\n"
+			Or open Start → Approvals (approving there asks for your password \
+			and 2FA code):\n\n\
+			https://panel.example.ch/approvals\n\n"
 		));
 		let line = body.find("\n-----").unwrap();
 		assert!(body.find("https://evil.example").unwrap() > line);

@@ -46,8 +46,9 @@ terminal.
 
 ## Safety
 
-- Deleting a domain, database or group creates a pending action and a mail
-  to the admins; it only runs after an admin confirms it while logged in.
+- Deleting a domain, database or group creates a pending action (Start →
+  Approvals) and a mail to the admins; it only runs after an admin
+  confirms it while logged in, by the mail's link or with the 2FA code.
   It dumps and moves to a trash first (30 days).
 - The agent has a root shell, so the real safety net are backups the box
   can't delete.
@@ -306,6 +307,15 @@ terminal.
 - [x] drop-ins that override genco's units reported by apply, the minute
       check and the config view; `genco group adopt-limits`
 - [x] ImageMagick limits for groups with PHP, from the group's memory
+
+### 11d. Approvals (operator 2026-11-07)
+- [x] Start → Approvals: proposals (#12) and pending actions (A12) in one
+      list with who asked, what happens, expiry; 30 days of history;
+      the taskbar and Find cover both
+- [x] confirming in the panel with password and 2FA code for both kinds,
+      without 2FA only rejecting (mail off: the password)
+- [x] rejecting an action with a reason, back to the agent's
+      conversation; a personal mail link per admin for deletions too
 
 ### 9. Access for other agents (operator 2026-11-01, later)
 - [x] a `read` token scope: `GET /api/status` (server, groups with their

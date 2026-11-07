@@ -1082,6 +1082,28 @@ pub async fn verify_password_and_code(
 	verify_code(db, user, &req.code).await
 }
 
+/// Confirming in the panel (Approvals) what a mail link confirms too: a
+/// proposal or a pending action. It needs the password and the 2FA code,
+/// a stolen session and password mustn't do it. Without 2FA the panel
+/// only rejects and the mail's link confirms; with nothing `mailed` (mail
+/// is off) the password alone does.
+pub async fn verify_approval(
+	db: &Db,
+	user: &User,
+	password: &str,
+	code: &str,
+	mailed: bool,
+) -> Result<()> {
+	if !user.totp && mailed {
+		return Err(Error::Invalid(NO_2FA.into()));
+	}
+	verify_password(db, user, password).await?;
+	verify_code(db, user, code).await
+}
+
+pub const NO_2FA: &str = "Turn on two-factor login to confirm here, or use \
+	the link in the mail.";
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TotpSetup {

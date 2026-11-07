@@ -454,6 +454,42 @@ export type Proposal = {
 	createdAt: number;
 };
 
+/** a deletion or another change that waits for an admin (actions.rs) */
+export type PendingAction = {
+	id: number;
+	/** "A12", apart from the proposals' "#12" */
+	number: string;
+	kind:
+		| 'delete_domain'
+		| 'delete_database'
+		| 'delete_group'
+		| 'delete_mail_domain'
+		| 'delete_mailbox'
+		| 'backup_remote_set'
+		| 'backup_remote_off';
+	description: string;
+	requestedBy: string;
+	/** the conversation of genco's agent that asked for it */
+	conversationId: number | null;
+	status: 'pending' | 'running' | 'done' | 'failed' | 'rejected' | 'expired';
+	createdAt: number;
+	expiresAt: number;
+	decidedBy: string | null;
+	decidedAt: number | null;
+	/** the admin's reason of a rejection */
+	reason: string | null;
+	/** nothing was mailed (mail off), the password confirms it */
+	byPassword: boolean;
+	deletion: boolean;
+	/** of a database to delete */
+	sizeBytes?: number;
+};
+
+/** what waits in Start → Approvals, and what was decided in 30 days */
+export type Approval =
+	| { kind: 'proposal'; proposal: Proposal }
+	| { kind: 'action'; action: PendingAction };
+
 export type Backup = {
 	id: number;
 	status: 'running' | 'done' | 'failed';
@@ -563,7 +599,7 @@ export function snapshotKind(s: Snapshot): string {
 export type Event =
 	| { type: 'hello'; boot: number }
 	| { type: 'tree' }
-	| { type: 'proposals' }
+	| { type: 'approvals' }
 	| { type: 'conversation'; conversation: Conversation }
 	| { type: 'message'; message: Message }
 	| { type: 'deploy'; deploy: Deploy }

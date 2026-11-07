@@ -3,7 +3,7 @@
 	import Markdown from './Markdown.svelte';
 
 	// a proposal as the admin decides on it, with the warnings: in Start →
-	// AI Agents and on the page of the mail's link.
+	// Approvals and on the page of the mail's link.
 	// raw: the text exactly as stored, what the server agent gets;
 	// original: what the agent sent, before the rewrite
 	let {
