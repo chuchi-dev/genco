@@ -991,11 +991,11 @@ pub fn attempt_failed(key: &str, max: u32) {
 	// unknown emails would grow the map without end
 	failures.retain(|_, (_, last)| *last + CODE_LOCK_MS > now());
 	let entry = failures.entry(key.to_string()).or_insert((0, 0));
-	// after the wait the count starts over
-	if entry.0 >= max {
-		entry.0 = 0;
+	// a try while it waits neither restarts the count nor the wait; after
+	// the wait the entry is gone and the count starts over
+	if entry.0 < max {
+		*entry = (entry.0 + 1, now());
 	}
-	*entry = (entry.0 + 1, now());
 }
 
 fn totp(secret: &str, email: &str) -> Option<TOTP> {
@@ -1087,18 +1087,13 @@ pub async fn verify_step_up(db: &Db, user: &User, req: &StepUp) -> Result<()> {
 pub async fn verify_approval(
 	db: &Db,
 	user: &User,
-	password: &str,
-	code: &str,
+	req: &StepUp,
 	mailed: bool,
 ) -> Result<()> {
 	if !user.totp && mailed {
 		return Err(Error::Invalid(NO_2FA.into()));
 	}
-	let req = StepUp {
-		password: password.into(),
-		code: code.into(),
-	};
-	verify_step_up(db, user, &req).await
+	verify_step_up(db, user, req).await
 }
 
 pub const NO_2FA: &str = "Turn on two-factor login to confirm here, or use \
@@ -1552,6 +1547,19 @@ mod tests {
 		verify_step_up(&db, &b, &auth("other password", ""))
 			.await
 			.unwrap();
+	}
+
+	#[test]
+	fn tries_while_locked_dont_restart_the_count() {
+		let key = "test:lock";
+		for _ in 0..MAX_CODE_FAILURES {
+			attempt_failed(key, MAX_CODE_FAILURES);
+		}
+		assert!(!attempts_allowed(key, MAX_CODE_FAILURES));
+		// a refused try counts too, the lock holds
+		attempt_failed(key, MAX_CODE_FAILURES);
+		assert!(!attempts_allowed(key, MAX_CODE_FAILURES));
+		CODE_FAILURES.lock().unwrap().remove(key);
 	}
 
 	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
