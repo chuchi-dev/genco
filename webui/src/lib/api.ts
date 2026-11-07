@@ -547,6 +547,8 @@ export type BackupSettings = {
 		sizeAt: number | null;
 	};
 	defaultPath: string;
+	/** genco made a repository password on the agent's request, unseen */
+	newPassword: boolean;
 };
 
 /** what a snapshot holds: files, database x or system */

@@ -80,6 +80,21 @@
 		await load();
 	}
 
+	// made on the agent's request, an admin sees it once
+	async function showNewPassword() {
+		const auth = await message.password(
+			'Remote Backup',
+			"see the remote repository's password",
+		);
+		if (auth === null) return;
+		try {
+			generated = await post('/settings/backup/new-password', auth);
+			await load();
+		} catch (e: any) {
+			error = e.message;
+		}
+	}
+
 	async function test() {
 		testing = true;
 		testResult = 'Connecting…';
@@ -212,6 +227,21 @@
 		{/if}
 	{/if}
 </fieldset>
+
+{#if settings?.newPassword && !generated}
+	<fieldset>
+		<legend>Repository Password</legend>
+		<p class="error">
+			genco made a new password for the remote repository when an admin
+			confirmed the agent's request. Look at it once and keep it outside
+			this server: without it the remote copy can't be read when the
+			server is lost.
+		</p>
+		<div class="row-buttons">
+			<Button onclick={showNewPassword}>Show Password</Button>
+		</div>
+	</fieldset>
+{/if}
 
 {#if generated}
 	<fieldset>

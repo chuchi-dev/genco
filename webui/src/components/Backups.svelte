@@ -3,6 +3,7 @@
 		formatBytes,
 		formatTime,
 		get,
+		newest,
 		post,
 		type Backup,
 		type BackupSettings,
@@ -16,7 +17,8 @@
 	// the backup runs of the server with their logs and the snapshots of
 	// the server's config
 	let runs = $state<Backup[]>([]);
-	let system = $state<Snapshot[]>([]);
+	let system = $state<Snapshot[] | null>(null);
+	let systemError = $state<string | null>(null);
 	let selected = $state<number | null>(null);
 	let error = $state<string | null>(null);
 	let settings = $state<BackupSettings | null>(null);
@@ -27,16 +29,28 @@
 
 	async function load() {
 		try {
-			[runs, system, settings] = await Promise.all([
+			[runs, settings] = await Promise.all([
 				get('/backups'),
-				get('/backups/system' + (remote ? '?remote=true' : '')),
 				get('/settings/backup'),
 			]);
 		} catch (e: any) {
 			error = e.message;
 		}
 	}
+
+	// on its own: the remote may take up to a minute to answer
+	const latest = newest();
+	function loadSystem() {
+		system = null;
+		systemError = null;
+		latest(
+			get('/backups/system' + (remote ? '?remote=true' : '')),
+			s => (system = s),
+			e => (systemError = e.message),
+		);
+	}
 	load();
+	loadSystem();
 
 	const live = $derived(shown?.status === 'running');
 
@@ -44,6 +58,8 @@
 		listen(ev => {
 			if (ev.type !== 'backup') return;
 			load();
+			// the remote changes after the copy, not on every step
+			if (!remote || ev.backup.status !== 'running') loadSystem();
 		}),
 	);
 
@@ -113,17 +129,21 @@
 <div class="config">
 	<h4>Server config</h4>
 	{#if settings?.remote}
-		<select aria-label="Repository" bind:value={remote} onchange={load}>
+		<select
+			aria-label="Repository"
+			bind:value={remote}
+			onchange={loadSystem}
+		>
 			<option value={false}>On this server</option>
 			<option value={true}>Remote copy</option>
 		</select>
 	{/if}
 </div>
 <ListView
-	items={system}
+	items={system ?? []}
 	key={s => s.id}
 	columns={[{ label: 'Snapshot' }, { label: 'Time' }, { label: 'Size' }]}
-	empty="No snapshots yet."
+	empty={system ? 'No snapshots yet.' : systemError ? '' : 'Loading…'}
 	minHeight={110}
 	maxHeight={160}
 >
@@ -133,6 +153,7 @@
 		<td>{formatBytes(s.bytes)}</td>
 	{/snippet}
 </ListView>
+{#if systemError}<p class="error">{systemError}</p>{/if}
 
 <style lang="scss">
 	@use 'styles/win' as *;

@@ -447,30 +447,26 @@ pub struct Snapshot {
 }
 
 /// The snapshots with this tag, newest first, of the local repository or
-/// the remote one.
+/// the remote one (within a minute).
 pub async fn snapshots(
 	remote: Option<&remote::Opened>,
 	tag: &str,
 ) -> Result<Vec<Snapshot>> {
-	let mut cmd = match remote {
-		Some(r) => r.restic(),
-		None if !PathBuf::from(REPOSITORY).join("config").exists() => {
-			return Ok(vec![]);
-		}
-		None => restic(),
-	};
-	let out = cmd
-		.args(["snapshots", "--json", "--no-lock", "--tag", tag])
+	let args = ["snapshots", "--json", "--no-lock", "--tag", tag];
+	if let Some(r) = remote {
+		let out = r.answer(r.output(&args)).await.and_then(|out| out);
+		return parse_snapshots(&out.map_err(Error::Internal)?);
+	}
+	if !PathBuf::from(REPOSITORY).join("config").exists() {
+		return Ok(vec![]);
+	}
+	let out = restic()
+		.args(args)
 		.output()
 		.await
 		.map_err(|e| Error::Internal(format!("restic: {e}")))?;
 	if !out.status.success() {
-		let err = restic_error(&out.stderr);
-		let err = match remote {
-			Some(r) => r.hide(&err),
-			None => err,
-		};
-		return Err(Error::Internal(err));
+		return Err(Error::Internal(restic_error(&out.stderr)));
 	}
 	parse_snapshots(&out.stdout)
 }
@@ -496,16 +492,9 @@ struct Which {
 	remote: bool,
 }
 
-impl Which {
-	fn open(&self, db: &Db) -> Result<Option<remote::Opened>> {
-		if !self.remote {
-			return Ok(None);
-		}
-		let opened = remote::open(&db.conn(), crate::secrets::key_file())?;
-		opened
-			.ok_or_else(|| Error::Invalid("no remote backup is set up".into()))
-			.map(Some)
-	}
+/// The remote if asked for, an error when there is none.
+fn repo(db: &Db, remote: bool) -> Result<Option<remote::Opened>> {
+	remote.then(|| remote::required(db)).transpose()
 }
 
 fn parse_snapshots(json: &[u8]) -> Result<Vec<Snapshot>> {
@@ -593,7 +582,7 @@ async fn group_snapshots(
 	Query(which): Query<Which>,
 ) -> Result<Json<Vec<Snapshot>>> {
 	let group = hosting::find_group(&db.conn(), id)?;
-	let remote = which.open(&db)?;
+	let remote = repo(&db, which.remote)?;
 	let tag = format!("group:{}", group.name);
 	Ok(Json(snapshots(remote.as_ref(), &tag).await?))
 }
@@ -603,7 +592,7 @@ async fn system_snapshots(
 	State(db): State<Db>,
 	Query(which): Query<Which>,
 ) -> Result<Json<Vec<Snapshot>>> {
-	let remote = which.open(&db)?;
+	let remote = repo(&db, which.remote)?;
 	Ok(Json(snapshots(remote.as_ref(), "system").await?))
 }
 
@@ -630,13 +619,15 @@ pub enum BackupCmd {
 		#[clap(long)]
 		remote: bool,
 	},
-	/// Restore a snapshot into a new directory, never over the live data
+	/// Restore a snapshot into a new directory only root can read, never
+	/// over the live data
 	Restore {
 		/// its ID or latest
 		snapshot: String,
-		/// an empty or new directory
+		/// an empty or new directory, not in a group's, a mailbox's or
+		/// /tmp; /var/lib/genco/restore/<time> by default
 		#[clap(long)]
-		target: PathBuf,
+		target: Option<PathBuf>,
 		/// tags that must all match, e.g. group:shop,files
 		#[clap(long)]
 		tag: Option<String>,
@@ -652,15 +643,13 @@ pub enum BackupCmd {
 	Remote(remote::RemoteCmd),
 }
 
-fn repo(db: &Db, remote: bool) -> Result<Option<remote::Opened>> {
-	Which { remote }.open(db)
-}
-
+/// `actor` runs it, see `remote::cli`.
 pub async fn cli(
 	cfg: &crate::config::Config,
 	db: &Db,
 	cmd: BackupCmd,
 	stdin: impl FnOnce() -> std::result::Result<String, String>,
+	actor: &str,
 ) -> Result<String> {
 	match cmd {
 		BackupCmd::Snapshots { tag, remote } => {
@@ -687,16 +676,12 @@ pub async fn cli(
 			include,
 			remote,
 		} => {
-			let busy = std::fs::read_dir(&target)
-				.is_ok_and(|mut d| d.next().is_some());
-			if busy || target == std::path::Path::new("/") {
-				return Err(Error::Invalid(format!(
-					"{} is not empty: restore into a new directory and \
-					copy what you need from there",
-					target.display()
-				)));
-			}
 			let remote = repo(db, remote)?;
+			let target = match target {
+				Some(t) => t,
+				None => PathBuf::from(RESTORE).join(crate::util::stamp().await),
+			};
+			let target = restore_target(&target, NO_RESTORE)?;
 			let mut cmd = match &remote {
 				Some(r) => r.restic(),
 				None => restic(),
@@ -719,13 +704,107 @@ pub async fn cli(
 			}
 			Ok(format!("restored into {}", target.display()))
 		}
-		BackupCmd::Remote(cmd) => remote::cli(cfg, db, cmd, stdin).await,
+		BackupCmd::Remote(cmd) => {
+			let key_file = crate::secrets::key_file();
+			remote::cli(cfg, db, cmd, stdin, actor, key_file).await
+		}
 	}
+}
+
+/// Where a restore goes without `--target`.
+const RESTORE: &str = "/var/lib/genco/restore";
+
+/// What a group (all are in /srv/genco), a mailbox or anyone may write:
+/// root restoring there would follow the links they put in its way, and
+/// they could read it.
+const NO_RESTORE: &[&str] = &[
+	"/srv/genco",
+	"/var/vmail",
+	"/var/www",
+	"/home",
+	"/tmp",
+	"/var/tmp",
+	"/dev/shm",
+];
+
+/// The restore's directory, made only for root: new or empty, no link,
+/// in a directory of root that nobody else may write, not in `no`.
+fn restore_target(target: &std::path::Path, no: &[&str]) -> Result<PathBuf> {
+	use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+	let invalid = |m: String| Error::Invalid(m);
+	let io = |e: std::io::Error| Error::Internal(e.to_string());
+	let refuse =
+		|t: &std::path::Path| match no.iter().find(|d| t.starts_with(d)) {
+			Some(dir) => Err(invalid(format!(
+				"not into {dir}, its users could get in the way or read it: \
+			leave out --target for {RESTORE}/<time>"
+			))),
+			None => Ok(()),
+		};
+	let shown = target.display();
+	let (Some(parent), Some(name)) = (target.parent(), target.file_name())
+	else {
+		return Err(invalid(format!(
+			"{shown} is no directory to restore into"
+		)));
+	};
+	if !target.is_absolute()
+		|| target.components().any(|c| c.as_os_str() == "..")
+	{
+		return Err(invalid(format!("{shown}: give a full path without ..")));
+	}
+	refuse(target)?;
+	if parent.starts_with(RESTORE) {
+		crate::util::private_dir(std::path::Path::new(RESTORE)).map_err(io)?;
+	}
+	// a link in the parent may lead anywhere, what counts is where
+	let parent = parent
+		.canonicalize()
+		.map_err(|e| invalid(format!("{}: {e}", parent.display())))?;
+	let target = parent.join(name);
+	refuse(&target)?;
+
+	// genco runs as root, the restore too
+	let me = unsafe { libc::geteuid() };
+	let meta = std::fs::metadata(&parent).map_err(io)?;
+	if meta.uid() != me || meta.mode() & 0o022 != 0 {
+		return Err(invalid(format!(
+			"{} is not root's alone: restore into a directory only root \
+			may write",
+			parent.display()
+		)));
+	}
+	match std::fs::symlink_metadata(&target) {
+		Err(_) => std::fs::DirBuilder::new()
+			.mode(0o700)
+			.create(&target)
+			.map_err(io)?,
+		Ok(m) if m.is_dir() => {
+			let busy = std::fs::read_dir(&target).map_err(io)?.next().is_some();
+			if busy || m.uid() != me {
+				return Err(invalid(format!(
+					"{} is not an empty directory of root: restore into a \
+					new one and copy what you need from there",
+					target.display()
+				)));
+			}
+			crate::util::set_mode(&target, 0o700).map_err(io)?;
+		}
+		Ok(_) => {
+			return Err(invalid(format!(
+				"{} is a link or a file, restore into a new directory",
+				target.display()
+			)));
+		}
+	}
+	Ok(target)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::path::Path;
 
 	#[test]
 	fn snapshots_newest_first_without_the_genco_tag() {
@@ -738,6 +817,64 @@ mod tests {
 		assert_eq!(snaps[0].id, "bbb");
 		assert_eq!(snaps[0].tags, ["group:shop", "db:shop"]);
 		assert_eq!(snaps[1].bytes, 100);
+	}
+
+	#[test]
+	fn no_restore_where_others_write() {
+		for t in [
+			"/srv/genco/shop/restore",
+			"/srv/genco/shop",
+			"/var/vmail/a.ch",
+			"/var/www/x",
+			"/home/anna/r",
+			"/tmp/restore",
+			"/root/../tmp/restore",
+			"restore",
+			"/",
+		] {
+			let err = restore_target(Path::new(t), NO_RESTORE);
+			assert!(err.is_err(), "{t}");
+		}
+	}
+
+	#[test]
+	fn the_restore_target_is_roots_alone() {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let base = std::env::temp_dir()
+			.canonicalize()
+			.unwrap()
+			.join(format!("genco-restore-{}", rand::random::<u32>()));
+		let dir = base.join("root");
+		std::fs::create_dir_all(&dir).unwrap();
+		crate::util::set_mode(&dir, 0o755).unwrap();
+		let shared = base.join("shared");
+		std::fs::create_dir_all(&shared).unwrap();
+		let no = [shared.to_str().unwrap()];
+		let mode = |p: &Path| {
+			std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+		};
+
+		// new, or empty: made root's only
+		let new = restore_target(&dir.join("a"), &no).unwrap();
+		assert_eq!(mode(&new), 0o700);
+		std::fs::create_dir(dir.join("b")).unwrap();
+		crate::util::set_mode(&dir.join("b"), 0o777).unwrap();
+		assert_eq!(mode(&restore_target(&dir.join("b"), &no).unwrap()), 0o700);
+
+		// not empty, a link, through a link into a shared place
+		std::fs::write(dir.join("b/f"), "x").unwrap();
+		assert!(restore_target(&dir.join("b"), &no).is_err());
+		std::os::unix::fs::symlink(&shared, dir.join("link")).unwrap();
+		assert!(restore_target(&dir.join("link"), &no).is_err());
+		assert!(restore_target(&dir.join("link/x"), &no).is_err());
+		assert!(!shared.join("x").exists());
+
+		// in a directory others may write
+		crate::util::set_mode(&dir, 0o777).unwrap();
+		assert!(restore_target(&dir.join("c"), &no).is_err());
+		assert!(!dir.join("c").exists());
+		std::fs::remove_dir_all(&base).unwrap();
 	}
 
 	#[test]

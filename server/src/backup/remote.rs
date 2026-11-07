@@ -3,6 +3,9 @@
 //! S3-compatible storage, which keeps its own, longer history. Key and
 //! repository password are sealed with the secrets key, the API only says
 //! whether they are set, and restic gets them through its environment.
+//! Where the copy goes decides where all data goes: the panel asks for the
+//! password and code, the agent's changes wait for an admin's confirmation
+//! (actions.rs), and every change or stop is sent to all admins.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -25,7 +28,13 @@ use crate::users::Authed;
 const SETTING: &str = "backup:remote";
 /// the last copy and the size, written by the backup
 const STATE: &str = "backup:remote-state";
+/// when and by whom the remote was turned off, a problem for a week
+const OFF: &str = "backup:remote-off";
+/// the repository password genco made on a confirmed request of the agent,
+/// sealed until an admin looks at it
+const NEW_PASSWORD: &str = "backup:remote-new-password";
 const DAY: i64 = 24 * 60 * 60 * 1000;
+const OFF_SHOWN: i64 = 7 * DAY;
 /// the size reads the whole index, once a week is enough
 const SIZE_EVERY: i64 = 7 * DAY;
 /// a problem when no copy worked for this long
@@ -84,7 +93,7 @@ pub struct View {
 	keep: Keep,
 	limit_upload: Option<u32>,
 	configured_at: i64,
-	location: String,
+	pub location: String,
 }
 
 impl From<&Stored> for View {
@@ -115,8 +124,9 @@ pub struct RemoteState {
 	pub size_at: Option<i64>,
 }
 
-/// A change of the settings, from the panel or the CLI.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// A change of the settings, from the panel or the CLI; sealed in the
+/// request of the agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
 	/// off, b2 or s3
@@ -169,6 +179,18 @@ pub fn view(conn: &Connection) -> Option<View> {
 	stored(conn).as_ref().map(View::from)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct Off {
+	at: i64,
+	by: String,
+}
+
+/// The remote with its secrets, an error when there is none.
+pub fn required(db: &Db) -> Result<Opened> {
+	open(&db.conn(), crate::secrets::key_file())?
+		.ok_or_else(|| Error::Invalid("no remote backup is set up".into()))
+}
+
 /// The remote with its secrets, `None` when there is none.
 pub fn open(conn: &Connection, key_file: &Path) -> Result<Option<Opened>> {
 	let Some(stored) = stored(conn) else {
@@ -194,14 +216,13 @@ pub fn default_path(cfg: &Config) -> String {
 }
 
 fn repository(s: &Stored) -> String {
-	match s.provider.as_str() {
-		"b2" => format!("b2:{}:{}", s.bucket, s.path),
-		_ => format!(
-			"s3:{}/{}/{}",
-			s.endpoint.trim_end_matches('/'),
-			s.bucket,
-			s.path
-		),
+	url(&s.provider, &s.endpoint, &s.bucket, &s.path)
+}
+
+fn url(provider: &str, endpoint: &str, bucket: &str, path: &str) -> String {
+	match provider {
+		"b2" => format!("b2:{bucket}:{path}"),
+		_ => format!("s3:{}/{bucket}/{path}", endpoint.trim_end_matches('/')),
 	}
 }
 
@@ -270,24 +291,32 @@ impl Opened {
 		cmd
 	}
 
-	/// The key and password as ***, e.g. in restic's errors.
+	/// The key and password as ***, e.g. in restic's errors. Short ones
+	/// would mask ordinary words, no real key is that short.
 	pub fn hide(&self, text: &str) -> String {
-		text.replace(&self.secret, "***")
-			.replace(&self.password, "***")
+		let mut text = text.to_string();
+		for s in [&self.secret, &self.password] {
+			if s.trim().len() >= 8 {
+				text = text.replace(s.as_str(), "***");
+			}
+		}
+		text
 	}
 
 	pub fn location(&self) -> String {
 		repository(&self.stored)
 	}
 
-	/// restic's output, its error with the secrets hidden.
-	async fn output(
+	/// restic's output, its error with the secrets hidden. It stops when
+	/// the caller gives up, e.g. a browser that left.
+	pub(super) async fn output(
 		&self,
 		args: &[&str],
 	) -> std::result::Result<Vec<u8>, String> {
 		let out = self
 			.restic()
 			.args(args)
+			.kill_on_drop(true)
 			.output()
 			.await
 			.map_err(|e| format!("restic: {e}"))?;
@@ -300,22 +329,15 @@ impl Opened {
 	/// Creates the remote repository if there is none yet, true then. With
 	/// the local one's chunker settings the copy deduplicates like it.
 	async fn ensure(&self) -> std::result::Result<bool, String> {
-		// restic retries a missing bucket or a dead endpoint for minutes
 		let read = self
 			.restic()
 			.args(["cat", "config"])
 			.stdout(Stdio::null())
 			.kill_on_drop(true)
 			.output();
-		let out = tokio::time::timeout(CONNECT_TIMEOUT, read)
-			.await
-			.map_err(|_| {
-				format!(
-					"no answer from {} in a minute: does the bucket exist, \
-					is the key allowed to use it?",
-					self.location()
-				)
-			})?
+		let out = self
+			.answer(read)
+			.await?
 			.map_err(|e| format!("restic: {e}"))?;
 		if out.status.success() {
 			return Ok(false);
@@ -339,6 +361,15 @@ impl Opened {
 		Ok(true)
 	}
 
+	/// `run` if the remote answers in a minute: restic retries a missing
+	/// bucket or a dead endpoint for minutes.
+	pub(super) async fn answer<T>(
+		&self,
+		run: impl Future<Output = T>,
+	) -> std::result::Result<T, String> {
+		within(CONNECT_TIMEOUT, &self.location(), run).await
+	}
+
 	/// Runs restic on the remote with its output and errors in the log.
 	async fn log_run(
 		&self,
@@ -353,6 +384,20 @@ impl Opened {
 			.await
 			.map_err(|e| format!("restic {}: {e}", args[0]))
 	}
+}
+
+async fn within<T>(
+	limit: std::time::Duration,
+	location: &str,
+	run: impl Future<Output = T>,
+) -> std::result::Result<T, String> {
+	tokio::time::timeout(limit, run).await.map_err(|_| {
+		format!(
+			"no answer from {location} in {} seconds: does the bucket exist, \
+			is the key allowed to use it?",
+			limit.as_secs()
+		)
+	})
 }
 
 /// Whether restic's error says there is no repository yet (exit code 10
@@ -543,8 +588,10 @@ fn check(mut s: Settings, default_path: &str) -> Result<Settings> {
 		}
 		_ => return invalid("the provider is b2, s3 or off"),
 	}
-	if s.bucket.len() < 3 || s.bucket.len() > 63 || !plain(&s.bucket, ".-_") {
-		return invalid("the bucket is a name of 3 to 63 letters, digits, -");
+	if s.bucket.len() < 3 || s.bucket.len() > 63 || !plain(&s.bucket, ".-") {
+		return invalid(
+			"the bucket is a name of 3 to 63 letters, digits, - and .",
+		);
 	}
 	let path_ok = plain(&s.path, "._-/")
 		&& s.path.split('/').all(|p| !p.is_empty() && p != "..");
@@ -644,10 +691,191 @@ pub fn save(
 	Ok(generated)
 }
 
+/// Saves the settings like `save` and tells every admin and agent when the
+/// backups go somewhere else or stop leaving the server, so it can't
+/// happen silently. `by` did it.
+pub async fn change(
+	cfg: &Config,
+	db: &Db,
+	key_file: &Path,
+	s: Settings,
+	by: &str,
+) -> Result<Option<String>> {
+	let (generated, notice) = {
+		let conn = db.conn();
+		let before = view(&conn).map(|v| v.location);
+		let generated = save(&conn, key_file, s, &default_path(cfg))?;
+		let after = view(&conn).map(|v| v.location);
+		(generated, changed(&conn, before, after, by, now())?)
+	};
+	if let Some(n) = notice {
+		crate::notify::send(cfg, db, n).await;
+	}
+	Ok(generated)
+}
+
+/// The notice when the location changed; a stop is remembered for the
+/// problem of the week after.
+fn changed(
+	conn: &Connection,
+	before: Option<String>,
+	after: Option<String>,
+	by: &str,
+	now: i64,
+) -> Result<Option<crate::notify::Notice>> {
+	if before == after {
+		return Ok(None);
+	}
+	let check = "If none of you did this, look at the activity log and \
+		change it back in Settings → Backups.";
+	let (title, text) = match (&before, &after) {
+		(Some(old), None) => {
+			let off = Off {
+				at: now,
+				by: by.into(),
+			};
+			set_setting(conn, OFF, &serde_json::to_string(&off).unwrap())?;
+			(
+				"remote backups turned off".to_string(),
+				format!(
+					"{by} turned off the remote backups: no copy leaves the \
+					server any more. The repository at {old} stays. {check}"
+				),
+			)
+		}
+		(_, Some(new)) => {
+			conn.execute("DELETE FROM settings WHERE key = ?1", [OFF])?;
+			let was = before
+				.as_ref()
+				.map(|o| format!(" instead of {o}"))
+				.unwrap_or_default();
+			(
+				format!("remote backups now go to {new}"),
+				format!(
+					"{by} set the remote backups: after each night the \
+					backups of all groups and of the server are copied to \
+					{new}{was}. {check}"
+				),
+			)
+		}
+		(None, None) => return Ok(None),
+	};
+	Ok(Some(crate::notify::Notice {
+		kind: "report",
+		attention: true,
+		title,
+		text,
+		url: None,
+		proposal: None,
+	}))
+}
+
+/// Asks an admin to confirm the agent's new settings: they are sealed in
+/// the request, the agent's output only gets the request's message.
+async fn request_set(
+	cfg: &Config,
+	db: &Db,
+	key_file: &Path,
+	s: Settings,
+	by: &str,
+) -> Result<String> {
+	let s = check(s, &default_path(cfg))?;
+	let new_password =
+		stored(&db.conn()).is_none() && s.repo_password.is_empty();
+	let description = format!(
+		"Copy the backups of all groups and of the server to {} (key ID {}) \
+		after each night.",
+		url(&s.provider, &s.endpoint, &s.bucket, &s.path),
+		s.key_id
+	);
+	let sealed = crate::secrets::seal_with(
+		key_file,
+		&serde_json::to_string(&s).unwrap(),
+	)?;
+	let req = crate::actions::ask(
+		cfg,
+		db,
+		crate::actions::Kind::RemoteSet,
+		0,
+		&description,
+		Some(sealed),
+		by,
+	)
+	.await?;
+	let mut msg = req.message;
+	if new_password {
+		msg += "\nOnce confirmed, the new remote repository password is \
+			shown to the admins in Settings → Backups, not here.";
+	}
+	Ok(msg)
+}
+
+/// Runs a confirmed request of the agent: the sealed settings, `None`
+/// turns the remote off.
+pub async fn confirmed(
+	cfg: &Config,
+	db: &Db,
+	key_file: &Path,
+	sealed: Option<&[u8]>,
+	by: &str,
+	log: &mut Vec<String>,
+) -> std::result::Result<(), String> {
+	let s = match sealed {
+		Some(sealed) => {
+			let json = crate::secrets::open_with(key_file, sealed)
+				.map_err(|e| e.to_string())?;
+			serde_json::from_str(&json).map_err(|e| e.to_string())?
+		}
+		None => Settings {
+			provider: "off".into(),
+			..Default::default()
+		},
+	};
+	let generated = change(cfg, db, key_file, s, by)
+		.await
+		.map_err(|e| e.to_string())?;
+	match view(&db.conn()) {
+		Some(v) => log
+			.push(format!("the backups go to {} after each night", v.location)),
+		None => log.push(
+			"no more remote copies; the repository stays in the bucket".into(),
+		),
+	}
+	if let Some(p) = generated {
+		let sealed = crate::secrets::seal_with(key_file, &p)
+			.map_err(|e| e.to_string())?;
+		set_setting(
+			&db.conn(),
+			NEW_PASSWORD,
+			&serde_json::to_string(&sealed).unwrap(),
+		)
+		.map_err(|e| e.to_string())?;
+		log.push(
+			"genco made the remote repository's password: open Settings → \
+			Backups to see it once and keep it outside this server"
+				.into(),
+		);
+	}
+	Ok(())
+}
+
 /// What the minute check reports: the last copy failed, or none worked
-/// for two days. Key and text of the problem.
+/// for two days, or the remote was turned off in the last week. Key and
+/// text of the problem.
 pub fn problem(conn: &Connection, now: i64) -> Option<(&'static str, String)> {
-	let s = stored(conn)?;
+	let Some(s) = stored(conn) else {
+		let off: Off = get_json(conn, OFF)?;
+		return (off.at > now - OFF_SHOWN).then(|| {
+			(
+				"backup:remote-off",
+				format!(
+					"the remote backups were turned off by {}, no copy \
+					leaves the server",
+					off.by
+				),
+			)
+		});
+	};
 	let st = state(conn);
 	if let (Some(at), Some(e)) = (st.last_error_at, &st.last_error)
 		&& st.last_ok.is_none_or(|ok| ok < at)
@@ -695,6 +923,9 @@ struct SettingsView {
 	remote: Option<View>,
 	state: RemoteState,
 	default_path: String,
+	/// genco made a repository password on the agent's request, an admin
+	/// hasn't seen it yet
+	new_password: bool,
 }
 
 async fn get_settings(
@@ -707,6 +938,7 @@ async fn get_settings(
 		remote: view(&conn),
 		state: state(&conn),
 		default_path: default_path(&cfg),
+		new_password: get_json::<Vec<u8>>(&conn, NEW_PASSWORD).is_some(),
 	}))
 }
 
@@ -727,27 +959,44 @@ async fn save_settings(
 ) -> Result<Json<Option<String>>> {
 	crate::users::verify_password_and_code(&db, &authed.user, &req.auth)
 		.await?;
-	let generated = save(
-		&db.conn(),
-		crate::secrets::key_file(),
-		req.settings,
-		&default_path(&cfg),
-	)?;
+	let key_file = crate::secrets::key_file();
+	let by = &authed.user.name;
+	let generated = change(&cfg, &db, key_file, req.settings, by).await?;
 	Ok(Json(generated))
+}
+
+/// The repository password genco made on the agent's request, shown this
+/// once.
+async fn new_password(
+	authed: Authed,
+	State(db): State<Db>,
+	Json(auth): Json<crate::users::PasswordOnly>,
+) -> Result<Json<String>> {
+	crate::users::verify_password_and_code(&db, &authed.user, &auth).await?;
+	let conn = db.conn();
+	let sealed: Vec<u8> = get_json(&conn, NEW_PASSWORD)
+		.ok_or_else(|| Error::Invalid("it was shown already".into()))?;
+	let password =
+		crate::secrets::open_with(crate::secrets::key_file(), &sealed)?;
+	conn.execute("DELETE FROM settings WHERE key = ?1", [NEW_PASSWORD])?;
+	Ok(Json(password))
 }
 
 async fn test_route(
 	_authed: Authed,
 	State(db): State<Db>,
 ) -> Result<Json<String>> {
-	let opened = open(&db.conn(), crate::secrets::key_file())?
-		.ok_or_else(|| Error::Invalid("no remote backup is set up".into()))?;
-	opened.test().await.map(Json).map_err(Error::Invalid)
+	required(&db)?
+		.test()
+		.await
+		.map(Json)
+		.map_err(Error::Invalid)
 }
 
 pub fn routes() -> Router<AppState> {
 	Router::new()
 		.route("/settings/backup", get(get_settings).post(save_settings))
+		.route("/settings/backup/new-password", post(new_password))
 		.route("/settings/backup/test", post(test_route))
 }
 
@@ -759,7 +1008,7 @@ pub enum RemoteCmd {
 	/// each night. stdin: the application key (B2) or secret key (S3); a
 	/// second line is the password of an existing remote repository (a
 	/// new server restoring), without one genco makes a new one and
-	/// prints it once
+	/// prints it once. Run by the agent, an admin confirms it first.
 	Set {
 		#[clap(long, required_unless_present = "s3")]
 		b2: bool,
@@ -792,17 +1041,24 @@ pub enum RemoteCmd {
 	Test,
 	/// The settings and the last copy, without key or password
 	Show,
-	/// Stop copying; the repository stays in the bucket
+	/// Stop copying; the repository stays in the bucket. Run by the agent,
+	/// an admin confirms it first.
 	Off,
 }
 
+/// `actor` runs it (`activity::cli_actor`): the agent's `set` and `off`
+/// wait for an admin's confirmation, root in a terminal changes it
+/// directly. Every admin hears of it either way.
 pub async fn cli(
 	cfg: &Config,
 	db: &Db,
 	cmd: RemoteCmd,
 	stdin: impl FnOnce() -> std::result::Result<String, String>,
+	actor: &str,
+	key_file: &Path,
 ) -> Result<String> {
-	let key_file = crate::secrets::key_file();
+	let agent = actor == "agent";
+	let by = format!("the {actor}");
 	match cmd {
 		RemoteCmd::Set {
 			b2: _,
@@ -837,8 +1093,10 @@ pub async fn cli(
 				},
 				limit_upload,
 			};
-			let generated =
-				save(&db.conn(), key_file, settings, &default_path(cfg))?;
+			if agent {
+				return request_set(cfg, db, key_file, settings, &by).await;
+			}
+			let generated = change(cfg, db, key_file, settings, &by).await?;
 			let location = view(&db.conn()).map(|v| v.location);
 			let mut msg = format!(
 				"the backups go to {} after each night",
@@ -854,12 +1112,7 @@ pub async fn cli(
 			}
 			Ok(msg)
 		}
-		RemoteCmd::Test => {
-			let opened = open(&db.conn(), key_file)?.ok_or_else(|| {
-				Error::Invalid("no remote backup is set up".into())
-			})?;
-			opened.test().await.map_err(Error::Invalid)
-		}
+		RemoteCmd::Test => required(db)?.test().await.map_err(Error::Invalid),
 		RemoteCmd::Show => {
 			// one lock at a time: both in one expression deadlocks
 			let Some(v) = view(&db.conn()) else {
@@ -895,14 +1148,31 @@ pub async fn cli(
 			}
 			Ok(out)
 		}
+		RemoteCmd::Off if agent => {
+			let req = crate::actions::request(
+				cfg,
+				db,
+				crate::actions::Kind::RemoteOff,
+				0,
+				&by,
+			)
+			.await?;
+			Ok(req.message)
+		}
 		RemoteCmd::Off => {
+			if view(&db.conn()).is_none() {
+				return Ok("no remote backup".into());
+			}
 			let s = Settings {
 				provider: "off".into(),
 				..Default::default()
 			};
-			save(&db.conn(), key_file, s, "")?;
-			Ok("no more remote copies; the repository stays in the bucket"
-				.into())
+			change(cfg, db, key_file, s, &by).await?;
+			Ok(
+				"no more remote copies, the admins are told; the repository \
+				stays in the bucket"
+					.into(),
+			)
 		}
 	}
 }
@@ -949,6 +1219,10 @@ mod tests {
 			},
 			Settings {
 				bucket: "a b".into(),
+				..b2()
+			},
+			Settings {
+				bucket: "acme_backups".into(),
 				..b2()
 			},
 			Settings {
@@ -1067,7 +1341,142 @@ mod tests {
 		assert!(s3.contains(&("AWS_DEFAULT_REGION", "eu-1".into())));
 
 		assert_eq!(limit_args(&opened("b2").stored), ["--limit-upload", "500"]);
-		assert_eq!(opened("b2").hide("bad sec and pw"), "bad *** and ***");
+	}
+
+	#[test]
+	fn only_real_secrets_are_hidden() {
+		let mut o = opened("b2");
+		o.secret = "K001secretkey".into();
+		o.password = "0123456789abcdef".into();
+		assert_eq!(
+			o.hide("bad K001secretkey and 0123456789abcdef"),
+			"bad *** and ***"
+		);
+		// too short to be a key, it would mask ordinary words
+		o.secret = "sec".into();
+		o.password = "        ".into();
+		assert_eq!(o.hide("a second  sec"), "a second  sec");
+	}
+
+	#[test]
+	fn required_says_when_there_is_no_remote() {
+		let db = Db::memory();
+		let err = required(&db).err().unwrap().to_string();
+		assert!(err.contains("no remote backup is set up"), "{err}");
+	}
+
+	#[tokio::test]
+	async fn a_remote_that_doesnt_answer_is_given_up() {
+		let limit = std::time::Duration::from_millis(10);
+		let never = std::future::pending::<()>();
+		let err = within(limit, "b2:acme:x", never).await.unwrap_err();
+		assert!(err.contains("no answer from b2:acme:x"), "{err}");
+		assert_eq!(within(limit, "b2:acme:x", async { 1 }).await, Ok(1));
+	}
+
+	#[test]
+	fn changes_and_stops_are_told_and_a_stop_stays_a_week() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let t = now();
+		let loc = Some("b2:acme:x".to_string());
+		assert!(
+			changed(&conn, loc.clone(), loc.clone(), "A", t)
+				.unwrap()
+				.is_none()
+		);
+
+		let n = changed(&conn, None, loc.clone(), "the terminal", t).unwrap();
+		let n = n.unwrap();
+		assert!(n.attention && n.title.contains("b2:acme:x"), "{n:?}");
+		assert!(n.text.starts_with("the terminal set"), "{n:?}");
+
+		let n =
+			changed(&conn, loc.clone(), None, "the agent, confirmed by A", t)
+				.unwrap()
+				.unwrap();
+		assert!(n.title.contains("turned off"), "{n:?}");
+		let (key, detail) = problem(&conn, t + DAY).unwrap();
+		assert_eq!(key, "backup:remote-off");
+		assert!(detail.contains("the agent, confirmed by A"), "{detail}");
+		assert_eq!(problem(&conn, t + OFF_SHOWN + 1), None);
+
+		// set again, the stop is no problem any more
+		changed(&conn, None, loc, "A", t).unwrap();
+		assert_eq!(problem(&conn, t + DAY), None);
+	}
+
+	fn set_cmd() -> RemoteCmd {
+		RemoteCmd::Set {
+			b2: true,
+			s3: false,
+			key_id: "0012ab".into(),
+			bucket: "acme-backups".into(),
+			path: None,
+			endpoint: "".into(),
+			region: "".into(),
+			keep_daily: 14,
+			keep_weekly: 8,
+			keep_monthly: 12,
+			limit_upload: None,
+		}
+	}
+
+	#[tokio::test]
+	async fn the_agent_asks_an_admin_the_terminal_sets_it() {
+		let db = Db::memory();
+		// the password confirms, nothing is mailed
+		set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#).unwrap();
+		let cfg: Config =
+			toml::from_str("domain = 'panel.example.ch'").unwrap();
+		let key = key_file();
+		let stdin = || Ok("K001secret".to_string());
+		let pending = || {
+			db.conn()
+				.query_row(
+					"SELECT count(*) FROM pending_actions WHERE status = 'pending'",
+					[],
+					|r| r.get::<_, i64>(0),
+				)
+				.unwrap()
+		};
+
+		let msg = cli(&cfg, &db, set_cmd(), stdin, "agent", &key)
+			.await
+			.unwrap();
+		assert!(msg.contains("Waiting for confirmation"), "{msg}");
+		assert!(msg.contains("Settings → Backups, not here"), "{msg}");
+		assert!(!msg.contains("K001secret"), "{msg}");
+		assert!(view(&db.conn()).is_none());
+		assert_eq!(pending(), 1);
+		let sealed: Vec<u8> = db
+			.conn()
+			.query_row("SELECT payload FROM pending_actions", [], |r| r.get(0))
+			.unwrap();
+		let json = crate::secrets::open_with(&key, &sealed).unwrap();
+		assert!(json.contains("K001secret"));
+
+		let msg = cli(&cfg, &db, set_cmd(), stdin, "terminal", &key)
+			.await
+			.unwrap();
+		assert!(msg.contains("shown only this once"), "{msg}");
+		assert!(view(&db.conn()).is_some());
+		assert_eq!(pending(), 1);
+
+		let msg = cli(&cfg, &db, RemoteCmd::Off, stdin, "agent", &key)
+			.await
+			.unwrap();
+		assert!(msg.contains("Waiting for confirmation"), "{msg}");
+		assert!(view(&db.conn()).is_some());
+		assert_eq!(pending(), 2);
+
+		cli(&cfg, &db, RemoteCmd::Off, stdin, "terminal", &key)
+			.await
+			.unwrap();
+		assert!(view(&db.conn()).is_none());
+		let (k, _) = problem(&db.conn(), now()).unwrap();
+		assert_eq!(k, "backup:remote-off");
+		std::fs::remove_file(&key).unwrap();
 	}
 
 	#[test]
@@ -1127,6 +1536,36 @@ mod tests {
 		let (k, detail) = problem(&conn, t + 2).unwrap();
 		assert_eq!(k, "backup:remote-failed");
 		assert!(detail.contains("no network"));
+		std::fs::remove_file(&key).unwrap();
+	}
+
+	#[tokio::test]
+	async fn a_confirmed_request_keeps_the_new_password_for_the_panel() {
+		let db = Db::memory();
+		set_setting(&db.conn(), "mail", r#"{"mode":"off"}"#).unwrap();
+		let cfg: Config =
+			toml::from_str("domain = 'panel.example.ch'").unwrap();
+		let key = key_file();
+		let sealed = crate::secrets::seal_with(
+			&key,
+			&serde_json::to_string(&b2()).unwrap(),
+		)
+		.unwrap();
+
+		let mut log = vec![];
+		confirmed(&cfg, &db, &key, Some(&sealed), "the agent", &mut log)
+			.await
+			.unwrap();
+		assert!(view(&db.conn()).is_some());
+		assert!(log.join("\n").contains("Settings → Backups"), "{log:?}");
+		let kept: Vec<u8> = get_json(&db.conn(), NEW_PASSWORD).unwrap();
+		let password = crate::secrets::open_with(&key, &kept).unwrap();
+		assert_eq!(open(&db.conn(), &key).unwrap().unwrap().password, password);
+
+		confirmed(&cfg, &db, &key, None, "the agent", &mut log)
+			.await
+			.unwrap();
+		assert!(view(&db.conn()).is_none());
 		std::fs::remove_file(&key).unwrap();
 	}
 }

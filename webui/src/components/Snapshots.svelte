@@ -3,6 +3,7 @@
 		formatBytes,
 		formatTime,
 		get,
+		newest,
 		post,
 		snapshotKind,
 		type Backup,
@@ -31,11 +32,17 @@
 	// the tree gives a new group object on every change, only its id
 	// decides
 	const groupId = $derived(group.id);
+	const latest = newest();
 	function load() {
 		snapshots = null;
-		get(`/groups/${groupId}/snapshots` + (remote ? '?remote=true' : ''))
-			.then(s => (snapshots = s))
-			.catch(e => (error = e.message));
+		error = null;
+		latest(
+			get(
+				`/groups/${groupId}/snapshots` + (remote ? '?remote=true' : ''),
+			),
+			s => (snapshots = s),
+			e => (error = e.message),
+		);
 	}
 	$effect(() => {
 		load();
@@ -102,7 +109,7 @@
 		{ label: 'Time' },
 		{ label: 'Size' },
 	]}
-	empty={snapshots ? 'No backups yet.' : 'Loading…'}
+	empty={snapshots ? 'No backups yet.' : error ? '' : 'Loading…'}
 	minHeight={110}
 	maxHeight={260}
 >

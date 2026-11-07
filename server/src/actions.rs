@@ -3,7 +3,8 @@
 //! runs when an admin opens the link while logged in and confirms. What
 //! it deletes goes to the trash first (dump, archive), kept 30 days.
 //! With mail off (Settings → Mail) the admin confirms it in the panel
-//! with their password and two-factor code instead.
+//! with their password and two-factor code instead. The agent's changes
+//! of the remote backup go the same way (backup/remote.rs).
 
 use std::sync::Arc;
 
@@ -37,6 +38,9 @@ pub enum Kind {
 	Group,
 	MailDomain,
 	Mailbox,
+	/// new settings of the copy off the server, sealed in the payload
+	RemoteSet,
+	RemoteOff,
 }
 
 impl Kind {
@@ -47,6 +51,8 @@ impl Kind {
 			Self::Group => "delete_group",
 			Self::MailDomain => "delete_mail_domain",
 			Self::Mailbox => "delete_mailbox",
+			Self::RemoteSet => "backup_remote_set",
+			Self::RemoteOff => "backup_remote_off",
 		}
 	}
 
@@ -57,6 +63,8 @@ impl Kind {
 			"delete_group" => Some(Self::Group),
 			"delete_mail_domain" => Some(Self::MailDomain),
 			"delete_mailbox" => Some(Self::Mailbox),
+			"backup_remote_set" => Some(Self::RemoteSet),
+			"backup_remote_off" => Some(Self::RemoteOff),
 			_ => None,
 		}
 	}
@@ -72,12 +80,17 @@ pub struct Action {
 	pub created_at: i64,
 	/// confirmed with the password, it wasn't mailed
 	pub by_password: bool,
+	/// the panel's button says Delete, else Confirm
+	pub deletion: bool,
 	#[serde(skip)]
 	id: i64,
 	#[serde(skip)]
 	kind: String,
 	#[serde(skip)]
 	target_id: i64,
+	/// sealed with the secrets key, what the action needs beyond its target
+	#[serde(skip)]
+	payload: Option<Vec<u8>>,
 }
 
 /// What the action does, also checks that it may happen.
@@ -150,6 +163,18 @@ fn describe(conn: &Connection, kind: Kind, id: i64) -> Result<String> {
 				b.address
 			))
 		}
+		Kind::RemoteOff => {
+			let view = crate::backup::remote::view(conn).ok_or_else(|| {
+				Error::Invalid("no remote backup is set up".into())
+			})?;
+			Ok(format!(
+				"Turn off the remote backups: nothing is copied off the \
+				server any more. The repository at {} stays.",
+				view.location
+			))
+		}
+		// its request describes the new settings
+		Kind::RemoteSet => Ok(String::new()),
 	}
 }
 
@@ -170,6 +195,20 @@ pub async fn request(
 	target_id: i64,
 	requested_by: &str,
 ) -> Result<Requested> {
+	let description = describe(&db.conn(), kind, target_id)?;
+	ask(cfg, db, kind, target_id, &description, None, requested_by).await
+}
+
+/// `request` with the description given and the payload `sealed`.
+pub async fn ask(
+	cfg: &Config,
+	db: &Db,
+	kind: Kind,
+	target_id: i64,
+	description: &str,
+	sealed: Option<Vec<u8>>,
+	requested_by: &str,
+) -> Result<Requested> {
 	let by_password = mail::off(db);
 	let domain = cfg.domain.as_deref().unwrap_or_default();
 	if domain.is_empty() && !by_password {
@@ -179,13 +218,13 @@ pub async fn request(
 	}
 	let token = util::random_hex(24);
 
-	let (id, description) = {
+	let id = {
 		let conn = db.conn();
-		let description = describe(&conn, kind, target_id)?;
 		conn.execute(
 			"INSERT INTO pending_actions (kind, target_id, description,
-			token_hash, requested_by, status, created_at, by_password)
-			VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+			token_hash, requested_by, status, created_at, by_password,
+			payload)
+			VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
 			params![
 				kind.as_str(),
 				target_id,
@@ -193,10 +232,11 @@ pub async fn request(
 				tokens::hash(&token),
 				requested_by,
 				now(),
-				by_password
+				by_password,
+				sealed
 			],
 		)?;
-		(conn.last_insert_rowid(), description)
+		conn.last_insert_rowid()
 	};
 
 	if by_password {
@@ -218,7 +258,7 @@ pub async fn request(
 		The link works for 24 hours. If you didn't expect this, ignore it:\n\
 		nothing happens without a confirmation.\n"
 	);
-	let first = description.split('.').next().unwrap_or(&description);
+	let first = description.split('.').next().unwrap_or(description);
 	let sent = mail::send(
 		cfg,
 		db,
@@ -246,19 +286,22 @@ fn find(conn: &Connection, token: &str) -> Result<Action> {
 	let action = conn
 		.query_row(
 			"SELECT id, kind, target_id, description, requested_by, status,
-			created_at, by_password FROM pending_actions
+			created_at, by_password, payload FROM pending_actions
 			WHERE token_hash = ?1",
 			[tokens::hash(token)],
 			|row| {
+				let kind: String = row.get(1)?;
 				Ok(Action {
 					id: row.get(0)?,
-					kind: row.get(1)?,
+					deletion: kind.starts_with("delete_"),
+					kind,
 					target_id: row.get(2)?,
 					description: row.get(3)?,
 					requested_by: row.get(4)?,
 					status: row.get(5)?,
 					created_at: row.get(6)?,
 					by_password: row.get(7)?,
+					payload: row.get(8)?,
 				})
 			},
 		)
@@ -306,6 +349,7 @@ async fn execute(
 	}
 
 	let mut log = vec![format!("confirmed by {confirmed_by}")];
+	let by = format!("{}, confirmed by {confirmed_by}", action.requested_by);
 	let res = match kind {
 		Kind::Domain => {
 			delete_domain(cfg, db, action.target_id, &mut log).await
@@ -319,6 +363,17 @@ async fn execute(
 		Kind::Mailbox => {
 			delete_mail(cfg, db, Kind::Mailbox, action.target_id, &mut log)
 				.await
+		}
+		Kind::RemoteSet | Kind::RemoteOff => {
+			crate::backup::remote::confirmed(
+				cfg,
+				db,
+				crate::secrets::key_file(),
+				action.payload.as_deref(),
+				&by,
+				&mut log,
+			)
+			.await
 		}
 	};
 	let ok = match res {

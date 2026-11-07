@@ -105,7 +105,7 @@ into the server's config, and the CLI does the same:
 | Runner builds queue | a step with `on = "runner"` never builds on the server: its deploy waits in the queue until a runner takes it, oldest first; the log says the position and what the runners do. It fails after the queue timeout (Settings → Runners, 2 h; `wait = <minutes>` on the step can only shorten it), when no runner is online for 15 minutes, or at once without any runner. Cancel in the group's Deploy tab takes it out of the queue. Only detected steps (no genco.toml) build here, on a server without runners |
 | Back up now | `genco backup` |
 | Copy the backups off the server (Backblaze B2, S3) | Settings → Backups, or `genco backup remote set --b2 --key-id <keyID> --bucket <bucket> [--path genco/<panel>]` (the application key on stdin; see "The remote copy" below); `genco backup remote show`, `genco backup remote test`, `genco backup remote off` |
-| List and restore snapshots | `genco backup snapshots [--tag group:shop] [--remote]`, `genco backup restore latest --tag group:shop,files --target /tmp/restore [--remote]`; anything else with `genco restic [--remote] ...` |
+| List and restore snapshots | `genco backup snapshots [--tag group:shop] [--remote]`, `genco backup restore latest --tag group:shop,files --target /var/lib/genco/restore/shop [--remote]`; anything else with `genco restic [--remote] ...` |
 | Add a client, group, domain or database | `genco client add`, `genco group add`, `genco domain add`, `genco database add` (see `--help`) |
 | Change a domain | `genco domain set <name> --php 8.4` |
 | Give a group more memory, CPU or tasks | `genco group set <g> --memory 2.5G --cpu 200% --tasks 1024`, then `genco apply` (see "Group limits" below) |
@@ -421,17 +421,21 @@ Use `latest` or a snapshot ID (the first column) in the commands below.
 
 ### Files
 
-Restore into a temporary directory first, never straight over the site:
+Restore into a directory of its own first, never straight over the site.
+`genco backup restore` makes it only for root (0700) and refuses places
+where others write or could put links in its way (`/srv/genco`,
+`/var/vmail`, `/var/www`, `/home`, `/tmp`, a directory not root's alone);
+without `--target` it uses `/var/lib/genco/restore/<time>`:
 
 ```sh
-genco restic restore latest --tag group:shop,files --target /tmp/restore
-ls /tmp/restore/srv/genco/shop
+genco backup restore latest --tag group:shop,files --target /var/lib/genco/restore/shop
+ls /var/lib/genco/restore/shop/srv/genco/shop
 ```
 
 Then copy what you need back. Restore a single file or folder:
 
 ```sh
-cp -a /tmp/restore/srv/genco/shop/shared/web/uploads/. /srv/genco/shop/shared/web/uploads/
+cp -a /var/lib/genco/restore/shop/srv/genco/shop/shared/web/uploads/. /srv/genco/shop/shared/web/uploads/
 ```
 
 SQLite databases (`*.db`, `*.sqlite`): the live file may have been copied
@@ -442,7 +446,7 @@ place and remove the old `-wal` and `-shm` files next to it:
 
 ```sh
 systemctl stop genco-shop-shop.example.ch
-cp /tmp/restore/srv/genco/shop/.genco-sqlite/shared_data_app.db /srv/genco/shop/shared/data/app.db
+cp /var/lib/genco/restore/shop/srv/genco/shop/.genco-sqlite/shared_data_app.db /srv/genco/shop/shared/data/app.db
 rm -f /srv/genco/shop/shared/data/app.db-wal /srv/genco/shop/shared/data/app.db-shm
 chown g-shop:g-shop /srv/genco/shop/shared/data/app.db
 systemctl start genco-shop-shop.example.ch
@@ -452,10 +456,10 @@ Or put the whole group back as it was (this deletes files that are newer
 than the snapshot):
 
 ```sh
-rsync -a --delete /tmp/restore/srv/genco/shop/ /srv/genco/shop/
+rsync -a --delete /var/lib/genco/restore/shop/srv/genco/shop/ /srv/genco/shop/
 chown -R g-shop:g-shop /srv/genco/shop   # needed if the user's id changed (other server)
 genco apply
-rm -rf /tmp/restore
+rm -rf /var/lib/genco/restore/shop
 ```
 
 The backup leaves out `node_modules`, caches and the git mirror. Node
@@ -508,13 +512,24 @@ genco backup remote set --s3 --endpoint https://s3.example.com --region eu-1 \
 genco backup remote test    # connects, creates the repository if there is none
 ```
 
+Where the copy goes decides where all data goes. The panel asks for your
+password and 2FA code; when the agent runs `genco backup remote set` or
+`off`, it only asks: every admin gets a mail to confirm it (with mail off,
+the agent gets a link where an admin confirms it with their password), the
+same as a deletion. Root in a terminal changes it directly. Whoever does
+it, every admin gets a mail (and the AI agents' webhooks a notice) when
+the copy goes somewhere else or is turned off, and a turned off copy is a
+problem for a week (`backup:remote-off`), so it can't stop silently.
+
 The path in the bucket is `genco/<panel name>` by default. The key and
 the repository password are stored encrypted with
 `/etc/genco/secrets.key` and go to restic only in its environment; the
 panel shows neither.
 
 genco makes the remote repository's own password and shows it **once**,
-when you save. Keep it outside the server with the bucket's key, in your
+when you save. When an admin confirmed the agent's request, the agent
+never sees it: Settings → Backups shows "Show Password" (your password
+and 2FA code) to the first admin who opens it, once. Keep it outside the server with the bucket's key, in your
 password manager: if the server is lost, the remote copy is useless
 without it. To take over an existing remote repository (a new server, see
 [section 4](#4-moving-or-rebuilding-the-whole-server)), enter its password
@@ -532,7 +547,7 @@ Restoring from the remote copy works like from the local one, with
 
 ```sh
 genco backup snapshots --remote --tag group:shop
-genco backup restore latest --tag group:shop,files --target /tmp/restore --remote
+genco backup restore latest --tag group:shop,files --target /var/lib/genco/restore/shop --remote
 genco restic --remote dump latest --tag group:shop,db:shop /shop.sql | mariadb shop_restored
 ```
 
@@ -587,14 +602,14 @@ You need:
    files, then each of its databases:
 
    ```sh
-   restic restore latest --tag group:shop,files --target /tmp/restore
-   rsync -a /tmp/restore/srv/genco/shop/ /srv/genco/shop/
+   restic restore latest --tag group:shop,files --target /var/lib/genco/restore/shop
+   rsync -a /var/lib/genco/restore/shop/srv/genco/shop/ /srv/genco/shop/
    chown -R g-shop:g-shop /srv/genco/shop
    restic dump latest --tag group:shop,db:shop /shop.sql | mariadb shop
    ```
 
    Then run `genco apply` once, `genco deploy <group>` for the groups
-   with Node apps, and `rm -rf /tmp/restore /tmp/sys`.
+   with Node apps, and `rm -rf /var/lib/genco/restore /tmp/sys`.
 
    Import a database before the first deploy or start of its app: an
    app that starts on the empty database runs its migrations there, and
@@ -658,15 +673,15 @@ secret key), the bucket and path, and the remote repository's password.
 5. **Restore every group** as in step 5 above, from the remote:
 
    ```sh
-   genco backup restore latest --tag group:shop,files --target /tmp/restore --remote
-   rsync -a /tmp/restore/srv/genco/shop/ /srv/genco/shop/
+   genco backup restore latest --tag group:shop,files --target /var/lib/genco/restore/shop --remote
+   rsync -a /var/lib/genco/restore/shop/srv/genco/shop/ /srv/genco/shop/
    chown -R g-shop:g-shop /srv/genco/shop
    genco restic --remote dump latest --tag group:shop,db:shop /shop.sql | mariadb shop
    ```
 
    Mail of a group's mail domains is in its own snapshot:
-   `genco backup restore latest --tag group:shop,mail --target /tmp/mail --remote`,
-   then `rsync -a /tmp/mail/var/vmail/ /var/vmail/` and `genco apply`.
+   `genco backup restore latest --tag group:shop,mail --target /var/lib/genco/restore/mail --remote`,
+   then `rsync -a /var/lib/genco/restore/mail/var/vmail/ /var/vmail/` and `genco apply`.
 6. Steps 6 and 7 above (test, DNS, the first nightly backup).
 
 What this doesn't cover: there is no one-command restore of the whole

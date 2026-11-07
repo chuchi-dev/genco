@@ -248,7 +248,6 @@ impl Cmd {
 						backup::BackupCmd::Snapshots { .. }
 							| backup::BackupCmd::Remote(
 								backup::remote::RemoteCmd::Show
-									| backup::remote::RemoteCmd::Test
 							)
 					)
 				}
@@ -364,7 +363,8 @@ async fn run(args: Args) -> Result<(), String> {
 		Cmd::Backup { cmd: None } => backup_cmd(cfg).await,
 		Cmd::Backup { cmd: Some(cmd) } => {
 			let db = Db::open(&cfg.db_path())?;
-			let msg = backup::cli(&cfg, &db, cmd, read_password)
+			let actor = activity::cli_actor();
+			let msg = backup::cli(&cfg, &db, cmd, read_password, actor)
 				.await
 				.map_err(|e| e.to_string())?;
 			println!("{msg}");
@@ -373,9 +373,8 @@ async fn run(args: Args) -> Result<(), String> {
 		Cmd::Restic { remote, args } => {
 			let mut cmd = if remote {
 				let db = Db::open(&cfg.db_path())?;
-				backup::remote::open(&db.conn(), secrets::key_file())
+				backup::remote::required(&db)
 					.map_err(|e| e.to_string())?
-					.ok_or("no remote backup is set up")?
 					.restic()
 			} else {
 				backup::restic()

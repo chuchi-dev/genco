@@ -480,6 +480,11 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE domains ADD COLUMN redirect_status INTEGER NOT NULL
 		DEFAULT 301;
 "#,
+	// what an action needs beyond its target, sealed: the agent's new
+	// remote backup settings (actions.rs)
+	r#"
+	ALTER TABLE pending_actions ADD COLUMN payload BLOB;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

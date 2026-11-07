@@ -283,16 +283,17 @@ field in the panel.
   `db:<name>`, or `system`; several tags that must all match go comma
   separated in one flag (`--tag group:shop,db:shop`), repeated flags
   match any. Restore next to the live data, never over it unless the
-  admin confirmed it: `genco restic restore <id|latest> --tag ...
-  --target /tmp/restore-x`, a database with `genco restic dump latest
+  admin confirmed it: `genco backup restore <id|latest> --tag ...`
+  (into a new root-only directory, it prints where), a database with `genco restic dump latest
   --tag group:g,db:x /x.sql | mariadb x_restored` (create it first).
 - Remote copy: when set up (Settings → Backups, `genco backup remote
   show`), each good full backup is copied to Backblaze B2 or S3 with its
   own history. Restore from it with `--remote` (`genco backup snapshots
-  --remote`, `genco backup restore <id> --target /tmp/x --remote`,
+  --remote`, `genco backup restore <id> --remote`,
   `genco restic --remote dump ...`), e.g. when the local repository is
-  damaged. The admin sets it up (password, 2FA); its key and repository
-  password stay secret: never print, log or pass them as arguments, never
+  damaged. The admin sets it up (password, 2FA); your `genco backup
+  remote set` and `off` wait for an admin's confirmation, say so. Its
+  key and repository password stay secret: never print, log or pass them as arguments, never
   read them from genco's database.
 - Mail: postfix listens on localhost only and delivers directly or
   through the relay of Start → Settings (`postconf relayhost`). This

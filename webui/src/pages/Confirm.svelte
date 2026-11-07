@@ -15,8 +15,9 @@
 	import Form from '@/components/win/Form.svelte';
 	import Icon from '@/components/win/Icon.svelte';
 
-	// the link of a confirmation mail: an admin confirms a deletion; with
-	// mail off nothing was mailed, the password and code confirm it
+	// the link of a confirmation mail: an admin confirms a deletion or the
+	// agent's change of the remote backup; with mail off nothing was
+	// mailed, the password and code confirm it
 	let {
 		token,
 		action,
@@ -28,6 +29,7 @@
 			status: string;
 			createdAt: number;
 			byPassword: boolean;
+			deletion: boolean;
 		};
 	} = $props();
 
@@ -39,6 +41,7 @@
 	let error = $state<string | null>(null);
 	let password = $state('');
 	let code = $state('');
+	const verb = $derived(action.deletion ? 'Delete' : 'Confirm');
 
 	async function confirmIt() {
 		busy = true;
@@ -85,11 +88,7 @@
 			<Button primary onclick={() => go('/')}>Close</Button>
 		</div>
 	{:else if action.byPassword}
-		<Form
-			onsubmit={confirmWithPassword}
-			oncancel={() => go('/')}
-			ok="Delete"
-		>
+		<Form onsubmit={confirmWithPassword} oncancel={() => go('/')} ok={verb}>
 			<label for="c-password">Your password:</label>
 			<!-- svelte-ignore a11y_autofocus -->
 			<input
@@ -113,7 +112,7 @@
 		{#if error}<p class="error">{error}</p>{/if}
 		<div class="row-buttons end">
 			<Button onclick={confirmIt} disabled={busy}>
-				{busy ? 'Deleting…' : 'Delete'}
+				{busy ? 'Working…' : verb}
 			</Button>
 			<Button primary onclick={() => go('/')}>Cancel</Button>
 		</div>
