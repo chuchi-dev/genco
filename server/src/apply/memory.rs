@@ -15,6 +15,7 @@ const PROTECTED: &[&str] = &[
 	"mysql.service",
 	"postgresql@",
 	"nginx.service",
+	"postfix.service",
 	"postfix@",
 	"dovecot.service",
 	"rspamd.service",
@@ -34,7 +35,7 @@ pub(super) fn memory_files() -> Vec<File> {
 		content: crate::limits::groups_slice_unit(ram),
 		private_to: None,
 	}];
-	for unit in protected_units() {
+	for (unit, _) in protected_units() {
 		files.push(File {
 			path: Path::new("/etc/systemd/system")
 				.join(format!("{unit}.d"))
@@ -49,16 +50,25 @@ pub(super) fn memory_files() -> Vec<File> {
 	files
 }
 
-/// The protected services running now, by their cgroup.
-fn protected_units() -> Vec<String> {
-	let Ok(entries) = std::fs::read_dir(SYSTEM_SLICE) else {
-		return vec![];
-	};
-	let mut units: Vec<String> = entries
-		.flatten()
-		.map(|e| e.file_name().to_string_lossy().to_string())
-		.filter(|u| protected(u))
-		.collect();
+/// The protected services running now and their cgroup, also in a
+/// slice of system.slice (`system-postgresql.slice/postgresql@15-main`).
+fn protected_units() -> Vec<(String, PathBuf)> {
+	let mut units = vec![];
+	let mut dirs = vec![PathBuf::from(SYSTEM_SLICE)];
+	while let Some(dir) = dirs.pop() {
+		let Ok(entries) = std::fs::read_dir(&dir) else {
+			continue;
+		};
+		for e in entries.flatten() {
+			let name = e.file_name().to_string_lossy().to_string();
+			if protected(&name) {
+				units.push((name, e.path()));
+			} else if name.ends_with(".slice") && dir == Path::new(SYSTEM_SLICE)
+			{
+				dirs.push(e.path());
+			}
+		}
+	}
 	units.sort();
 	units
 }
@@ -92,8 +102,8 @@ pub(super) async fn memory(r: &mut Report, changed: &HashSet<PathBuf>) {
 			r.info(format!("all groups together: {cap}"));
 		}
 	}
-	for unit in protected_units() {
-		let procs = Path::new(SYSTEM_SLICE).join(&unit).join("cgroup.procs");
+	for (unit, cgroup) in protected_units() {
+		let procs = cgroup.join("cgroup.procs");
 		let pids = std::fs::read_to_string(procs).unwrap_or_default();
 		for pid in pids.lines() {
 			let path = format!("/proc/{pid}/oom_score_adj");
@@ -118,6 +128,7 @@ mod tests {
 		assert!(protected("mariadb.service"));
 		assert!(protected("postgresql@15-main.service"));
 		assert!(protected("postfix@-.service"));
+		assert!(protected("postfix.service"));
 		assert!(protected("genco.service"));
 		assert!(!protected("genco-shop-php8.4.service"));
 		assert!(!protected("postgresql.service.d"));
