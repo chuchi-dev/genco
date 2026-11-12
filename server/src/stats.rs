@@ -33,7 +33,7 @@ const KEEP_MINUTES: i64 = 48 * HOUR;
 const KEEP_HOURS: i64 = 400 * 24 * HOUR;
 /// disk usage of the groups takes a `du`, once an hour is enough
 const DISK_EVERY: i64 = HOUR;
-const CGROUPS: &str = "/sys/fs/cgroup/genco.slice";
+pub const CGROUPS: &str = "/sys/fs/cgroup/genco.slice";
 const NGINX_LOGS: &str = "/var/log/nginx/genco";
 
 pub fn path(cfg: &crate::config::Config) -> PathBuf {

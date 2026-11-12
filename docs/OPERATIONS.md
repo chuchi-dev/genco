@@ -425,7 +425,7 @@ genco apply
 ```
 
 Sizes take `G` or `M` (a plain number is MB). The memory limit is 128 MB
-to the server's RAM, CPU 10% to 100% per core, tasks 64 to 65536. Above
+to what all groups may use together (below), CPU 10% to 100% per core, tasks 64 to 65536. Above
 `MemoryHigh` the kernel slows the group down and takes back memory, at
 `MemoryMax` it kills a process of the group (the OOM killer, in `journalctl
 -k`). `genco apply` writes the slice and sets the new limits on the running
@@ -437,14 +437,23 @@ genco-<group>.slice -p MemoryMax` or
 now; `genco tree` has each group's `limits` (`null` is the default, its
 `defaults` what an empty one means).
 
-When the groups' memory limits add up to more than the server's RAM,
-saving warns ("Group memory limits add up to 6.5 GB, the server has 3.9
-GB and no swap"). It is no error: groups rarely all use their limit at
-once, but if they do, the server runs out of memory before one of them
-hits its own. The minute check reports it as a problem only once a group
-has a memory limit of its own (many groups on the defaults add up on a
-small server, that is normal), and whenever a single group's limit is
-more than 90% of the RAM.
+**All groups together.** The groups' slices are in `genco.slice`, which
+genco caps at the RAM without a reserve for the system: a quarter of the
+RAM, at least 768 MB, at most half (3.9 GB of RAM: 2.9 GB for the
+groups). So the groups' own limits may add up to far more than the RAM,
+groups rarely peak together; when they do, the kernel takes memory back
+from them and kills within the groups, never the databases, nginx, mail
+or genco. The shared services (not genco, whose children such as imports
+and the agent's commands would inherit it) also get a low OOM score
+(`OOMScoreAdjust=-600`, a drop-in `genco-memory.conf` per service and set
+on their running processes), in case the kernel has to kill outside the
+groups after all.
+The group's General tab shows what it uses now and at most in the last
+24 hours next to its limit. The minute check alerts on real shortage
+instead of the sum of limits: when every task waited for memory in 10%
+of a minute for 5 minutes (`/proc/pressure/memory`), and whenever the
+kernel killed processes of a group for lack of memory (`memory.events`
+of its slice).
 
 **Drop-ins.** Files in `/etc/systemd/system/genco-*.slice.d/` or
 `genco-*.service.d/` override what genco writes, so the panel's limits

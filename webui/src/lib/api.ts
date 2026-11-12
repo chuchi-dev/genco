@@ -185,7 +185,11 @@ export type Group = {
 	workers: Worker[];
 	schedules: Schedule[];
 	php: PhpSettings;
-	limits: Limits & { defaults: LimitDefaults };
+	limits: Limits & {
+		defaults: LimitDefaults;
+		/** what all groups may use together, the most one may have */
+		groupsCapMb: number;
+	};
 	/** stopped because it looks compromised */
 	quarantine: Quarantine | null;
 };
@@ -561,6 +565,24 @@ export type Stats = {
 	domains: { name: string; requests: number; errors: number; tx: number }[];
 };
 
+export type MemoryUsage = {
+	memory: number | null;
+	peak: number | null;
+	limit: number | null;
+};
+
+/** The memory now, the most over the stats' range and the limit. */
+export function memoryUsage(s: Stats): MemoryUsage {
+	const memory = s.points
+		.map(p => p.memory)
+		.filter((m): m is number => m !== null);
+	return {
+		memory: memory.at(-1) ?? null,
+		peak: memory.length ? Math.max(...memory) : null,
+		limit: s.memoryLimit,
+	};
+}
+
 export type TopPage = {
 	path: string;
 	requests: number;
@@ -685,11 +707,6 @@ export async function download(
 	window.location.href = `${target}${sep}ticket=${encodeURIComponent(t)}`;
 }
 
-/**
- * Saves a group: the server takes all its fields, the General and the
- * Deploy tab each change only theirs. The limits only when given; the
- * warning says when the groups' memory limits are more than the server has.
- */
 /** Puts a group in quarantine with the reason, apply runs right away. */
 export function quarantineGroup(
 	group: Group,
@@ -703,6 +720,10 @@ export function liftQuarantine(group: Group): Promise<ApplyReport> {
 	return del(`/groups/${group.id}/quarantine`);
 }
 
+/**
+ * Saves a group: the server takes all its fields, the General and the
+ * Deploy tab each change only theirs. The limits only when given.
+ */
 export function saveGroup(
 	group: Group,
 	change: Partial<
@@ -710,7 +731,7 @@ export function saveGroup(
 			limits: Limits;
 		}
 	>,
-): Promise<{ warning: string | null }> {
+): Promise<null> {
 	const { clientId, notes, repo, branch, php } = { ...group, ...change };
 	return post('/groups/' + group.id, {
 		clientId,

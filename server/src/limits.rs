@@ -77,13 +77,27 @@ impl Limits {
 		}
 	}
 
-	/// Within what the server has: `ram_mb` and `cores`.
-	pub fn check(&self, ram_mb: u32, cores: u32) -> Result<()> {
+	/// Within what the server has: `ram_mb` and `cores`. A group may
+	/// have at most what all groups together may use (`groups_cap`); a
+	/// memory limit it already has (`kept_mb`) stays allowed, the cap of
+	/// all groups holds it anyway.
+	pub fn check(
+		&self,
+		ram_mb: u32,
+		cores: u32,
+		kept_mb: Option<u32>,
+	) -> Result<()> {
 		let max = self.memory_max();
-		if self.memory_max_mb.is_some() && !(128..=ram_mb).contains(&max) {
+		let cap = groups_cap(ram_mb);
+		if self.memory_max_mb.is_some_and(|m| Some(m) != kept_mb)
+			&& !(128..=cap).contains(&max)
+		{
 			return Err(Error::Invalid(format!(
-				"the memory limit is 128 MB to the server's {}",
-				size(ram_mb)
+				"the memory limit is 128 MB to {}, what all groups may use \
+				together (the server's {} without {} for the system)",
+				size(cap),
+				size(ram_mb),
+				size(reserve(ram_mb))
 			)));
 		}
 		if !(64..=max).contains(&self.memory_high()) {
@@ -140,14 +154,18 @@ pub fn with_defaults<S: serde::Serializer>(
 	s: S,
 ) -> std::result::Result<S::Ok, S::Error> {
 	#[derive(Serialize)]
+	#[serde(rename_all = "camelCase")]
 	struct Shown<'a> {
 		#[serde(flatten)]
 		limits: &'a Limits,
 		defaults: Defaults,
+		/// what all groups may use together, the most one may have
+		groups_cap_mb: u32,
 	}
 	Shown {
 		limits,
 		defaults: limits.defaults(),
+		groups_cap_mb: groups_cap(server_memory().0),
 	}
 	.serialize(s)
 }
@@ -234,57 +252,38 @@ fn cores() -> u32 {
 	std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
 }
 
-/// Checks the limits against this server.
-pub fn check_here(limits: &Limits) -> Result<()> {
-	limits.check(server_memory().0, cores())
+/// Checks the limits against this server, `kept_mb` is the memory limit
+/// the group has now.
+pub fn check_here(limits: &Limits, kept_mb: Option<u32>) -> Result<()> {
+	limits.check(server_memory().0, cores(), kept_mb)
 }
 
-/// When the groups' memory limits add up to more than the RAM: together
-/// they may push the server out of memory before one hits its own.
-pub fn overcommit(
-	limits: impl IntoIterator<Item = Limits>,
-	ram_mb: u32,
-	swap_mb: u32,
-) -> Option<String> {
-	let sum: u32 = limits.into_iter().map(|l| l.memory_max()).sum();
-	if sum <= ram_mb {
-		return None;
-	}
-	let swap = match swap_mb {
-		0 => "no swap".to_string(),
-		mb => format!("{} swap", size(mb)),
-	};
-	Some(format!(
-		"Group memory limits add up to {}, the server has {} and {swap}",
-		size(sum),
-		size(ram_mb)
-	))
+/// The memory genco keeps for the system (the databases, nginx, mail,
+/// genco itself): a quarter of the RAM, at least 768 MB, at most half.
+pub fn reserve(ram_mb: u32) -> u32 {
+	(ram_mb / 4).max(768).min(ram_mb / 2)
 }
 
-/// The minute check's problem with the groups' memory limits. Defaults
-/// that add up to more than the RAM are normal, groups rarely peak
-/// together: only once a group has its own memory limit, or when one
-/// group alone may take more than 90% of the RAM.
-pub fn memory_problem(
-	groups: &[(&str, Limits)],
-	ram_mb: u32,
-	swap_mb: u32,
-) -> Option<String> {
-	if let Some((name, l)) = groups
-		.iter()
-		.find(|(_, l)| l.memory_max() as u64 * 10 > ram_mb as u64 * 9)
-	{
-		return Some(format!(
-			"The memory limit of {name} ({}) is more than 90% of the \
-			server's {}",
-			size(l.memory_max()),
-			size(ram_mb)
-		));
-	}
-	if !groups.iter().any(|(_, l)| l.memory_max_mb.is_some()) {
-		return None;
-	}
-	overcommit(groups.iter().map(|(_, l)| *l), ram_mb, swap_mb)
+/// What all groups together may use (`genco.slice`): the RAM without the
+/// `reserve`. Their own limits may add up to much more, they rarely peak
+/// together; when they do, a group runs out, never the system.
+pub fn groups_cap(ram_mb: u32) -> u32 {
+	ram_mb - reserve(ram_mb)
+}
+
+/// The unit of the slice all groups' slices are in.
+pub fn groups_slice_unit(ram_mb: u32) -> String {
+	format!(
+		"{}: genco sets it from the RAM
+[Unit]
+Description=All groups of genco
+
+[Slice]
+MemoryMax={}
+",
+		crate::render::HEADER,
+		unit_size(groups_cap(ram_mb))
+	)
 }
 
 /// A file in the drop-in folder of one of genco's units: systemd reads
@@ -534,7 +533,7 @@ mod tests {
 
 	#[test]
 	fn bounds_follow_the_server() {
-		let ok = |l: Limits| l.check(4000, 2).is_ok();
+		let ok = |l: Limits| l.check(4000, 2, None).is_ok();
 		assert!(ok(Limits::default()));
 		let mem = |mb| Limits {
 			memory_max_mb: Some(mb),
@@ -542,8 +541,12 @@ mod tests {
 		};
 		assert!(ok(mem(128)));
 		assert!(!ok(mem(100)));
-		assert!(ok(mem(4000)));
-		assert!(!ok(mem(4001)));
+		// what all groups may use together, a quarter stays for the system
+		assert!(ok(mem(3000)));
+		assert!(!ok(mem(3001)));
+		// one it had before the cap stays
+		assert!(mem(3500).check(4000, 2, Some(3500)).is_ok());
+		assert!(mem(3600).check(4000, 2, Some(3500)).is_err());
 		// a soft limit above the max
 		assert!(!ok(Limits {
 			memory_high_mb: Some(2048),
@@ -566,65 +569,14 @@ mod tests {
 	}
 
 	#[test]
-	fn limits_above_the_ram_warn() {
-		let big = Limits {
-			memory_max_mb: Some(2560),
-			..Limits::default()
-		};
-		// 2.5 + 1.5 + 1.5 + 1 GB
-		let all = [
-			big,
-			Limits::default(),
-			Limits::default(),
-			Limits {
-				memory_max_mb: Some(1024),
-				..Limits::default()
-			},
-		];
-		assert_eq!(
-			overcommit(all, 3993, 0).unwrap(),
-			"Group memory limits add up to 6.5 GB, the server has 3.9 GB \
-			and no swap"
-		);
-		assert!(
-			overcommit(all, 3993, 2048)
-				.unwrap()
-				.ends_with("3.9 GB and 2 GB swap")
-		);
-		assert_eq!(overcommit(all, 8192, 0), None);
-		assert_eq!(overcommit([], 1024, 0), None);
-	}
-
-	#[test]
-	fn the_minute_check_ignores_defaults_that_add_up() {
-		let d = Limits::default();
-		let ten: Vec<(&str, Limits)> = (0..10).map(|_| ("g", d)).collect();
-		// saving warns, the minute check doesn't
-		assert!(overcommit(ten.iter().map(|(_, l)| *l), 3993, 0).is_some());
-		assert_eq!(memory_problem(&ten, 3993, 0), None);
-
-		// one group with its own limit makes the sum count
-		let mut some = ten.clone();
-		some[0].1.memory_max_mb = Some(2048);
-		assert!(
-			memory_problem(&some, 3993, 0)
-				.unwrap()
-				.starts_with("Group memory limits add up to 15.5 GB")
-		);
-		// its own limit within the RAM, the sum too
-		assert_eq!(memory_problem(&some[..1], 3993, 0), None);
-
-		// a single group above 90% of the RAM, also by default
-		let big = Limits {
-			memory_max_mb: Some(3700),
-			..d
-		};
-		assert_eq!(
-			memory_problem(&[("shop", big)], 3993, 0).unwrap(),
-			"The memory limit of shop (3.6 GB) is more than 90% of the \
-			server's 3.9 GB"
-		);
-		assert!(memory_problem(&[("tiny", d)], 1600, 0).is_some());
+	fn the_system_keeps_a_reserve() {
+		assert_eq!(reserve(4000), 1000);
+		assert_eq!(groups_cap(4000), 3000);
+		assert_eq!(reserve(2048), 768);
+		assert_eq!(reserve(1024), 512);
+		assert_eq!(reserve(16384), 4096);
+		assert!(groups_slice_unit(4000).contains("MemoryMax=3000M\n"));
+		assert!(groups_slice_unit(4096).contains("MemoryMax=3G\n"));
 	}
 
 	#[test]

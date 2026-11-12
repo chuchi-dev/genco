@@ -56,6 +56,8 @@ impl Problem {
 pub struct Checker {
 	seen: HashMap<String, u32>,
 	signals: crate::signals::Signals,
+	/// the OOM kills of each group's slice in the last round
+	oom_kills: HashMap<String, u64>,
 }
 
 impl Checker {
@@ -65,6 +67,7 @@ impl Checker {
 		let groups = hosting::groups(&db.conn()).unwrap_or_default();
 		let mut found = find(db, &groups).await;
 		found.extend(self.signals.find(&groups, stats).await);
+		found.extend(oom_kills(&groups, &mut self.oom_kills));
 		let keys: HashSet<&str> =
 			found.iter().map(|p| p.key.as_str()).collect();
 		self.seen.retain(|k, _| keys.contains(k.as_str()));
@@ -263,6 +266,7 @@ async fn find(db: &Db, groups: &[Group]) -> Vec<Problem> {
 	found.extend(load());
 	found.extend(memory());
 	found.extend(limits(groups));
+	found.extend(memory_pressure());
 	found.extend(certificates(groups).await);
 	found.extend(jobs(&db.conn()).unwrap_or_default());
 	found
@@ -376,17 +380,11 @@ fn memory() -> Option<Problem> {
 	})
 }
 
-/// A group's memory limit near the RAM, the groups' limits add up to more
-/// than the server has (with one of its own, see limits::memory_problem),
-/// drop-ins override genco's units.
+/// Drop-ins that override genco's units. How the groups' memory limits
+/// add up doesn't matter, they share the cap of genco.slice; what counts
+/// is real pressure and processes killed (`memory_pressure`, `oom_kills`).
 fn limits(groups: &[Group]) -> Vec<Problem> {
 	let mut found = vec![];
-	let (ram, swap) = crate::limits::server_memory();
-	let all: Vec<(&str, _)> =
-		groups.iter().map(|g| (g.name.as_str(), g.limits)).collect();
-	if let Some(text) = crate::limits::memory_problem(&all, ram, swap) {
-		found.push(Problem::new("limits:memory", text));
-	}
 	let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
 	for d in crate::limits::foreign_here(&names) {
 		found.push(Problem::new(
@@ -395,6 +393,83 @@ fn limits(groups: &[Group]) -> Vec<Problem> {
 		));
 	}
 	found
+}
+
+/// Of the last minute, the share in percent all tasks waited for memory
+/// before it counts.
+const PRESSURE_FULL: f64 = 10.0;
+
+/// The server stalls on memory for 5 minutes: everything waits while the
+/// kernel reclaims or swaps.
+fn memory_pressure() -> Option<Problem> {
+	let psi = std::fs::read_to_string("/proc/pressure/memory").ok()?;
+	let full = pressure_full(&psi)?;
+	(full >= PRESSURE_FULL).then(|| {
+		Problem::new(
+			"memory:pressure",
+			format!(
+				"the server stalls on memory: in {full:.0}% of the last \
+				minute every task waited for it"
+			),
+		)
+		.minutes(5)
+	})
+}
+
+/// `full avg60=` of /proc/pressure/memory.
+fn pressure_full(psi: &str) -> Option<f64> {
+	psi.lines()
+		.find_map(|l| l.strip_prefix("full "))?
+		.split_whitespace()
+		.find_map(|f| f.strip_prefix("avg60="))?
+		.parse()
+		.ok()
+}
+
+/// Processes the kernel killed in a group because it ran out of memory,
+/// its own limit or that of all groups, since the last round: the
+/// slice's count only grows (`last` holds it), a round without new kills
+/// clears the problem.
+fn oom_kills(
+	groups: &[Group],
+	last: &mut HashMap<String, u64>,
+) -> Vec<Problem> {
+	let mut found = vec![];
+	for g in groups {
+		let path = std::path::Path::new(crate::stats::CGROUPS)
+			.join(crate::render::slice(&g.name))
+			.join("memory.events");
+		let Ok(events) = std::fs::read_to_string(path) else {
+			continue;
+		};
+		let kills = oom_kill_count(&events);
+		let before = last.insert(g.name.clone(), kills);
+		let new = kills.saturating_sub(before.unwrap_or(kills));
+		if new > 0 {
+			found.push(
+				Problem::new(
+					format!("oom:{}", g.name),
+					format!(
+						"the kernel killed {new} processes of the group {} \
+						for lack of memory (its limit {} MB, or all groups' \
+						cap)",
+						g.name,
+						g.limits.memory_max()
+					),
+				)
+				.minutes(1),
+			);
+		}
+	}
+	found
+}
+
+fn oom_kill_count(events: &str) -> u64 {
+	events
+		.lines()
+		.find_map(|l| l.strip_prefix("oom_kill "))
+		.and_then(|n| n.trim().parse().ok())
+		.unwrap_or(0)
 }
 
 /// Certbot renews 30 days ahead, 14 days left means renewing fails.
@@ -589,6 +664,18 @@ mod tests {
 		// not while the agent works on it
 		convs::set_status(&conn, both, convs::Status::Running).unwrap();
 		assert_eq!(solved_alerts(&conn, later).unwrap(), [one]);
+	}
+
+	#[test]
+	fn memory_pressure_and_kills_are_read() {
+		let psi = "some avg10=1.00 avg60=20.50 avg300=3.00 total=1\n\
+			full avg10=0.50 avg60=12.25 avg300=1.00 total=2\n";
+		assert_eq!(pressure_full(psi), Some(12.25));
+		assert_eq!(pressure_full(""), None);
+		let events = "low 0\nhigh 12\nmax 3\noom 2\noom_kill 2\n\
+			oom_group_kill 0\n";
+		assert_eq!(oom_kill_count(events), 2);
+		assert_eq!(oom_kill_count("low 0\n"), 0);
 	}
 
 	#[test]

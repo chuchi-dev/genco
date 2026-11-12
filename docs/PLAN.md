@@ -302,8 +302,11 @@ terminal.
 ### 11c. Group limits (operator 2026-11-03)
 - [x] memory, CPU and tasks of a group's slice as settings (panel
       General tab, `genco group set --memory --cpu --tasks`), applied to
-      the running slice without restarts; a warning when the groups'
-      memory adds up to more than the RAM
+      the running slice without restarts
+- [x] overcommit (operator 2026-11-12): all groups capped together at
+      the RAM without a reserve (genco.slice), shared services with a
+      low OOM score, alerts on memory pressure and OOM kills instead of
+      the sum of limits, the group's usage and 24 h peak beside its limit
 - [x] drop-ins that override genco's units reported by apply, the minute
       check and the config view; `genco group adopt-limits`
 - [x] ImageMagick limits for groups with PHP, from the group's memory

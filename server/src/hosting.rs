@@ -4,7 +4,7 @@
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use std::sync::Arc;
@@ -401,14 +401,17 @@ pub fn set_php(conn: &Connection, id: i64, php: &PhpSettings) -> Result<()> {
 	Ok(())
 }
 
-/// Checks the limits against the server, warns when the groups' memory
-/// limits together are more than it has.
-pub fn set_limits(
-	conn: &Connection,
-	id: i64,
-	limits: &Limits,
-) -> Result<Option<String>> {
-	limits::check_here(limits)?;
+/// Checks the limits against the server and stores them.
+pub fn set_limits(conn: &Connection, id: i64, limits: &Limits) -> Result<()> {
+	let kept: Option<u32> = conn
+		.query_row(
+			"SELECT memory_max_mb FROM domain_groups WHERE id = ?1",
+			[id],
+			|r| r.get(0),
+		)
+		.optional()?
+		.flatten();
+	limits::check_here(limits, kept)?;
 	conn.execute(
 		"UPDATE domain_groups SET memory_max_mb = ?1, memory_high_mb = ?2,
 		cpu_percent = ?3, tasks_max = ?4 WHERE id = ?5",
@@ -420,14 +423,7 @@ pub fn set_limits(
 			id
 		],
 	)?;
-	Ok(memory_warning(conn)?)
-}
-
-/// When the groups' memory limits add up to more than the server has.
-fn memory_warning(conn: &Connection) -> rusqlite::Result<Option<String>> {
-	let (ram, swap) = limits::server_memory();
-	let all = groups(conn)?.into_iter().map(|g| g.limits);
-	Ok(limits::overcommit(all, ram, swap))
+	Ok(())
 }
 
 /// The repository a group deploys from and its branch, `None` keeps.
@@ -855,12 +851,6 @@ struct UpdateGroupReq {
 	limits: Option<Limits>,
 }
 
-#[derive(Debug, Serialize)]
-struct UpdateGroupResp {
-	/// the groups' memory limits add up to more than the server has
-	warning: Option<String>,
-}
-
 /// The name stays, it is the linux user and the directory.
 async fn update_group(
 	_authed: Authed,
@@ -868,7 +858,7 @@ async fn update_group(
 	State(events): State<Events>,
 	Path(id): Path<i64>,
 	Json(req): Json<UpdateGroupReq>,
-) -> Result<Json<UpdateGroupResp>> {
+) -> Result<Json<()>> {
 	let repo = req.repo.as_deref().map(str::trim).filter(|r| !r.is_empty());
 	if let Some(repo) = repo {
 		check_git(repo, "repository")?;
@@ -889,13 +879,12 @@ async fn update_group(
 	if let Some(php) = req.php {
 		set_php(&tx, id, &php)?;
 	}
-	let warning = match req.limits {
-		Some(l) => set_limits(&tx, id, &l)?,
-		None => None,
-	};
+	if let Some(l) = req.limits {
+		set_limits(&tx, id, &l)?;
+	}
 	tx.commit()?;
 	events.send(Event::Tree);
-	Ok(Json(UpdateGroupResp { warning }))
+	Ok(Json(()))
 }
 
 /// How a domain is served, the same when it is added and changed.

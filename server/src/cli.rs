@@ -393,11 +393,8 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 		}
 		let mut msg = "changed, run genco apply".to_string();
 		if l != g.limits {
-			let warning = hosting::set_limits(&tx, g.id, &l)?;
+			hosting::set_limits(&tx, g.id, &l)?;
 			msg.push_str(&format!("\nlimits: {}", l.describe()));
-			if let Some(w) = warning {
-				msg.push_str(&format!("\nwarning: {w}"));
-			}
 		}
 		tx.commit()?;
 		return Ok(msg);
@@ -451,13 +448,13 @@ pub async fn adopt_limits(db: &crate::db::Db, name: &str) -> Result<String> {
 	// only stored once the files are in the trash
 	actions::trash_dir().map_err(Error::Internal)?;
 	let stamp = crate::util::stamp().await;
-	let (warning, moved) = {
+	let moved = {
 		let conn = db.conn();
 		let tx = conn.unchecked_transaction()?;
-		let warning = hosting::set_limits(&tx, g.id, &l)?;
+		hosting::set_limits(&tx, g.id, &l)?;
 		let moved = trash_files(&files, actions::TRASH, &stamp)?;
 		tx.commit()?;
-		(warning, moved)
+		moved
 	};
 	let mut msg = String::new();
 	for (f, to) in files.iter().zip(&moved) {
@@ -472,9 +469,6 @@ pub async fn adopt_limits(db: &crate::db::Db, name: &str) -> Result<String> {
 		.map_err(Error::Internal)?;
 
 	msg.push_str(&format!("limits of {name}: {}", l.describe()));
-	if let Some(w) = warning {
-		msg.push_str(&format!("\nwarning: {w}"));
-	}
 	Ok(msg)
 }
 

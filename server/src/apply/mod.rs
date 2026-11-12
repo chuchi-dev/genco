@@ -4,6 +4,7 @@
 
 mod group;
 mod mail;
+mod memory;
 mod system;
 
 use std::collections::HashSet;
@@ -25,6 +26,7 @@ use crate::webmail;
 
 use group::*;
 use mail::*;
+use memory::*;
 use system::*;
 
 /// One apply at a time, the panel, the agent and the CLI may all start one;
@@ -197,6 +199,7 @@ async fn sync(
 		.flat_map(|g| render::group_files(g, &certs))
 		.collect();
 	files.extend(panel_files(cfg, old_names));
+	files.extend(memory_files());
 	files.push(firewall_file(cfg, groups, blocked));
 	files.push(File {
 		path: render::RESERVED_PORTS.into(),
@@ -222,6 +225,7 @@ async fn sync(
 		r.run(&["systemctl", "daemon-reload"]).await;
 	}
 
+	memory(r, &changed).await;
 	for g in groups {
 		set_limits(r, g, &changed).await;
 		start_units(r, g, &changed).await;
