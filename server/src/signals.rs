@@ -12,6 +12,10 @@
 //! - a group's connection to a port mining pools and IRC bots use
 //! - a group's SMTP login sends far more mail today than usual: spam
 //! - new PHP files in a group's upload folders, every 15 minutes
+//!
+//! A sign's key holds what was found (the program, the file, the port):
+//! a new one alerts at once, not only after the `REALERT` of the same
+//! group's last one.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -204,7 +208,7 @@ fn suspicious(procs: &[Proc], users: &HashMap<u32, String>) -> Vec<Problem> {
 			.any(|dir| p.exe.starts_with(dir))
 			|| (p.exe.ends_with(" (deleted)") && !p.exe.starts_with("/usr/"));
 		if odd_exe {
-			let key = format!("signal:exe:{group}");
+			let key = format!("signal:exe:{group}:{}", p.exe);
 			found.entry(key.clone()).or_insert_with(|| {
 				Problem::new(
 					key,
@@ -219,7 +223,7 @@ fn suspicious(procs: &[Proc], users: &HashMap<u32, String>) -> Vec<Problem> {
 		if SHELLS.contains(&p.comm.as_str())
 			&& parent.is_some_and(|c| c.starts_with("php-fpm"))
 		{
-			let key = format!("signal:shell:{group}");
+			let key = format!("signal:shell:{group}:{}", p.comm);
 			found.entry(key.clone()).or_insert_with(|| {
 				Problem::new(
 					key,
@@ -268,7 +272,7 @@ fn pool_connections(
 		else {
 			continue;
 		};
-		let key = format!("signal:pool:{group}");
+		let key = format!("signal:pool:{group}:{port}");
 		if POOL_PORTS.contains(&port) && !found.iter().any(|p| p.key == key) {
 			found.push(Problem::new(
 				key,
@@ -345,7 +349,7 @@ async fn uploads(groups: &[&Group]) -> Vec<Problem> {
 		if let Some(first) = files.first() {
 			found.push(
 				Problem::new(
-					format!("signal:upload:{}", g.name),
+					format!("signal:upload:{}:{first}", g.name),
 					format!(
 						"new PHP files in an upload folder of the group {}: \
 						{first}{}",
@@ -409,7 +413,10 @@ mod tests {
 		];
 		let found = suspicious(&procs, &users);
 		let keys: Vec<&str> = found.iter().map(|p| p.key.as_str()).collect();
-		assert_eq!(keys, ["signal:exe:shop", "signal:shell:shop"]);
+		assert_eq!(
+			keys,
+			["signal:exe:shop:/tmp/.x/xmrig", "signal:shell:shop:sh"]
+		);
 		assert!(found[0].detail.contains("/tmp/.x/xmrig"));
 		assert!(found[1].detail.contains("sh runs under the PHP-FPM"));
 	}
