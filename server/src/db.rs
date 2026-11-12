@@ -525,6 +525,8 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE proposals ADD COLUMN change_by TEXT;
 	ALTER TABLE pending_actions ADD COLUMN plan_id INTEGER;
 	ALTER TABLE pending_actions ADD COLUMN plan_entry TEXT;
+	CREATE UNIQUE INDEX pending_actions_plan_entry
+		ON pending_actions(plan_id, plan_entry) WHERE plan_id IS NOT NULL;
 	UPDATE proposals SET text = coalesce(original_text, text),
 		status = 'planning' WHERE status = 'pending';
 "#,

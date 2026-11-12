@@ -172,13 +172,8 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 	}
 	let runner = Runner::new(cfg.clone(), db.clone(), events.clone());
 	runner.resume_interrupted();
-	proposals::planner::Planner {
-		cfg: cfg.clone(),
-		db: db.clone(),
-		events: events.clone(),
-		llm: runner.llm().clone(),
-	}
-	.resume();
+	proposals::planner(cfg.clone(), db.clone(), events.clone(), &runner)
+		.resume();
 	end_interrupted(&db)?;
 	if runner.has_llm() {
 		runner.onboard();

@@ -482,7 +482,7 @@ struct Created {
 }
 
 /// The planner with the state of the request.
-fn planner(
+pub(crate) fn planner(
 	cfg: Arc<Config>,
 	db: Db,
 	events: Events,
@@ -557,6 +557,7 @@ async fn get_route(
 		}
 		p.plans.clear();
 		p.change_note = None;
+		p.change_by = None;
 	}
 	Ok(Json(p))
 }

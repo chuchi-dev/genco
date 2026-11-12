@@ -129,7 +129,7 @@
 			code: `${auth} ${location.origin}/api/databases/<name>/dump -o db.sql.gz`,
 		},
 		{
-			text: 'Propose a task to the server agent: "text" says what you want and why, not a long list of steps; a small model rewrites it into a short formatted version (the request may take 30 seconds), the admin approves that version and the server agent gets it; the admin of "approver" gets the mail (left out: every admin), any admin decides; the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
+			text: 'Propose a task to the server agent: "text" says what you want and why, not a long list of steps; a planner reads it on the server and writes a short plan (status "planning" until then), the admin approves that plan or asks for a change, and the server agent gets only the approved plan; the admin of "approver" gets the mail (left out: every admin), any admin decides; the mail goes after "mailDelay" minutes if nobody decided in the panel (left out: right away):',
 			code: `${auth} -H "Content-Type: application/json" \\\n  -d '{"text": "…", "approver": "admin@example.ch", "mailDelay": 10}' \\\n  ${location.origin}/api/proposals`,
 		},
 		{

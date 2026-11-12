@@ -858,8 +858,9 @@ agent may:
   read-only sandbox. Root there has no capability but reading files;
   the whole file system is read-only, there is no network, no unix
   socket (so no systemd, databases, docker or postfix), no other
-  process to see, and genco's secrets, `/etc/shadow`, ssh keys and
-  certificate keys are hidden. It reads the proposal as data, looks
+  process to see, and genco's secrets, `/etc/shadow`, ssh keys,
+  certificate keys, the SMTP relay password, database files and
+  mailboxes are hidden (the groups' own files stay readable). It reads the proposal as data, looks
   around as much as it needs (the server's groups, domains, databases,
   workers, mail domains and units come with its instructions) and
   writes a short plan: the goal, the steps with exact names, the

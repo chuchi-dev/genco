@@ -45,7 +45,7 @@ pub enum Kind {
 }
 
 impl Kind {
-	fn as_str(self) -> &'static str {
+	pub(crate) fn as_str(self) -> &'static str {
 		match self {
 			Self::Static => "static",
 			Self::Php => "php",

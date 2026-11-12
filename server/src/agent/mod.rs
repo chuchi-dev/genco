@@ -1,6 +1,6 @@
 mod tools;
 
-pub(crate) use tools::truncate;
+pub(crate) use tools::{output_text, truncate};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

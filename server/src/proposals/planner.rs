@@ -17,6 +17,7 @@ use rusqlite::params;
 use schemars::{JsonSchema, schema_for};
 use serde::Deserialize;
 use soe_llms::{Input, Model, Output, Request, ResponseEvent, Role, Tool};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use super::{Proposal, get_one, mail, plans, wrap};
@@ -34,6 +35,9 @@ const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const COMMAND_SECS: u32 = 60;
 /// What the planner's answer starts with when it writes no plan.
 const NO_PLAN: &str = "NO PLAN:";
+/// Bytes of stdout and of stderr read from one command, the tool output
+/// is truncated further.
+const MAX_READ: u64 = 1 << 20;
 
 /// Proposals whose planner runs in this process.
 static RUNNING: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Default::default);
@@ -54,10 +58,7 @@ impl Planner {
 			return;
 		}
 		let this = self.clone();
-		tokio::spawn(async move {
-			this.run(id).await;
-			RUNNING.lock().unwrap().remove(&id);
-		});
+		tokio::spawn(async move { this.run(id).await });
 	}
 
 	/// After a restart: the proposals that were being planned.
@@ -65,8 +66,11 @@ impl Planner {
 		let ids = (|| -> rusqlite::Result<Vec<i64>> {
 			self.db
 				.conn()
-				.prepare("SELECT id FROM proposals WHERE status = 'planning'")?
-				.query_map([], |r| r.get(0))?
+				.prepare(
+					"SELECT id FROM proposals WHERE status = 'planning'
+					AND created_at > ?1",
+				)?
+				.query_map([now() - super::VALID_MS], |r| r.get(0))?
 				.collect()
 		})();
 		match ids {
@@ -84,7 +88,10 @@ impl Planner {
 				TIMEOUT.as_secs() / 60
 			)),
 		};
-		let mail = match self.store(id, &new) {
+		let stored = self.store(id, &new);
+		// a change asked for while the mail goes out plans again
+		RUNNING.lock().unwrap().remove(&id);
+		let mail = match stored {
 			Ok(mail) => mail,
 			Err(e) => {
 				tracing::error!("plan of proposal {id}: {e}");
@@ -161,6 +168,7 @@ impl Planner {
 			let output = self.ask(&req, &model).await?;
 			let mut text = String::new();
 			let mut calls = vec![];
+			let mut inputs = vec![];
 			for o in output {
 				match o {
 					Output::Text { content } => text.push_str(&content),
@@ -170,13 +178,13 @@ impl Planner {
 						input,
 						context,
 					} => {
-						req.input.push(Input::ToolCall {
+						calls.push(Input::ToolCall {
 							id: id.clone(),
 							name,
 							input: input.clone(),
 							context,
 						});
-						calls.push((id, input));
+						inputs.push((id, input));
 					}
 				}
 			}
@@ -210,13 +218,15 @@ impl Planner {
 				}
 			}
 
+			// the text before the calls, the outputs right after them
 			if !text.trim().is_empty() {
 				req.input.push(Input::Text {
 					role: Role::Assistant,
 					content: text,
 				});
 			}
-			for (call_id, call) in calls {
+			req.input.extend(calls);
+			for (call_id, call) in inputs {
 				let output = self.shell(id, call).await;
 				req.input.push(Input::ToolCallOutput {
 					id: call_id,
@@ -265,26 +275,40 @@ impl Planner {
 			&p.command.chars().take(500).collect::<String>(),
 			None,
 		);
-		let out = sandbox(&p.command).output().await;
+		let out = run_sandboxed(&p.command).await;
 		let out = match out {
 			Ok(out) => out,
 			Err(e) => return format!("failed to run: {e}"),
 		};
-		let mut s = match out.status.code() {
-			Some(code) => format!("exit code: {code}\n"),
-			None => "killed by signal\n".into(),
-		};
-		for (name, bytes) in [("stdout", &out.stdout), ("stderr", &out.stderr)]
-		{
-			if !bytes.is_empty() {
-				s.push_str(&format!(
-					"{name}:\n{}\n",
-					String::from_utf8_lossy(bytes)
-				));
-			}
-		}
-		crate::agent::truncate(&s)
+		crate::agent::truncate(&crate::agent::output_text(&out))
 	}
+}
+
+/// Runs a command in the sandbox and reads at most `MAX_READ` bytes of
+/// stdout and of stderr: a command like `yes` mustn't fill genco's
+/// memory. Closing a full pipe stops the command with EPIPE.
+async fn run_sandboxed(cmd: &str) -> std::io::Result<std::process::Output> {
+	let mut child = sandbox(cmd)
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.spawn()?;
+	let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take())
+	else {
+		return Err(std::io::Error::other("no pipes"));
+	};
+	let (stdout, stderr) = tokio::join!(read_at_most(out), read_at_most(err));
+	Ok(std::process::Output {
+		status: child.wait().await?,
+		stdout,
+		stderr,
+	})
+}
+
+async fn read_at_most(r: impl AsyncRead + Unpin) -> Vec<u8> {
+	let mut buf = vec![];
+	// what was read before an error is still the output
+	let _ = r.take(MAX_READ).read_to_end(&mut buf).await;
+	buf
 }
 
 /// The admin sees why there is no plan and can ask for another try.
@@ -371,6 +395,11 @@ const SANDBOX: &[&str] = &[
 	"NoNewPrivileges=yes",
 	"ProtectSystem=strict",
 	"ProtectHome=read-only",
+	// ProtectSystem leaves /run and these host mounts writable, and root
+	// writes root's files there without any capability (drop-ins of
+	// units, udev rules)
+	"ReadOnlyPaths=/run -/dev/shm -/dev/hugepages -/dev/mqueue",
+	"InaccessiblePaths=-/proc/sys/fs/binfmt_misc",
 	"PrivateTmp=yes",
 	"PrivateDevices=yes",
 	"PrivateNetwork=yes",
@@ -407,6 +436,13 @@ const SECRETS: &[&str] = &[
 	"-/etc/letsencrypt/keys",
 	"-/etc/mysql/debian.cnf",
 	"-/root/.my.cnf",
+	"-/etc/postfix/sasl_passwd",
+	"-/etc/postfix/sasl_passwd.db",
+	"-/etc/genco/runner.toml",
+	"-/etc/letsencrypt/accounts",
+	"-/var/lib/mysql",
+	"-/var/lib/postgresql",
+	"-/var/vmail",
 ];
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -447,7 +483,7 @@ async fn facts(db: &Db) -> String {
 				out.push_str(&format!(
 					"  - domain {} ({}, root {})\n",
 					d.name,
-					word(&d.kind),
+					d.kind.as_str(),
 					d.root
 				));
 			}
@@ -455,7 +491,7 @@ async fn facts(db: &Db) -> String {
 				out.push_str(&format!(
 					"  - database {} ({})\n",
 					d.name,
-					word(&d.engine)
+					d.engine.as_str()
 				));
 			}
 			for w in &g.workers {
@@ -494,14 +530,6 @@ async fn facts(db: &Db) -> String {
 		out.push_str(&format!("\n## {title}\n\n{units}\n"));
 	}
 	out
-}
-
-/// The name serde gives an enum, "php" or "mariadb".
-fn word<T: serde::Serialize>(v: &T) -> String {
-	serde_json::to_value(v)
-		.ok()
-		.and_then(|v| v.as_str().map(String::from))
-		.unwrap_or_default()
 }
 
 #[cfg(test)]
