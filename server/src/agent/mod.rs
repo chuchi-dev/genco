@@ -501,27 +501,7 @@ impl Runner {
 			}
 			Err(e) => tracing::error!("failed to set the report: {e}"),
 		}
-		let older = if before.kind == Kind::Routine {
-			older_attention(&conn, id, &before.title).unwrap_or_default()
-		} else {
-			vec![]
-		};
 		drop(conn);
-
-		// what this run reports is the routine's state now
-		for old in older {
-			self.resolve(
-				old,
-				&format!(
-					"a newer run of this routine (conversation {id}) reports {}.",
-					if report == Report::Attention {
-						"attention"
-					} else {
-						"OK"
-					}
-				),
-			);
-		}
 
 		// a mail once it turns to attention; a webhook may want the OK
 		// reports too
@@ -635,20 +615,6 @@ impl Runner {
 			Err(e) => tracing::error!("failed to set status: {e}"),
 		}
 	}
-}
-
-/// The earlier runs of the routine `title` that still need attention.
-fn older_attention(
-	conn: &rusqlite::Connection,
-	id: i64,
-	title: &str,
-) -> rusqlite::Result<Vec<i64>> {
-	conn.prepare(
-		"SELECT id FROM conversations WHERE kind = 'routine'
-		AND report = 'attention' AND title = ?1 AND id < ?2",
-	)?
-	.query_map(rusqlite::params![title, id], |r| r.get(0))?
-	.collect()
 }
 
 /// Settings → Mail in a few words, off changes what the agent can do.
@@ -812,33 +778,6 @@ fn to_input(messages: &[Message]) -> Vec<Input> {
 mod tests {
 	use super::*;
 	use serde_json::json;
-
-	#[test]
-	fn a_newer_run_supersedes_the_routine_s_old_attention() {
-		let db = Db::memory();
-		let conn = db.conn();
-		let run = |title: &str, report| {
-			let id = convs::create_kind(&conn, title, Kind::Routine).unwrap();
-			convs::set_report(&conn, id, report).unwrap();
-			id
-		};
-		let old = run("Daily health check", Report::Attention);
-		run("Daily health check", Report::Ok);
-		run("Weekly update round", Report::Attention);
-		let now = run("Daily health check", Report::Attention);
-		assert_eq!(
-			older_attention(&conn, now, "Daily health check").unwrap(),
-			[old]
-		);
-
-		let (c, _) = convs::resolve_by_genco(&conn, old, "newer run").unwrap();
-		assert_eq!(c.report, Some(Report::Ok));
-		assert!(
-			older_attention(&conn, now, "Daily health check")
-				.unwrap()
-				.is_empty()
-		);
-	}
 
 	fn msg(id: i64, data: MessageData) -> Message {
 		Message {

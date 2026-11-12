@@ -86,6 +86,20 @@ impl Checker {
 			alert(db, runner, &new);
 		}
 
+		let older = superseded_routines(&db.conn()).unwrap_or_else(|e| {
+			tracing::error!("finding superseded routines: {e}");
+			vec![]
+		});
+		for (id, newer) in older {
+			runner.resolve(
+				id,
+				&format!(
+					"a newer run of this routine (conversation {newer}) has \
+					its own report."
+				),
+			);
+		}
+
 		let gone = solved_alerts(&db.conn()).unwrap_or_else(|e| {
 			tracing::error!("finding solved alerts: {e}");
 			vec![]
@@ -98,6 +112,24 @@ impl Checker {
 			);
 		}
 	}
+}
+
+/// Runs of a routine that need attention while a newer run of it has
+/// its own report: that one says how things are now. With the newest
+/// such run.
+fn superseded_routines(conn: &Connection) -> rusqlite::Result<Vec<(i64, i64)>> {
+	conn.prepare(
+		"SELECT c.id, (SELECT max(n.id) FROM conversations n
+			WHERE n.kind = 'routine' AND n.title = c.title AND n.id > c.id
+			AND n.report IS NOT NULL)
+		FROM conversations c
+		WHERE c.kind = 'routine' AND c.report = 'attention'
+		AND c.status != 'running' AND EXISTS (SELECT 1 FROM conversations n
+			WHERE n.kind = 'routine' AND n.title = c.title AND n.id > c.id
+			AND n.report IS NOT NULL)",
+	)?
+	.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+	.collect()
 }
 
 /// Alerts that need attention but whose problems are all gone, not while
@@ -477,6 +509,27 @@ mod tests {
 
 	fn keys(problems: &[Problem]) -> Vec<&str> {
 		problems.iter().map(|p| p.key.as_str()).collect()
+	}
+
+	#[test]
+	fn a_newer_run_supersedes_the_routine_s_old_attention() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let run = |title: &str, report: Option<convs::Report>| {
+			let id = convs::create_kind(&conn, title, Kind::Routine).unwrap();
+			convs::set_status(&conn, id, convs::Status::Idle).unwrap();
+			if let Some(r) = report {
+				convs::set_report(&conn, id, r).unwrap();
+			}
+			id
+		};
+		let old = run("Daily health check", Some(convs::Report::Attention));
+		run("Daily health check", Some(convs::Report::Ok));
+		run("Weekly update round", Some(convs::Report::Attention));
+		let last = run("Daily health check", Some(convs::Report::Attention));
+		// a run without its report yet doesn't count
+		run("Daily health check", None);
+		assert_eq!(superseded_routines(&conn).unwrap(), [(old, last)]);
 	}
 
 	#[test]
