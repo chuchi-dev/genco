@@ -133,7 +133,7 @@ pub fn queue(
 			group.name
 		)));
 	}
-	crate::quarantine::check_deploy(group).map_err(Error::Invalid)?;
+	crate::quarantine::refuse(group).map_err(Error::Invalid)?;
 	let git_ref = git_ref.unwrap_or(&group.branch);
 	check_ref(git_ref)?;
 	// a CI pushing fast queues one deploy, the newest ref wins
@@ -206,7 +206,7 @@ pub fn queue_upload(
 ) -> Result<i64> {
 	let label = label.unwrap_or("upload");
 	check_ref(label)?;
-	crate::quarantine::check_deploy(group).map_err(Error::Invalid)?;
+	crate::quarantine::refuse(group).map_err(Error::Invalid)?;
 	if let Some(id) = waiting(conn, group.id)? {
 		return Err(Error::Invalid(format!(
 			"a deploy of the group waits already (#{id}), upload again \
@@ -390,7 +390,10 @@ fn queue_rollback(
 async fn run_rollback(ctx: &Ctx, id: i64, group: &Group) {
 	let release = get(&ctx.db.conn(), id).ok().and_then(|d| d.release);
 	with_job(ctx, id, Ok(group.name.clone()), async |log: &mut Log| {
-		crate::quarantine::check_deploy(group)?;
+		// the group as it is now, not as it was queued
+		let group = &hosting::find_group(&ctx.db.conn(), group.id)
+			.map_err(|e| e.to_string())?;
+		crate::quarantine::refuse(group)?;
 		let release = release.ok_or("the rollback has no release")?;
 		let base = render::group_dir(&group.name);
 		// a deploy before it may have pruned that release meanwhile

@@ -636,14 +636,20 @@ async fn run_schedule(
 }
 
 fn schedule_unit_by_id(conn: &Connection, id: i64) -> Result<String> {
-	let (group, name): (String, String) = conn
+	let (group, name, quarantined): (String, String, bool) = conn
 		.query_row(
-			"SELECT g.name, s.name FROM schedules s
+			"SELECT g.name, s.name, g.quarantine_reason IS NOT NULL
+			FROM schedules s
 			JOIN domain_groups g ON g.id = s.group_id WHERE s.id = ?1",
 			[id],
-			|r| Ok((r.get(0)?, r.get(1)?)),
+			|r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
 		)
 		.map_err(|_| Error::NotFound)?;
+	if quarantined {
+		return Err(Error::Invalid(format!(
+			"the group {group} is in quarantine, lift it first"
+		)));
+	}
 	Ok(crate::render::schedule_unit(&group, &name))
 }
 

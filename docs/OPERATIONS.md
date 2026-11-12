@@ -374,8 +374,9 @@ its sites) can be put in quarantine: on the group's General tab
 --reason "..."`. apply runs at once and stops and disables its PHP-FPM,
 apps, workers and schedules (and whatever else runs in its slice), its
 sites answer `503` with a small maintenance page (redirect domains stay),
-its SMTP login and send-only addresses stop working and deploys and
-rollbacks are refused. Its files, databases and mailboxes stay as they
+its SMTP login and send-only addresses stop working and deploys,
+rollbacks and runs of its schedules are refused (a deploy that runs
+already doesn't switch or restart anything). Its files, databases and mailboxes stay as they
 are, mail to its mailboxes still arrives. The group's page shows since
 when, by whom and why; the minute check doesn't report its sites while
 it lasts. Lift Quarantine… or `genco group unquarantine <group>` starts
@@ -389,20 +390,24 @@ cause and checked the group's files and processes.
 The minute check looks for signs of a compromised group and starts an
 alert for genco's agent, it never acts on its own:
 
-- the group uses 90% of its CPU limit for 10 minutes, not while it
-  deploys (a miner);
+- the group used 90% of its CPU limit in each of the last 10 minutes,
+  not while it deploys (a miner);
 - a process of the group runs a program from `/tmp`, `/var/tmp`,
   `/dev/shm`, or one that was deleted (outside `/usr`);
 - a shell, netcat, perl or python runs under the group's PHP-FPM for two
   minutes (a web shell);
-- the group keeps a connection to a port of mining pools or IRC bots
+- the group keeps a connection out to a port of mining pools or IRC bots
   (3333, 4444, 5555, 6666, 6667, 7777, 9999, 14433, 14444, 45560, 45700);
-- its SMTP login sent at least 300 mails today and more than five times
+- its SMTP login and send-only addresses sent at least 300 mails today and more than five times
   the most of a day in the week before (spam);
-- new PHP files (`.php*`, `.phtml`, `.phar`) of the last 20 minutes in an
-  `upload`, `uploads`, `media` or `files` folder of the group (not in
-  `vendor`, `node_modules`, `.git`), looked for every 15 minutes at the
-  lowest priority and not while it deploys.
+- new or changed PHP files (`.php*`, `.phtml`, `.phar`) of the last 20
+  minutes in an `upload`, `uploads`, `media` or `files` folder of the
+  group (not in `vendor`, `node_modules`, `.git`), looked for every 15
+  minutes at the lowest priority for at most a minute and not while it
+  deploys.
+
+What the group chose (a program's path, a file name) is quoted and cut
+short in the alert, a round reports at most 10 signs.
 
 ### Group limits
 

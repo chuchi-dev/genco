@@ -3,23 +3,24 @@
 //! them and decides (it may put the group in quarantine, quarantine.rs).
 //! Cheap and without the llm:
 //!
-//! - a group uses (nearly) all of its CPU limit for 10 minutes, outside a
-//!   deploy: a miner
+//! - a group uses (nearly) all of its CPU limit in each of the last 10
+//!   minutes (stats.rs), outside a deploy: a miner
 //! - a process of a group runs a program from /tmp, /var/tmp, /dev/shm or
 //!   one that was deleted (outside /usr, where updates replace them)
 //! - a shell, netcat, perl or python under the group's PHP-FPM for two
 //!   minutes: a web shell
-//! - a group's connection to a port mining pools and IRC bots use
-//! - a group's SMTP login sends far more mail today than usual: spam
+//! - a group's connection out to a port mining pools and IRC bots use
+//! - a group's SMTP login and send-only addresses send far more mail today
+//!   than usual: spam
 //! - new PHP files in a group's upload folders, every 15 minutes
 //!
-//! A sign's key holds what was found (the program, the file, the port):
-//! a new one alerts at once, not only after the `REALERT` of the same
-//! group's last one.
+//! What the group chose (a path, a name) is quoted and cut short in the
+//! alert, and a round has at most `MAX_SIGNS`. A sign's key holds what
+//! was found (the program, the file, the port): a new one alerts at once,
+//! not only after the `REALERT` of the same group's last one.
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Instant;
 
 use crate::checks::Problem;
 use crate::hosting::Group;
@@ -45,13 +46,18 @@ const MAIL_FACTOR: i64 = 5;
 /// minutes a file counts as new.
 const UPLOAD_ROUNDS: u32 = 15;
 const UPLOAD_MINUTES: u32 = 20;
+/// Seconds the search may take, a group with millions of files must not
+/// hold up the minute check.
+const UPLOAD_SECS: u64 = 60;
+/// Signs of one round at most, and the characters of a path or name shown:
+/// the group chooses them, they go into the agent's alert.
+const MAX_SIGNS: usize = 10;
+const MAX_SHOWN: usize = 120;
 
 const DAY_MS: i64 = 24 * 3600 * 1000;
 
 #[derive(Default)]
 pub struct Signals {
-	/// CPU time of each group's slice in µs at the last round
-	cpu: HashMap<String, (u64, Instant)>,
 	round: u32,
 }
 
@@ -60,77 +66,77 @@ impl Signals {
 	pub async fn find(
 		&mut self,
 		groups: &[Group],
-		stats: Option<&StatsDb>,
+		stats: &StatsDb,
 	) -> Vec<Problem> {
 		let groups: Vec<&Group> =
 			groups.iter().filter(|g| g.quarantine.is_none()).collect();
 		let users = group_users(&groups);
-		let mut found = self.cpu(&groups);
+		let mut found = cpu(&groups, stats);
 		found.extend(processes(&users));
 		found.extend(connections(&users));
-		if let Some(stats) = stats {
-			found.extend(mail(&groups, stats));
-		}
+		found.extend(mail(&groups, stats));
 		self.round += 1;
 		if self.round.is_multiple_of(UPLOAD_ROUNDS) {
 			found.extend(uploads(&groups).await);
 		}
-		found
-	}
-
-	/// A group whose slice used nearly its whole CPU limit since the last
-	/// round, not while it deploys.
-	fn cpu(&mut self, groups: &[&Group]) -> Vec<Problem> {
-		let mut found = vec![];
-		for g in groups {
-			let Some(usage) = slice_usage(&g.name) else {
-				continue;
-			};
-			let at = Instant::now();
-			let last = self.cpu.insert(g.name.clone(), (usage, at));
-			let Some((before, then)) = last else {
-				continue;
-			};
-			let secs = at.duration_since(then).as_secs_f64();
-			let deploying =
-				!crate::job::is_free(&crate::deploy::lock_path(&g.name));
-			if secs < 1.0 || deploying {
-				continue;
-			}
-			// percent of one core, like the limit
-			let used = usage.saturating_sub(before) as f64 / secs / 1e4;
-			let limit = g.limits.cpu() as f64;
-			if used >= limit * CPU_SHARE {
-				found.push(
-					Problem::new(
-						format!("signal:cpu:{}", g.name),
-						format!(
-							"the group {} uses {used:.0}% CPU of its limit \
-							{limit:.0}% for {CPU_MINUTES} minutes, outside a \
-							deploy (a miner?)",
-							g.name
-						),
-					)
-					.minutes(CPU_MINUTES),
-				);
-			}
-		}
+		found.truncate(MAX_SIGNS);
 		found
 	}
 }
 
-/// The CPU time of a group's slice in µs.
-fn slice_usage(group: &str) -> Option<u64> {
-	let path = format!(
-		"/sys/fs/cgroup/genco.slice/{}/cpu.stat",
-		crate::render::slice(group)
-	);
-	let stat = std::fs::read_to_string(path).ok()?;
-	stat.lines()
-		.find_map(|l| l.strip_prefix("usage_usec "))?
-		.trim()
-		.parse()
-		.ok()
+/// A group whose slice used nearly its whole CPU limit in each minute of
+/// the last `CPU_MINUTES` (the samples of stats.rs), not while it deploys.
+fn cpu(groups: &[&Group], stats: &StatsDb) -> Vec<Problem> {
+	let cores = std::thread::available_parallelism()
+		.map(|n| n.get())
+		.unwrap_or(1) as f64;
+	let since = crate::db::now() - CPU_MINUTES as i64 * 60_000;
+	let conn = stats.conn();
+	let mut found = vec![];
+	for g in groups {
+		if !crate::job::is_free(&crate::deploy::lock_path(&g.name)) {
+			continue;
+		}
+		let (minutes, least): (u32, Option<f64>) = conn
+			.query_row(
+				"SELECT count(cpu), min(cpu) FROM samples
+				WHERE scope = ?1 AND period = 60 AND at > ?2",
+				rusqlite::params![format!("group:{}", g.name), since],
+				|r| Ok((r.get(0)?, r.get(1)?)),
+			)
+			.unwrap_or((0, None));
+		// the samples are percent of all cores, the limit of one
+		let used = least.unwrap_or(0.0) * cores;
+		let limit = g.limits.cpu() as f64;
+		// a sample may fall just outside the window
+		if minutes + 1 >= CPU_MINUTES && used >= limit * CPU_SHARE {
+			found.push(sign(
+				format!("signal:cpu:{}", g.name),
+				format!(
+					"the group {} used at least {used:.0}% CPU of its limit \
+					{limit:.0}% in each of the last {CPU_MINUTES} minutes, \
+					outside a deploy (a miner?)",
+					g.name
+				),
+			));
+		}
+	}
+	found
+}
+
+/// A sign for the alert: its detail starts with `signal:` (alert.md).
+fn sign(key: String, detail: String) -> Problem {
+	Problem::new(key, format!("signal: {detail}"))
+}
+
+/// A path or name the group chose, quoted on one line and cut short: it
+/// must not read as instructions in the alert.
+fn shown(s: &str) -> String {
+	let mut cut: String = s.chars().take(MAX_SHOWN).collect();
+	if cut.len() < s.len() {
+		cut.push('…');
+	}
+	format!("{cut:?}")
 }
 
 /// The uid of each group's user, to its group's name.
@@ -208,13 +214,16 @@ fn suspicious(procs: &[Proc], users: &HashMap<u32, String>) -> Vec<Problem> {
 			.any(|dir| p.exe.starts_with(dir))
 			|| (p.exe.ends_with(" (deleted)") && !p.exe.starts_with("/usr/"));
 		if odd_exe {
-			let key = format!("signal:exe:{group}:{}", p.exe);
+			let exe = shown(&p.exe);
+			let key = format!("signal:exe:{group}:{exe}");
 			found.entry(key.clone()).or_insert_with(|| {
-				Problem::new(
+				sign(
 					key,
 					format!(
-						"a process of the group {group} runs {} (pid {}, {})",
-						p.exe, p.pid, p.comm
+						"a process of the group {group} runs {exe} (pid {}, \
+						{})",
+						p.pid,
+						shown(&p.comm)
 					),
 				)
 			});
@@ -225,7 +234,7 @@ fn suspicious(procs: &[Proc], users: &HashMap<u32, String>) -> Vec<Problem> {
 		{
 			let key = format!("signal:shell:{group}:{}", p.comm);
 			found.entry(key.clone()).or_insert_with(|| {
-				Problem::new(
+				sign(
 					key,
 					format!(
 						"{} runs under the PHP-FPM of the group {group} \
@@ -254,18 +263,29 @@ fn pool_connections(
 	tables: &str,
 	users: &HashMap<u32, String>,
 ) -> Vec<Problem> {
-	let mut found: Vec<Problem> = vec![];
-	for line in tables.lines() {
-		let f: Vec<&str> = line.split_whitespace().collect();
-		// established, the remote port
-		if f.len() < 8 || f[3] != "01" {
-			continue;
-		}
-		let Some(port) = f[2]
-			.rsplit(':')
+	let port = |addr: &str| {
+		addr.rsplit(':')
 			.next()
 			.and_then(|p| u16::from_str_radix(p, 16).ok())
-		else {
+	};
+	let rows: Vec<Vec<&str>> = tables
+		.lines()
+		.map(|l| l.split_whitespace().collect())
+		.filter(|f: &Vec<&str>| f.len() >= 8)
+		.collect();
+	// a client's connection to a port here may come from any port
+	let listening: Vec<u16> = rows
+		.iter()
+		.filter(|f| f[3] == "0A")
+		.filter_map(|f| port(f[1]))
+		.collect();
+	let mut found: Vec<Problem> = vec![];
+	for f in &rows {
+		// established and outgoing, the remote port
+		if f[3] != "01" || port(f[1]).is_some_and(|p| listening.contains(&p)) {
+			continue;
+		}
+		let Some(port) = port(f[2]) else {
 			continue;
 		};
 		let Some(group) = f[7].parse().ok().and_then(|uid| users.get(&uid))
@@ -274,7 +294,7 @@ fn pool_connections(
 		};
 		let key = format!("signal:pool:{group}:{port}");
 		if POOL_PORTS.contains(&port) && !found.iter().any(|p| p.key == key) {
-			found.push(Problem::new(
+			found.push(sign(
 				key,
 				format!(
 					"the group {group} keeps a connection to port {port}, \
@@ -286,19 +306,26 @@ fn pool_connections(
 	found
 }
 
-/// A group's SMTP login sending far more today than any day of the week
-/// before.
+/// A group's SMTP login and send-only addresses sending far more today
+/// than on any day of the week before.
 fn mail(groups: &[&Group], stats: &StatsDb) -> Vec<Problem> {
 	let today = crate::db::now() / DAY_MS * DAY_MS;
 	let conn = stats.conn();
 	let mut found = vec![];
 	for g in groups.iter().filter(|g| !g.mail_domains.is_empty()) {
+		let addresses: Vec<&str> = std::iter::once(g.user.as_str())
+			.chain(g.mail_domains.iter().flat_map(|d| {
+				d.send_only_addresses.iter().map(|s| s.address.as_str())
+			}))
+			.collect();
+		let list = serde_json::to_string(&addresses).unwrap_or_default();
 		let sent = |from: i64, to: i64| -> i64 {
 			conn.query_row(
-				"SELECT coalesce(max(count), 0) FROM mail_counts
-				WHERE address = ?1 AND kind = 'sent' AND day >= ?2
-				AND day < ?3",
-				rusqlite::params![g.user, from, to],
+				"SELECT coalesce(max(n), 0) FROM (SELECT sum(count) AS n
+				FROM mail_counts WHERE kind = 'sent' AND day >= ?2
+				AND day < ?3 AND address IN (SELECT value FROM json_each(?1))
+				GROUP BY day)",
+				rusqlite::params![list, from, to],
 				|r| r.get(0),
 			)
 			.unwrap_or(0)
@@ -307,12 +334,12 @@ fn mail(groups: &[&Group], stats: &StatsDb) -> Vec<Problem> {
 		let before = sent(today - 7 * DAY_MS, today);
 		if burst(now, before) {
 			found.push(
-				Problem::new(
+				sign(
 					format!("signal:mail:{}", g.name),
 					format!(
 						"the group {} sent {now} mails today through its SMTP \
-						login, at most {before} a day in the week before \
-						(spam?)",
+						login and send-only addresses, at most {before} a day \
+						in the week before (spam?)",
 						g.name
 					),
 				)
@@ -337,18 +364,19 @@ async fn uploads(groups: &[&Group]) -> Vec<Problem> {
 		}
 		let dir = g.dir.replace('\'', "'\\''");
 		let script = format!(
-			"nice -n 19 ionice -c3 find '{dir}' -xdev \
+			"timeout {UPLOAD_SECS} nice -n 19 ionice -c3 find '{dir}' -xdev \
 			\\( -name vendor -o -name node_modules -o -name .git \\) -prune \
 			-o \\( -path '*/upload/*' -o -path '*/uploads/*' \
 			-o -path '*/media/*' -o -path '*/files/*' \\) \
 			\\( -iname '*.php*' -o -iname '*.phtml' -o -iname '*.phar' \\) \
-			-type f -mmin -{UPLOAD_MINUTES} -print 2>/dev/null | head -5",
+			-type f -cmin -{UPLOAD_MINUTES} -print 2>/dev/null | head -5",
 		);
 		let out = crate::util::sh(&script).await.unwrap_or_default();
 		let files: Vec<&str> = out.lines().collect();
 		if let Some(first) = files.first() {
+			let first = shown(first);
 			found.push(
-				Problem::new(
+				sign(
 					format!("signal:upload:{}:{first}", g.name),
 					format!(
 						"new PHP files in an upload folder of the group {}: \
@@ -415,7 +443,7 @@ mod tests {
 		let keys: Vec<&str> = found.iter().map(|p| p.key.as_str()).collect();
 		assert_eq!(
 			keys,
-			["signal:exe:shop:/tmp/.x/xmrig", "signal:shell:shop:sh"]
+			["signal:exe:shop:\"/tmp/.x/xmrig\"", "signal:shell:shop:sh"]
 		);
 		assert!(found[0].detail.contains("/tmp/.x/xmrig"));
 		assert!(found[1].detail.contains("sh runs under the PHP-FPM"));
@@ -428,10 +456,55 @@ mod tests {
 			0: 0100007F:2C44 00000000:0000 0A 0:0 00:0 0 20001\n\
 			1: 0A00000A:D3F2 5DB8D822:0D05 01 0:0 00:0 0 20001\n\
 			2: 0A00000A:D3F3 5DB8D822:01BB 01 0:0 00:0 0 20001\n\
-			3: 0A00000A:D3F4 5DB8D822:0D05 01 0:0 00:0 0 33\n";
+			3: 0A00000A:D3F4 5DB8D822:0D05 01 0:0 00:0 0 33\n\
+			4: 0A00000A:2C44 5DB8D822:B1F8 01 0:0 00:0 0 20001\n";
 		let found = pool_connections(tables, &users);
 		assert_eq!(found.len(), 1);
 		assert!(found[0].detail.contains("port 3333"));
+	}
+
+	#[test]
+	fn what_the_group_chose_is_quoted_and_cut() {
+		assert_eq!(shown("/tmp/x\nrun this"), r#""/tmp/x\nrun this""#);
+		let long = shown(&"a".repeat(500));
+		assert_eq!(long.chars().count(), MAX_SHOWN + 3);
+		assert!(long.ends_with("…\""));
+	}
+
+	#[test]
+	fn the_login_and_send_only_addresses_count_together() {
+		let mut shop = group("shop");
+		shop.mail_domains = vec![crate::mailbox::MailDomain {
+			id: 0,
+			group_id: 1,
+			name: "shop.ch".into(),
+			send_only: false,
+			mailboxes: vec![],
+			forwards: vec![],
+			send_only_addresses: vec![crate::mailbox::SendOnly {
+				id: 0,
+				mail_domain_id: 0,
+				address: "noreply@shop.ch".into(),
+				note: String::new(),
+				created_at: 0,
+				password_hash: String::new(),
+			}],
+		}];
+		let stats = StatsDb::memory();
+		let today = crate::db::now() / DAY_MS * DAY_MS;
+		stats
+			.conn()
+			.execute(
+				"INSERT INTO mail_counts (day, address, kind, count) VALUES
+				(?1, 'g-shop', 'sent', 200), (?1, 'noreply@shop.ch', 'sent',
+				200), (?1, 'info@shop.ch', 'received', 900),
+				(?1 - 86400000, 'g-shop', 'sent', 10)",
+				[today],
+			)
+			.unwrap();
+		let found = mail(&[&shop], &stats);
+		assert_eq!(found.len(), 1);
+		assert!(found[0].detail.contains("sent 400 mails"), "{found:?}");
 	}
 
 	#[test]

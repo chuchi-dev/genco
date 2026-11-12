@@ -59,9 +59,9 @@ impl Checker {
 	/// One round: runs the checks, records the problems and starts an
 	/// alert for the new ones.
 	pub async fn round(&mut self, db: &Db, stats: &StatsDb, runner: &Runner) {
-		let mut found = find(db).await;
 		let groups = hosting::groups(&db.conn()).unwrap_or_default();
-		found.extend(self.signals.find(&groups, Some(stats)).await);
+		let mut found = find(db, &groups).await;
+		found.extend(self.signals.find(&groups, stats).await);
 		let keys: HashSet<&str> =
 			found.iter().map(|p| p.key.as_str()).collect();
 		self.seen.retain(|k, _| keys.contains(k.as_str()));
@@ -178,15 +178,14 @@ fn alert(db: &Db, runner: &Runner, problems: &[Problem]) {
 }
 
 /// Runs every check, the problems found right now.
-async fn find(db: &Db) -> Vec<Problem> {
-	let groups = hosting::groups(&db.conn()).unwrap_or_default();
+async fn find(db: &Db, groups: &[Group]) -> Vec<Problem> {
 	let mut found = failed_units().await;
-	found.extend(sites(&groups).await);
+	found.extend(sites(groups).await);
 	found.extend(disks().await);
 	found.extend(load());
 	found.extend(memory());
-	found.extend(limits(&groups));
-	found.extend(certificates(&groups).await);
+	found.extend(limits(groups));
+	found.extend(certificates(groups).await);
 	found.extend(jobs(&db.conn()).unwrap_or_default());
 	found
 }

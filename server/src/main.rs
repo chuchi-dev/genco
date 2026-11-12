@@ -475,6 +475,11 @@ async fn run(args: Args) -> Result<(), String> {
 		}
 		Cmd::Worker(cmd) => edit(cfg, |_, conn| cli::worker(conn, cmd)),
 		Cmd::Schedule(cli::ScheduleCmd::Run { name, group }) => {
+			let db = Db::open(&cfg.db_path())?;
+			let g = hosting::group_by_name(&db.conn(), &group)
+				.map_err(|e| e.to_string())?
+				.ok_or(format!("no group {group}"))?;
+			quarantine::refuse(&g)?;
 			let unit = render::schedule_unit(&group, &name);
 			procs::start_now(&unit).await.map_err(|e| e.to_string())?;
 			println!("started {unit}, see journalctl -u {unit}");
@@ -526,25 +531,11 @@ async fn quarantine_cmd(
 	let group = hosting::group_by_name(&db.conn(), name)
 		.map_err(|e| e.to_string())?
 		.ok_or(format!("no group {name}"))?;
+	quarantine::change(&db.conn(), group.id, reason, activity::cli_actor())
+		.map_err(|e| e.to_string())?;
 	match reason {
-		Some(reason) => {
-			quarantine::set(
-				&db.conn(),
-				group.id,
-				reason,
-				activity::cli_actor(),
-			)
-			.map_err(|e| e.to_string())?;
-			println!("{name} is in quarantine");
-		}
-		None => {
-			if !quarantine::lift(&db.conn(), group.id)
-				.map_err(|e| e.to_string())?
-			{
-				return Err(format!("{name} isn't in quarantine"));
-			}
-			println!("lifted the quarantine of {name}");
-		}
+		Some(_) => println!("{name} is in quarantine"),
+		None => println!("lifted the quarantine of {name}"),
 	}
 	apply_cmd(cfg).await
 }

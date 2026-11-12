@@ -10,12 +10,13 @@
 	import { GROUP_TABS } from '@/lib/groupTabs';
 	import {
 		KIND_NAMES,
-		del,
 		formatTime,
 		get,
+		liftQuarantine,
 		newest,
-		post,
+		quarantineGroup,
 		saveGroup,
+		type ApplyReport,
 		type ConfigFile,
 	} from '@/lib/api';
 	import { dialogs, message, requestDelete } from '@/lib/dialogs.svelte';
@@ -101,6 +102,7 @@
 
 	/** Puts the group in quarantine or lifts it, apply runs right away. */
 	async function quarantine() {
+		let report: ApplyReport;
 		try {
 			if (group.quarantine) {
 				const yes = await message.confirm(
@@ -108,16 +110,25 @@
 					`Start the services of ${group.name} again and serve its sites? Only when the cause is removed.`,
 				);
 				if (!yes) return;
-				await del(`/groups/${group.id}/quarantine`);
+				report = await liftQuarantine(group);
 			} else {
 				const reason = await message.ask(
 					'Quarantine',
 					`Stop every service of ${group.name}, its sites answer 503, its SMTP login and deploys are off. Files, databases and mailboxes stay. Why?`,
 				);
 				if (!reason) return;
-				await post(`/groups/${group.id}/quarantine`, { reason });
+				report = await quarantineGroup(group, reason);
 			}
 			await tree.load();
+			if (!report.ok) {
+				message.show(
+					'Quarantine',
+					'Applied with errors:\n' +
+						report.log
+							.filter(l => l.startsWith('error'))
+							.join('\n'),
+				);
+			}
 		} catch (e: any) {
 			message.show('Quarantine', e.message);
 		}

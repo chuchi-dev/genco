@@ -14,7 +14,7 @@ pub(super) async fn deploy(ctx: &Ctx, id: i64, log: &mut Log) -> Res<()> {
 		(d, group)
 	};
 	// queued before the group went into quarantine
-	crate::quarantine::check_deploy(&group)?;
+	crate::quarantine::refuse(&group)?;
 	let base = render::group_dir(&group.name);
 	let shell = GroupShell::new(&group);
 	let stamp = util::stamp().await;
@@ -40,6 +40,14 @@ pub(super) async fn deploy(ctx: &Ctx, id: i64, log: &mut Log) -> Res<()> {
 		}
 	};
 
+	// quarantined while it built
+	let fresh = hosting::find_group(&ctx.db.conn(), group.id)
+		.map_err(|e| e.to_string())?;
+	if let Err(e) = crate::quarantine::refuse(&fresh) {
+		let rm = format!("rm -rf -- releases/{stamp}");
+		let _ = shell.run(log, &base, &rm).await;
+		return Err(e);
+	}
 	switch(log, &base, &stamp, &shell.user).await?;
 	let mut after = Ok(());
 	for s in &cfg.after_switch {
@@ -453,6 +461,18 @@ pub(super) async fn restart(
 	log: &mut Log,
 	group: &Group,
 ) -> Res<()> {
+	// a group put in quarantine meanwhile stays stopped
+	{
+		let _lock = job::lock(crate::apply::LOCK).await?;
+		let fresh = hosting::find_group(&ctx.db.conn(), group.id)
+			.map_err(|e| e.to_string())?;
+		if fresh.quarantine.is_some() {
+			return Err(format!(
+				"{} is in quarantine, nothing restarted",
+				group.name
+			));
+		}
+	}
 	for v in render::php_versions(group) {
 		let unit = render::php_unit(&group.name, v);
 		systemctl(log, "reload", &unit).await;
@@ -464,12 +484,15 @@ pub(super) async fn restart(
 		// until the live slot is settled; read after it: a deploy before
 		// this one may have switched the slot or the option changed
 		let _lock = job::lock(crate::apply::LOCK).await?;
-		let Ok((_, d)) = hosting::find_domain(&ctx.db.conn(), |x| x.id == d.id)
+		let Ok((g, d)) = hosting::find_domain(&ctx.db.conn(), |x| x.id == d.id)
 		else {
 			log.line(&format!("{} is gone, not restarted", d.name))
 				.await;
 			continue;
 		};
+		if g.quarantine.is_some() {
+			return Err(format!("{} is in quarantine, not restarted", g.name));
+		}
 		match render::restart(&group.name, &d) {
 			Restart::InPlace { unit } => {
 				systemctl(log, "restart", &unit).await;

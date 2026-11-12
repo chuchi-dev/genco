@@ -90,12 +90,27 @@ pub fn lift(conn: &Connection, group: i64) -> Result<bool> {
 	Ok(changed == 1)
 }
 
-/// A deploy of a group in quarantine is refused.
-pub fn check_deploy(group: &hosting::Group) -> std::result::Result<(), String> {
+/// Puts the group in quarantine with the reason, or lifts it without one.
+pub fn change(
+	conn: &Connection,
+	group: i64,
+	reason: Option<&str>,
+	by: &str,
+) -> Result<()> {
+	match reason {
+		Some(reason) => set(conn, group, reason, by),
+		None if lift(conn, group)? => Ok(()),
+		None => Err(Error::Invalid("the group isn't in quarantine".into())),
+	}
+}
+
+/// Deploys, rollbacks and runs of a schedule of a group in quarantine are
+/// refused; without the reason, a deploy token sees the answer.
+pub fn refuse(group: &hosting::Group) -> std::result::Result<(), String> {
 	match &group.quarantine {
-		Some(q) => Err(format!(
-			"the group {} is in quarantine ({}), lift it first",
-			group.name, q.reason
+		Some(_) => Err(format!(
+			"the group {} is in quarantine, lift it first",
+			group.name
 		)),
 		None => Ok(()),
 	}
@@ -114,20 +129,18 @@ async fn set_route(
 	Path(id): Path<i64>,
 	Json(req): Json<SetReq>,
 ) -> Result<Json<apply::Report>> {
-	set(&db.conn(), id, &req.reason, &authed.user.name)?;
+	change(&db.conn(), id, Some(&req.reason), &authed.user.name)?;
 	Ok(Json(applied(&cfg, &db, &events).await))
 }
 
 async fn lift_route(
-	_authed: Authed,
+	authed: Authed,
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	Path(id): Path<i64>,
 ) -> Result<Json<apply::Report>> {
-	if !lift(&db.conn(), id)? {
-		return Err(Error::Invalid("the group isn't in quarantine".into()));
-	}
+	change(&db.conn(), id, None, &authed.user.name)?;
 	Ok(Json(applied(&cfg, &db, &events).await))
 }
 
@@ -161,7 +174,7 @@ mod tests {
 		.unwrap();
 		let group = || hosting::groups(&conn).unwrap().remove(0);
 		assert_eq!(group().quarantine, None);
-		assert!(check_deploy(&group()).is_ok());
+		assert!(refuse(&group()).is_ok());
 
 		assert!(set(&conn, 1, " ", "a").is_err());
 		assert!(set(&conn, 7, "miner", "a").is_err());
@@ -171,7 +184,7 @@ mod tests {
 			(q.reason.as_str(), q.by.as_str()),
 			("a miner in uploads/x.php", "agent")
 		);
-		assert!(check_deploy(&group()).unwrap_err().contains("quarantine"));
+		assert!(refuse(&group()).unwrap_err().contains("quarantine"));
 
 		assert!(lift(&conn, 1).unwrap());
 		assert!(!lift(&conn, 1).unwrap());

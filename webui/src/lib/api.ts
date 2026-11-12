@@ -690,6 +690,19 @@ export async function download(
  * Deploy tab each change only theirs. The limits only when given; the
  * warning says when the groups' memory limits are more than the server has.
  */
+/** Puts a group in quarantine with the reason, apply runs right away. */
+export function quarantineGroup(
+	group: Group,
+	reason: string,
+): Promise<ApplyReport> {
+	return post(`/groups/${group.id}/quarantine`, { reason });
+}
+
+/** Lifts a group's quarantine, apply runs right away. */
+export function liftQuarantine(group: Group): Promise<ApplyReport> {
+	return del(`/groups/${group.id}/quarantine`);
+}
+
 export function saveGroup(
 	group: Group,
 	change: Partial<
