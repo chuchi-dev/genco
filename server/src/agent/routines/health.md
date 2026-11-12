@@ -13,6 +13,9 @@ admin, and write a short report:
 - Certificates: any domain without one, or expiring in under 30 days
   (`certbot certificates`)?
 - Mail: anything stuck in the queue (`postqueue -p`)?
+- Memory: `genco memory`. If the split between the groups and the
+  system doesn't fit what they use, move the reserve (see your
+  instructions) and say so.
 - Updates are the weekly update round's; only say if the box needs a
   reboot (`/var/run/reboot-required`).
 - Open warnings: `genco attention list` shows the routines and alerts

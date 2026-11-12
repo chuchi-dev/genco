@@ -269,10 +269,18 @@ field in the panel.
   `genco-*.service.d/`) or `systemctl set-property`: they override genco and are reported as a
   problem; `genco group adopt-limits <group>` moves a slice drop-in's
   limits into the settings. All groups together are capped at the RAM
-  without a reserve for the system (`genco.slice`), a group's limit at
+  without the reserve for the system (`genco.slice`), a group's limit at
   most that; their limits may add up to more. Base a limit on what the
   group really uses (Usage, `memory.peak` of its slice), alerts come on
   memory pressure and OOM kills.
+- The reserve for the system: `genco memory` shows the split and what
+  the groups and the system use, `genco memory reserve <size|default>`
+  changes it within its bounds and applies. Move it yourself when the
+  split doesn't fit: raise it when the system (databases, mail, genco)
+  runs short or swaps while the groups have room, lower it when groups
+  get OOM kills at the cap while the system leaves much of its reserve
+  unused. Small steps (256-512 MB), and say what you changed and why
+  with the numbers.
 - Craft with Imagick: transforms of large originals take 500-700 MB.
   genco limits ImageMagick per process for groups with PHP
   (MAGICK_MEMORY_LIMIT a quarter of the soft limit, at most 256 MiB, then

@@ -7,6 +7,7 @@
 		type Group,
 		type Limits,
 		type MemoryUsage,
+		type MemoryStatus,
 		type Stats,
 	} from '@/lib/api';
 	import Form from '@/components/win/Form.svelte';
@@ -28,6 +29,11 @@
 	let usage = $state<MemoryUsage>({ memory: null, peak: null, limit: null });
 
 	const defaults = $derived(group.limits.defaults);
+	// what all groups may use together, Settings → Memory
+	let capMb = $state<number | null>(null);
+	get('/settings/memory')
+		.then((m: MemoryStatus) => (capMb = m.capMb))
+		.catch(() => {});
 
 	$effect(() => {
 		get(`/stats?scope=group:${group.id}&range=24h`)
@@ -64,10 +70,10 @@
 				? ` of ${formatBytes(usage.limit)}`
 				: ''}, at most {formatBytes(usage.peak ?? 0)} in the last 24 hours.
 		{/if}
-		All groups together may use {formatBytes(
-			group.limits.groupsCapMb * 1024 * 1024,
-		)}, the rest of the RAM stays for the databases, mail and genco; their
-		limits may add up to more.
+		{#if capMb !== null}
+			All groups together may use {formatBytes(capMb * 1024 * 1024)} (Settings
+			→ Memory), their limits may add up to more.
+		{/if}
 	</p>
 	<Form onsubmit={save} ok="Save" done="Saved">
 		<label for="gl-memory">Memory limit:</label>

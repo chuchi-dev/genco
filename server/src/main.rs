@@ -31,6 +31,7 @@ mod llm;
 mod mail;
 mod mailbox;
 mod mailfilter;
+mod memory;
 mod notify;
 mod panel;
 mod peers;
@@ -167,6 +168,10 @@ pub(crate) enum Cmd {
 	/// Block addresses from the sites, mail and workers (never ssh)
 	#[clap(subcommand)]
 	Firewall(firewall::FirewallCmd),
+	/// How the RAM is split between the groups and the system; change the
+	/// reserve for the system
+	#[clap(subcommand)]
+	Memory(memory::MemoryCmd),
 	/// The routines and alerts that still need attention: list them,
 	/// resolve one that is taken care of
 	#[clap(subcommand)]
@@ -248,6 +253,7 @@ impl Cmd {
 				| Cmd::Firewall(firewall::FirewallCmd::List)
 				| Cmd::Activity { .. }
 				| Cmd::Attention(conversations::AttentionCmd::List)
+				| Cmd::Memory(memory::MemoryCmd::Show)
 				| Cmd::Update { .. }
 				| Cmd::Runners(RunnersCmd::List)
 				| Cmd::Group(cli::GroupCmd::DeployKey { .. })
@@ -403,6 +409,20 @@ async fn run(args: Args) -> Result<(), String> {
 		}
 		Cmd::Docs { .. } => unreachable!("read before the config"),
 		Cmd::User(cmd) => user(cfg, cmd),
+		Cmd::Memory(memory::MemoryCmd::Show) => {
+			let db = Db::open(&cfg.db_path())?;
+			let s = memory::status(&db.conn()).map_err(|e| e.to_string())?;
+			println!("{}", s.text());
+			Ok(())
+		}
+		Cmd::Memory(memory::MemoryCmd::Reserve { size }) => {
+			let reserve =
+				limits::parse_size(&size).map_err(|e| e.to_string())?;
+			let db = Db::open(&cfg.db_path())?;
+			memory::set_reserve(&db.conn(), reserve)
+				.map_err(|e| e.to_string())?;
+			apply_cmd(cfg).await
+		}
 		Cmd::Attention(cmd) => {
 			edit(cfg, |_, conn| conversations::attention(conn, cmd))
 		}

@@ -185,11 +185,7 @@ export type Group = {
 	workers: Worker[];
 	schedules: Schedule[];
 	php: PhpSettings;
-	limits: Limits & {
-		defaults: LimitDefaults;
-		/** what all groups may use together, the most one may have */
-		groupsCapMb: number;
-	};
+	limits: Limits & { defaults: LimitDefaults };
 	/** stopped because it looks compromised */
 	quarantine: Quarantine | null;
 };
@@ -201,6 +197,25 @@ export type Quarantine = {
 	/** an admin, `agent`, `terminal` */
 	by: string;
 	at: number;
+};
+
+/** how the RAM is split between the groups and the system (memory.rs) */
+export type MemoryStatus = {
+	ramMb: number;
+	swapMb: number;
+	reserveMb: number;
+	/** the reserve is the default, not set */
+	default: boolean;
+	defaultReserveMb: number;
+	minReserveMb: number;
+	maxReserveMb: number;
+	/** what all groups may use together */
+	capMb: number;
+	/** the groups' own limits added up */
+	limitsMb: number;
+	groupsNowMb: number | null;
+	groupsPeakMb: number | null;
+	systemNowMb: number | null;
 };
 
 /** what a group's slice may use, null is the default */

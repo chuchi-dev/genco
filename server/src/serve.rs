@@ -222,6 +222,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.merge(peers::routes())
 		.merge(proposals::routes())
 		.merge(quarantine::routes())
+		.merge(memory::routes())
 		.merge(approvals::routes())
 		.merge(update::routes())
 		.merge(appenv::routes())
