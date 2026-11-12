@@ -125,6 +125,10 @@ export class Chat {
 			if (this.current !== null) this.select(this.current);
 		} else if (ev.type === 'conversation') {
 			conversations.update(ev.conversation);
+		} else if (ev.type === 'tree') {
+			// the agent's commands write the database in their own process,
+			// e.g. `genco attention resolve`
+			conversations.load().catch(() => {});
 		} else if (ev.type === 'message') {
 			const m = ev.message;
 			if (m.conversationId !== this.current) return;

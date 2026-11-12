@@ -167,6 +167,10 @@ pub(crate) enum Cmd {
 	/// Block addresses from the sites, mail and workers (never ssh)
 	#[clap(subcommand)]
 	Firewall(firewall::FirewallCmd),
+	/// The routines and alerts that still need attention: list them,
+	/// resolve one that is taken care of
+	#[clap(subcommand)]
+	Attention(conversations::AttentionCmd),
 	/// Print the activity log, newest last
 	Activity {
 		#[clap(long, default_value_t = 50)]
@@ -243,6 +247,7 @@ impl Cmd {
 				) | Cmd::Secret(secrets::SecretCmd::List)
 				| Cmd::Firewall(firewall::FirewallCmd::List)
 				| Cmd::Activity { .. }
+				| Cmd::Attention(conversations::AttentionCmd::List)
 				| Cmd::Update { .. }
 				| Cmd::Runners(RunnersCmd::List)
 				| Cmd::Group(cli::GroupCmd::DeployKey { .. })
@@ -398,6 +403,9 @@ async fn run(args: Args) -> Result<(), String> {
 		}
 		Cmd::Docs { .. } => unreachable!("read before the config"),
 		Cmd::User(cmd) => user(cfg, cmd),
+		Cmd::Attention(cmd) => {
+			edit(cfg, |_, conn| conversations::attention(conn, cmd))
+		}
 		Cmd::Activity { limit } => {
 			let db = Db::open(&cfg.db_path())?;
 			let entries = activity::list(&db.conn(), None, limit)

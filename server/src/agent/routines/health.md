@@ -15,6 +15,11 @@ admin, and write a short report:
 - Mail: anything stuck in the queue (`postqueue -p`)?
 - Updates are the weekly update round's; only say if the box needs a
   reboot (`/var/run/reboot-required`).
+- Open warnings: `genco attention list` shows the routines and alerts
+  that still need attention. For each, check whether what it reported is
+  still the case; resolve the ones that are taken care of with `genco
+  attention resolve <id> --why "<what you checked>"`, leave the ones an
+  admin still has to act on and name them in the report.
 
 Keep it to what matters: one line per area that is fine, details only
 for what is not. End with a line `STATUS: OK` if nothing needs an admin,

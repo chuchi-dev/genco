@@ -263,6 +263,72 @@ pub fn resolve_by_genco(
 	Ok((set_report(conn, id, Report::Ok)?, message))
 }
 
+/// `genco attention`: the routines and alerts that still need attention,
+/// genco's agent goes over them in the daily health check.
+#[derive(Debug, clap::Parser)]
+pub enum AttentionCmd {
+	/// List them with their last report, oldest first
+	List,
+	/// Clear one that is taken care of; the reason goes into it
+	Resolve {
+		id: i64,
+		/// why it needs no admin any more
+		#[clap(long)]
+		why: String,
+	},
+}
+
+/// The longest report `genco attention list` prints, in characters.
+const LIST_REPORT: usize = 600;
+
+pub fn attention(conn: &Connection, cmd: AttentionCmd) -> Result<String> {
+	match cmd {
+		AttentionCmd::List => {
+			let mut out = String::new();
+			for c in list(conn)?
+				.into_iter()
+				.filter(|c| c.report == Some(Report::Attention))
+				.rev()
+			{
+				let report = messages(conn, c.id)?
+					.into_iter()
+					.rev()
+					.find_map(|m| match m.data {
+						MessageData::Assistant { text } => Some(text),
+						_ => None,
+					})
+					.unwrap_or_default();
+				let report: String = report.chars().take(LIST_REPORT).collect();
+				let kind = format!("{:?}", c.kind).to_lowercase();
+				out.push_str(&format!(
+					"#{} {kind}: {}\n{}\n\n",
+					c.id,
+					c.title,
+					report.trim()
+				));
+			}
+			if out.is_empty() {
+				out.push_str("nothing needs attention");
+			}
+			Ok(out.trim_end().into())
+		}
+		AttentionCmd::Resolve { id, why } => {
+			let why = why.trim();
+			if why.is_empty() {
+				return Err(Error::Invalid("say why with --why".into()));
+			}
+			let c = get(conn, id)?;
+			if c.report != Some(Report::Attention) {
+				return Err(Error::Invalid(format!(
+					"#{id} doesn't need attention"
+				)));
+			}
+			resolve_by_genco(conn, id, why)?;
+			Ok(format!("resolved #{id} {}", c.title))
+		}
+	}
+}
+
 pub fn set_status(
 	conn: &Connection,
 	id: i64,
@@ -522,6 +588,40 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn genco_attention_lists_and_resolves() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let id = create_kind(&conn, "Alert: x failed", Kind::Alert).unwrap();
+		set_report(&conn, id, Report::Attention).unwrap();
+		insert_message(
+			&conn,
+			id,
+			MessageData::Assistant {
+				text: "x is down\n\nSTATUS: ATTENTION".into(),
+			},
+		)
+		.unwrap();
+		let list = attention(&conn, AttentionCmd::List).unwrap();
+		assert!(list.starts_with("#1 alert: Alert: x failed\nx is down"));
+
+		let no_why = AttentionCmd::Resolve {
+			id,
+			why: " ".into(),
+		};
+		assert!(attention(&conn, no_why).is_err());
+		let why = AttentionCmd::Resolve {
+			id,
+			why: "x runs again".into(),
+		};
+		attention(&conn, why).unwrap();
+		assert_eq!(get(&conn, id).unwrap().report, Some(Report::Ok));
+		assert_eq!(
+			attention(&conn, AttentionCmd::List).unwrap(),
+			"nothing needs attention"
+		);
+	}
+
 	use super::*;
 
 	#[test]
