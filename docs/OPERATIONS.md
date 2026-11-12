@@ -848,6 +848,12 @@ genco panel forget-old old.example.ch
 
 ### Where reports go
 
+A routine or alert that needs attention shows in the taskbar (⚠) until
+it is taken care of: an admin marks it resolved in its conversation, or
+genco does it itself, with a system message saying why, when an alert's
+problems are all gone (the minute check doesn't find them any more) or
+a newer run of the same routine has its own report.
+
 The agent's reports are its routines (daily health check, weekly update
 round, weekly security review), the minute checks' alerts and update
 notices.

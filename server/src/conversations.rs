@@ -246,6 +246,23 @@ pub fn set_report(
 	get(conn, id)
 }
 
+/// A routine or alert that needed attention doesn't any more: its report
+/// turns OK and a system message says why.
+pub fn resolve_by_genco(
+	conn: &Connection,
+	id: i64,
+	why: &str,
+) -> rusqlite::Result<(Conversation, Message)> {
+	let message = insert_message(
+		conn,
+		id,
+		MessageData::System {
+			text: format!("Resolved by genco: {why}"),
+		},
+	)?;
+	Ok((set_report(conn, id, Report::Ok)?, message))
+}
+
 pub fn set_status(
 	conn: &Connection,
 	id: i64,

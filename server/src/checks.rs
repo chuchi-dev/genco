@@ -85,7 +85,36 @@ impl Checker {
 		if !new.is_empty() {
 			alert(db, runner, &new);
 		}
+
+		let gone = solved_alerts(&db.conn()).unwrap_or_else(|e| {
+			tracing::error!("finding solved alerts: {e}");
+			vec![]
+		});
+		for id in gone {
+			runner.resolve(
+				id,
+				"the minute check doesn't find the problems of this alert \
+				any more.",
+			);
+		}
 	}
+}
+
+/// Alerts that need attention but whose problems are all gone, not while
+/// the agent still works on them.
+fn solved_alerts(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
+	conn.prepare(
+		"SELECT c.id FROM conversations c
+		WHERE c.kind = 'alert' AND c.report = 'attention'
+		AND c.status != 'running'
+		AND EXISTS (SELECT 1 FROM alert_problems a
+			WHERE a.conversation_id = c.id)
+		AND NOT EXISTS (SELECT 1 FROM alert_problems a
+			JOIN problems p ON p.key = a.key
+			WHERE a.conversation_id = c.id AND p.cleared_at IS NULL)",
+	)?
+	.query_map([], |r| r.get(0))?
+	.collect()
 }
 
 /// Stores the problems. Returns the ones to alert: new ones, and ones
@@ -166,6 +195,13 @@ fn alert(db: &Db, runner: &Runner, problems: &[Problem]) {
 		let conn = db.conn();
 		let id = convs::create_kind(&conn, &title, Kind::Alert)?;
 		convs::insert_message(&conn, id, MessageData::System { text })?;
+		for p in problems {
+			conn.execute(
+				"INSERT OR IGNORE INTO alert_problems (conversation_id, key)
+				VALUES (?1, ?2)",
+				params![id, p.key],
+			)?;
+		}
 		Ok::<_, rusqlite::Error>(id)
 	})();
 	match res {
@@ -441,6 +477,49 @@ mod tests {
 
 	fn keys(problems: &[Problem]) -> Vec<&str> {
 		problems.iter().map(|p| p.key.as_str()).collect()
+	}
+
+	#[test]
+	fn an_alert_is_solved_once_all_its_problems_are_gone() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let alert = |keys: &[&str]| {
+			let id = convs::create_kind(&conn, "Alert", Kind::Alert).unwrap();
+			convs::set_report(&conn, id, convs::Report::Attention).unwrap();
+			convs::set_status(&conn, id, convs::Status::Idle).unwrap();
+			for k in keys {
+				conn.execute(
+					"INSERT INTO alert_problems (conversation_id, key)
+					VALUES (?1, ?2)",
+					params![id, k],
+				)
+				.unwrap();
+			}
+			id
+		};
+		let both = alert(&["unit:a", "unit:b"]);
+		let one = alert(&["unit:b"]);
+		// an alert from before the problems were linked stays
+		alert(&[]);
+
+		let a = Problem::new("unit:a", "a failed");
+		let b = Problem::new("unit:b", "b failed");
+		fn seen<'a>(ps: &[&'a Problem]) -> HashSet<&'a str> {
+			ps.iter().map(|p| p.key.as_str()).collect()
+		}
+		record(&conn, &[a.clone(), b.clone()], &seen(&[&a, &b]), 0).unwrap();
+		assert!(solved_alerts(&conn).unwrap().is_empty());
+
+		// b is gone: only the alert about b alone is solved
+		record(&conn, &[a.clone()], &seen(&[&a]), 60_000).unwrap();
+		assert_eq!(solved_alerts(&conn).unwrap(), [one]);
+
+		record(&conn, &[], &seen(&[]), 120_000).unwrap();
+		assert_eq!(solved_alerts(&conn).unwrap(), [both, one]);
+
+		// not while the agent works on it
+		convs::set_status(&conn, both, convs::Status::Running).unwrap();
+		assert_eq!(solved_alerts(&conn).unwrap(), [one]);
 	}
 
 	#[test]
