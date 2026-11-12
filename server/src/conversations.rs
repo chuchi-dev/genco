@@ -323,6 +323,11 @@ pub fn attention(conn: &Connection, cmd: AttentionCmd) -> Result<String> {
 					"#{id} doesn't need attention"
 				)));
 			}
+			if c.status == Status::Running {
+				return Err(Error::Invalid(format!(
+					"#{id} is running, its own run decides"
+				)));
+			}
 			resolve_by_genco(conn, id, why)?;
 			Ok(format!("resolved #{id} {}", c.title))
 		}
@@ -588,6 +593,8 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
+	use super::*;
+
 	#[test]
 	fn genco_attention_lists_and_resolves() {
 		let db = Db::memory();
@@ -610,19 +617,21 @@ mod tests {
 			why: " ".into(),
 		};
 		assert!(attention(&conn, no_why).is_err());
-		let why = AttentionCmd::Resolve {
+		let why = || AttentionCmd::Resolve {
 			id,
 			why: "x runs again".into(),
 		};
-		attention(&conn, why).unwrap();
+		// not while an admin follows up in it
+		set_status(&conn, id, Status::Running).unwrap();
+		assert!(attention(&conn, why()).is_err());
+		set_status(&conn, id, Status::Idle).unwrap();
+		attention(&conn, why()).unwrap();
 		assert_eq!(get(&conn, id).unwrap().report, Some(Report::Ok));
 		assert_eq!(
 			attention(&conn, AttentionCmd::List).unwrap(),
 			"nothing needs attention"
 		);
 	}
-
-	use super::*;
 
 	#[test]
 	fn input_after_a_message() {

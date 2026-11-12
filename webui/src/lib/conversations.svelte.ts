@@ -5,8 +5,18 @@ import { get, newest, type Conversation } from './api';
 class ConversationStore {
 	list = $state<Conversation[]>([]);
 
+	private reloads = newest();
+
 	async load() {
 		this.list = await get('/conversations');
+	}
+
+	/** again on an event, the newest answer counts */
+	reload() {
+		this.reloads(
+			get('/conversations'),
+			(list: Conversation[]) => (this.list = list),
+		);
 	}
 
 	/** a new one or a changed status */

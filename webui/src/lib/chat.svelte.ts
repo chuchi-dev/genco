@@ -128,7 +128,7 @@ export class Chat {
 		} else if (ev.type === 'tree') {
 			// the agent's commands write the database in their own process,
 			// e.g. `genco attention resolve`
-			conversations.load().catch(() => {});
+			conversations.reload();
 		} else if (ev.type === 'message') {
 			const m = ev.message;
 			if (m.conversationId !== this.current) return;

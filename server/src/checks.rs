@@ -22,6 +22,9 @@ const HOUR: i64 = 60 * 60 * 1000;
 const REALERT: i64 = 4 * HOUR;
 /// cleared problems are forgotten after this
 const FORGET: i64 = 7 * 24 * HOUR;
+/// an alert is solved once its problems are cleared this long: one that
+/// comes back before `REALERT` doesn't alert again
+const SOLVED: i64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Problem {
@@ -100,7 +103,7 @@ impl Checker {
 			);
 		}
 
-		let gone = solved_alerts(&db.conn()).unwrap_or_else(|e| {
+		let gone = solved_alerts(&db.conn(), now()).unwrap_or_else(|e| {
 			tracing::error!("finding solved alerts: {e}");
 			vec![]
 		});
@@ -126,15 +129,18 @@ fn superseded_routines(conn: &Connection) -> rusqlite::Result<Vec<(i64, i64)>> {
 		WHERE c.kind = 'routine' AND c.report = 'attention'
 		AND c.status != 'running' AND EXISTS (SELECT 1 FROM conversations n
 			WHERE n.kind = 'routine' AND n.title = c.title AND n.id > c.id
-			AND n.report IS NOT NULL)",
+			AND n.report IS NOT NULL)
+		ORDER BY c.id",
 	)?
 	.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
 	.collect()
 }
 
-/// Alerts that need attention but whose problems are all gone, not while
-/// the agent still works on them.
-fn solved_alerts(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
+/// Alerts that need attention but whose problems are gone since `SOLVED`,
+/// not while the agent still works on them. Not signs of a compromised group: they
+/// are gone once it is in quarantine or between the upload searches, an
+/// admin decides when it is clean.
+fn solved_alerts(conn: &Connection, now: i64) -> rusqlite::Result<Vec<i64>> {
 	conn.prepare(
 		"SELECT c.id FROM conversations c
 		WHERE c.kind = 'alert' AND c.report = 'attention'
@@ -142,10 +148,14 @@ fn solved_alerts(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
 		AND EXISTS (SELECT 1 FROM alert_problems a
 			WHERE a.conversation_id = c.id)
 		AND NOT EXISTS (SELECT 1 FROM alert_problems a
+			WHERE a.conversation_id = c.id AND a.key LIKE 'signal:%')
+		AND NOT EXISTS (SELECT 1 FROM alert_problems a
 			JOIN problems p ON p.key = a.key
-			WHERE a.conversation_id = c.id AND p.cleared_at IS NULL)",
+			WHERE a.conversation_id = c.id
+			AND (p.cleared_at IS NULL OR p.cleared_at > ?1))
+		ORDER BY c.id",
 	)?
-	.query_map([], |r| r.get(0))?
+	.query_map([now - SOLVED], |r| r.get(0))?
 	.collect()
 }
 
@@ -554,6 +564,8 @@ mod tests {
 		let one = alert(&["unit:b"]);
 		// an alert from before the problems were linked stays
 		alert(&[]);
+		// so does a sign of a compromised group
+		alert(&["signal:cpu:x"]);
 
 		let a = Problem::new("unit:a", "a failed");
 		let b = Problem::new("unit:b", "b failed");
@@ -561,18 +573,22 @@ mod tests {
 			ps.iter().map(|p| p.key.as_str()).collect()
 		}
 		record(&conn, &[a.clone(), b.clone()], &seen(&[&a, &b]), 0).unwrap();
-		assert!(solved_alerts(&conn).unwrap().is_empty());
+		assert!(solved_alerts(&conn, 0).unwrap().is_empty());
 
-		// b is gone: only the alert about b alone is solved
+		// b is gone: only the alert about b alone is solved, once it
+		// stays away
 		record(&conn, &[a.clone()], &seen(&[&a]), 60_000).unwrap();
-		assert_eq!(solved_alerts(&conn).unwrap(), [one]);
+		assert!(solved_alerts(&conn, 60_000).unwrap().is_empty());
+		let later = 60_000 + SOLVED + 1;
+		assert_eq!(solved_alerts(&conn, later).unwrap(), [one]);
 
-		record(&conn, &[], &seen(&[]), 120_000).unwrap();
-		assert_eq!(solved_alerts(&conn).unwrap(), [both, one]);
+		record(&conn, &[], &seen(&[]), later).unwrap();
+		let later = later + SOLVED + 1;
+		assert_eq!(solved_alerts(&conn, later).unwrap(), [both, one]);
 
 		// not while the agent works on it
 		convs::set_status(&conn, both, convs::Status::Running).unwrap();
-		assert_eq!(solved_alerts(&conn).unwrap(), [one]);
+		assert_eq!(solved_alerts(&conn, later).unwrap(), [one]);
 	}
 
 	#[test]
