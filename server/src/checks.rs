@@ -22,6 +22,9 @@ const HOUR: i64 = 60 * 60 * 1000;
 const REALERT: i64 = 4 * HOUR;
 /// cleared problems are forgotten after this
 const FORGET: i64 = 7 * 24 * HOUR;
+/// an alert is solved once its problems are cleared this long: one that
+/// comes back before `REALERT` doesn't alert again
+const SOLVED: i64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Problem {
@@ -85,7 +88,75 @@ impl Checker {
 		if !new.is_empty() {
 			alert(db, runner, &new);
 		}
+
+		let older = superseded_routines(&db.conn()).unwrap_or_else(|e| {
+			tracing::error!("finding superseded routines: {e}");
+			vec![]
+		});
+		for (id, newer) in older {
+			runner.resolve(
+				id,
+				&format!(
+					"a newer run of this routine (conversation {newer}) has \
+					its own report."
+				),
+			);
+		}
+
+		let gone = solved_alerts(&db.conn(), now()).unwrap_or_else(|e| {
+			tracing::error!("finding solved alerts: {e}");
+			vec![]
+		});
+		for id in gone {
+			runner.resolve(
+				id,
+				"the minute check doesn't find the problems of this alert \
+				any more.",
+			);
+		}
 	}
+}
+
+/// Runs of a routine that need attention while a newer run of it has
+/// its own report: that one says how things are now. With the newest
+/// such run.
+fn superseded_routines(conn: &Connection) -> rusqlite::Result<Vec<(i64, i64)>> {
+	conn.prepare(
+		"SELECT c.id, (SELECT max(n.id) FROM conversations n
+			WHERE n.kind = 'routine' AND n.title = c.title AND n.id > c.id
+			AND n.report IS NOT NULL)
+		FROM conversations c
+		WHERE c.kind = 'routine' AND c.report = 'attention'
+		AND c.status != 'running' AND EXISTS (SELECT 1 FROM conversations n
+			WHERE n.kind = 'routine' AND n.title = c.title AND n.id > c.id
+			AND n.report IS NOT NULL)
+		ORDER BY c.id",
+	)?
+	.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+	.collect()
+}
+
+/// Alerts that need attention but whose problems are gone since `SOLVED`,
+/// not while the agent still works on them. Not signs of a compromised group: they
+/// are gone once it is in quarantine or between the upload searches, an
+/// admin decides when it is clean.
+fn solved_alerts(conn: &Connection, now: i64) -> rusqlite::Result<Vec<i64>> {
+	conn.prepare(
+		"SELECT c.id FROM conversations c
+		WHERE c.kind = 'alert' AND c.report = 'attention'
+		AND c.status != 'running'
+		AND EXISTS (SELECT 1 FROM alert_problems a
+			WHERE a.conversation_id = c.id)
+		AND NOT EXISTS (SELECT 1 FROM alert_problems a
+			WHERE a.conversation_id = c.id AND a.key LIKE 'signal:%')
+		AND NOT EXISTS (SELECT 1 FROM alert_problems a
+			JOIN problems p ON p.key = a.key
+			WHERE a.conversation_id = c.id
+			AND (p.cleared_at IS NULL OR p.cleared_at > ?1))
+		ORDER BY c.id",
+	)?
+	.query_map([now - SOLVED], |r| r.get(0))?
+	.collect()
 }
 
 /// Stores the problems. Returns the ones to alert: new ones, and ones
@@ -166,6 +237,13 @@ fn alert(db: &Db, runner: &Runner, problems: &[Problem]) {
 		let conn = db.conn();
 		let id = convs::create_kind(&conn, &title, Kind::Alert)?;
 		convs::insert_message(&conn, id, MessageData::System { text })?;
+		for p in problems {
+			conn.execute(
+				"INSERT OR IGNORE INTO alert_problems (conversation_id, key)
+				VALUES (?1, ?2)",
+				params![id, p.key],
+			)?;
+		}
 		Ok::<_, rusqlite::Error>(id)
 	})();
 	match res {
@@ -441,6 +519,76 @@ mod tests {
 
 	fn keys(problems: &[Problem]) -> Vec<&str> {
 		problems.iter().map(|p| p.key.as_str()).collect()
+	}
+
+	#[test]
+	fn a_newer_run_supersedes_the_routine_s_old_attention() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let run = |title: &str, report: Option<convs::Report>| {
+			let id = convs::create_kind(&conn, title, Kind::Routine).unwrap();
+			convs::set_status(&conn, id, convs::Status::Idle).unwrap();
+			if let Some(r) = report {
+				convs::set_report(&conn, id, r).unwrap();
+			}
+			id
+		};
+		let old = run("Daily health check", Some(convs::Report::Attention));
+		run("Daily health check", Some(convs::Report::Ok));
+		run("Weekly update round", Some(convs::Report::Attention));
+		let last = run("Daily health check", Some(convs::Report::Attention));
+		// a run without its report yet doesn't count
+		run("Daily health check", None);
+		assert_eq!(superseded_routines(&conn).unwrap(), [(old, last)]);
+	}
+
+	#[test]
+	fn an_alert_is_solved_once_all_its_problems_are_gone() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let alert = |keys: &[&str]| {
+			let id = convs::create_kind(&conn, "Alert", Kind::Alert).unwrap();
+			convs::set_report(&conn, id, convs::Report::Attention).unwrap();
+			convs::set_status(&conn, id, convs::Status::Idle).unwrap();
+			for k in keys {
+				conn.execute(
+					"INSERT INTO alert_problems (conversation_id, key)
+					VALUES (?1, ?2)",
+					params![id, k],
+				)
+				.unwrap();
+			}
+			id
+		};
+		let both = alert(&["unit:a", "unit:b"]);
+		let one = alert(&["unit:b"]);
+		// an alert from before the problems were linked stays
+		alert(&[]);
+		// so does a sign of a compromised group
+		alert(&["signal:cpu:x"]);
+
+		let a = Problem::new("unit:a", "a failed");
+		let b = Problem::new("unit:b", "b failed");
+		fn seen<'a>(ps: &[&'a Problem]) -> HashSet<&'a str> {
+			ps.iter().map(|p| p.key.as_str()).collect()
+		}
+		record(&conn, &[a.clone(), b.clone()], &seen(&[&a, &b]), 0).unwrap();
+		assert!(solved_alerts(&conn, 0).unwrap().is_empty());
+
+		// b is gone: only the alert about b alone is solved, once it
+		// stays away
+		record(&conn, &[a.clone()], &seen(&[&a]), 60_000).unwrap();
+		assert!(solved_alerts(&conn, 60_000).unwrap().is_empty());
+		let later = 60_000 + SOLVED + 1;
+		assert_eq!(solved_alerts(&conn, later).unwrap(), [one]);
+
+		record(&conn, &[], &seen(&[]), later).unwrap();
+		let later = later + SOLVED + 1;
+		assert_eq!(solved_alerts(&conn, later).unwrap(), [both, one]);
+
+		// not while the agent works on it
+		convs::set_status(&conn, both, convs::Status::Running).unwrap();
+		assert_eq!(solved_alerts(&conn, later).unwrap(), [one]);
 	}
 
 	#[test]

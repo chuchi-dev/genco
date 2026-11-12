@@ -588,6 +588,18 @@ impl Runner {
 		format!("{ctn}\n\n# Your notes\n\n{notes}")
 	}
 
+	/// Clears the attention of a routine or alert that is taken care of,
+	/// see `convs::resolve_by_genco`.
+	pub fn resolve(&self, id: i64, why: &str) {
+		match convs::resolve_by_genco(&self.0.db.conn(), id, why) {
+			Ok((conversation, message)) => {
+				self.0.events.send(Event::Message { message });
+				self.0.events.send(Event::Conversation { conversation });
+			}
+			Err(e) => tracing::error!("resolving conversation {id}: {e}"),
+		}
+	}
+
 	fn push(&self, id: i64, data: MessageData) {
 		match convs::insert_message(&self.0.db.conn(), id, data) {
 			Ok(message) => self.0.events.send(Event::Message { message }),

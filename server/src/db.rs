@@ -537,6 +537,21 @@ const MIGRATIONS: &[&str] = &[
 	ALTER TABLE domain_groups ADD COLUMN quarantined_by TEXT;
 	ALTER TABLE domain_groups ADD COLUMN quarantined_at INTEGER;
 "#,
+	// the problems each alert was about: its attention clears itself
+	// once they are all gone (checks.rs); filled for the alerts of the
+	// problems genco still remembers
+	r#"
+	CREATE TABLE alert_problems (
+		conversation_id INTEGER NOT NULL
+			REFERENCES conversations(id) ON DELETE CASCADE,
+		key TEXT NOT NULL,
+		PRIMARY KEY (conversation_id, key)
+	);
+	INSERT OR IGNORE INTO alert_problems (conversation_id, key)
+		SELECT c.id, p.key FROM conversations c JOIN problems p
+		ON p.alerted_at BETWEEN c.created_at - 5000 AND c.created_at + 5000
+		WHERE c.kind = 'alert';
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly
