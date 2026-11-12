@@ -16,6 +16,8 @@ use crate::events::{Event, Events};
 const DIM: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m";
 const RESET: &str = "\x1b[0m";
+/// How long the exit waits for reports on their way.
+const SEND_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub async fn main(cfg: Config, resume: Option<i64>) -> Result<(), String> {
 	let db = Db::open(&cfg.db_path())?;
@@ -48,6 +50,8 @@ pub async fn main(cfg: Config, resume: Option<i64>) -> Result<(), String> {
 		let Some(line) = lines.next_line().await.map_err(|e| e.to_string())?
 		else {
 			println!();
+			// the last report may still go to the mail and the webhooks
+			runner.sent(SEND_LIMIT).await;
 			return Ok(());
 		};
 		if line.trim().is_empty() {

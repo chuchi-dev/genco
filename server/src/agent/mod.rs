@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use soe_llms::{
 	ContentPart, Input, Model, Output, Request, ResponseEvent, Role,
 };
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::config::Config;
 use crate::conversations::{
@@ -42,6 +42,9 @@ struct Inner {
 	running: Mutex<HashMap<i64, AbortHandle>>,
 	/// set when genco is about to exit
 	shutting_down: AtomicBool,
+	/// reports and answers on their way to the mail and the webhooks,
+	/// `genco chat` waits for them before it exits
+	sending: Mutex<Vec<JoinHandle<()>>>,
 }
 
 /// Held by the process that runs a conversation's loop.
@@ -70,7 +73,26 @@ impl Runner {
 			llm,
 			running: Mutex::new(HashMap::new()),
 			shutting_down: AtomicBool::new(false),
+			sending: Mutex::new(vec![]),
 		}))
+	}
+
+	/// Sends in the background, `sent` waits for it.
+	fn send_later(&self, f: impl Future<Output = ()> + Send + 'static) {
+		let mut sending = self.0.sending.lock().unwrap();
+		sending.retain(|h| !h.is_finished());
+		sending.push(tokio::spawn(f));
+	}
+
+	/// Waits for the reports and answers on their way, at most `limit`:
+	/// a process that exits would cut them off.
+	pub async fn sent(&self, limit: std::time::Duration) {
+		let handles: Vec<_> =
+			self.0.sending.lock().unwrap().drain(..).collect();
+		let all = futures::future::join_all(handles);
+		if tokio::time::timeout(limit, all).await.is_err() {
+			tracing::warn!("a report is still on its way, not waiting longer");
+		}
 	}
 
 	/// The llm client, shared with the proposals' planner.
@@ -459,7 +481,7 @@ impl Runner {
 			// a conversation from an AI agent's proposal answers it
 			let cfg = self.0.cfg.clone();
 			let db = self.0.db.clone();
-			tokio::spawn(async move {
+			self.send_later(async move {
 				crate::proposals::answer(&cfg, &db, id, failed).await
 			});
 			return;
@@ -486,7 +508,7 @@ impl Runner {
 		let attention = report == Report::Attention;
 		if !attention || before.report != Some(report) {
 			let me = self.clone();
-			tokio::spawn(
+			self.send_later(
 				async move { me.notify(id, attention, messages).await },
 			);
 		}
@@ -789,6 +811,21 @@ mod tests {
 				Input::Message { .. } => "message".into(),
 			})
 			.collect()
+	}
+
+	#[tokio::test]
+	async fn the_exit_waits_for_reports_on_their_way() {
+		let cfg = Arc::new(toml::from_str::<Config>("").unwrap());
+		let runner = Runner::new(cfg, Db::memory(), Events::new());
+		let done = Arc::new(AtomicBool::new(false));
+		let flag = done.clone();
+		runner.send_later(async move {
+			tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+			flag.store(true, Ordering::SeqCst);
+		});
+		runner.sent(std::time::Duration::from_secs(5)).await;
+		assert!(done.load(Ordering::SeqCst));
+		assert!(runner.0.sending.lock().unwrap().is_empty());
 	}
 
 	#[test]
