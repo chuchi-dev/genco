@@ -170,8 +170,10 @@ pub(crate) enum Cmd {
 	Firewall(firewall::FirewallCmd),
 	/// How the RAM is split between the groups and the system; change the
 	/// reserve for the system
-	#[clap(subcommand)]
-	Memory(memory::MemoryCmd),
+	Memory {
+		#[clap(subcommand)]
+		cmd: Option<memory::MemoryCmd>,
+	},
 	/// The routines and alerts that still need attention: list them,
 	/// resolve one that is taken care of
 	#[clap(subcommand)]
@@ -224,6 +226,7 @@ impl Cmd {
 				| Cmd::Setup { .. }
 				| Cmd::Apply | Cmd::Deploy { .. }
 				| Cmd::Backup { .. }
+				| Cmd::Memory { cmd: Some(_) }
 				| Cmd::Restic { .. }
 				| Cmd::Update { .. }
 				| Cmd::Panel(_)
@@ -253,7 +256,7 @@ impl Cmd {
 				| Cmd::Firewall(firewall::FirewallCmd::List)
 				| Cmd::Activity { .. }
 				| Cmd::Attention(conversations::AttentionCmd::List)
-				| Cmd::Memory(memory::MemoryCmd::Show)
+				| Cmd::Memory { cmd: None }
 				| Cmd::Update { .. }
 				| Cmd::Runners(RunnersCmd::List)
 				| Cmd::Group(cli::GroupCmd::DeployKey { .. })
@@ -409,13 +412,15 @@ async fn run(args: Args) -> Result<(), String> {
 		}
 		Cmd::Docs { .. } => unreachable!("read before the config"),
 		Cmd::User(cmd) => user(cfg, cmd),
-		Cmd::Memory(memory::MemoryCmd::Show) => {
+		Cmd::Memory { cmd: None } => {
 			let db = Db::open(&cfg.db_path())?;
 			let s = memory::status(&db.conn()).map_err(|e| e.to_string())?;
 			println!("{}", s.text());
 			Ok(())
 		}
-		Cmd::Memory(memory::MemoryCmd::Reserve { size }) => {
+		Cmd::Memory {
+			cmd: Some(memory::MemoryCmd::Reserve { size }),
+		} => {
 			let reserve =
 				limits::parse_size(&size).map_err(|e| e.to_string())?;
 			let db = Db::open(&cfg.db_path())?;

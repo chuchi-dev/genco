@@ -445,9 +445,11 @@ what the groups and the system use; the reserve is a setting there
 (`genco memory reserve 1.5G`, `default`), 512 MB to half the RAM, and
 applies at once. genco's agent moves it too, in the daily health check
 or on an alert, when the system runs short while the groups have room or
-the other way round, and says why. A new group limit is at most the cap;
-one a group already has stays, the cap holds it anyway. So the groups' own limits may add up to far more than the RAM,
-groups rarely peak together; when they do, the kernel takes memory back
+the other way round, and says why. A reserve that leaves the groups
+less than they use now without their page cache is refused. A new group
+limit is at most the cap; one a group already has stays, the cap holds
+it anyway. So the groups' own limits may add up to far more than the
+RAM, groups rarely peak together; when they do, the kernel takes memory back
 from them and kills within the groups, never the databases, nginx, mail
 or genco. The shared services (not genco, whose children such as imports
 and the agent's commands would inherit it) also get a low OOM score

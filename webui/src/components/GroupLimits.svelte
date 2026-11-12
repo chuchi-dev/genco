@@ -2,12 +2,12 @@
 	import {
 		formatBytes,
 		get,
+		memoryStatus,
 		memoryUsage,
 		saveGroup,
 		type Group,
 		type Limits,
 		type MemoryUsage,
-		type MemoryStatus,
 		type Stats,
 	} from '@/lib/api';
 	import Form from '@/components/win/Form.svelte';
@@ -31,8 +31,8 @@
 	const defaults = $derived(group.limits.defaults);
 	// what all groups may use together, Settings → Memory
 	let capMb = $state<number | null>(null);
-	get('/settings/memory')
-		.then((m: MemoryStatus) => (capMb = m.capMb))
+	memoryStatus()
+		.then(m => (capMb = m.capMb))
 		.catch(() => {});
 
 	$effect(() => {

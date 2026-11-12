@@ -245,14 +245,14 @@ fn cores() -> u32 {
 	std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
 }
 
-/// Checks the limits against this server with the system's `reserve_mb`,
-/// `kept_mb` is the memory limit the group has now.
+/// Checks the limits against this server with what all groups may use
+/// (`cap_mb`), `kept_mb` is the memory limit the group has now.
 pub fn check_here(
 	limits: &Limits,
-	reserve_mb: u32,
+	cap_mb: u32,
 	kept_mb: Option<u32>,
 ) -> Result<()> {
-	limits.check(server_memory().0 - reserve_mb, cores(), kept_mb)
+	limits.check(cap_mb, cores(), kept_mb)
 }
 
 /// The least an admin or the agent may keep for the system.

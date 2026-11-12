@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { get, post, type MemoryStatus } from '@/lib/api';
+	import {
+		memoryStatus,
+		newest,
+		setMemoryReserve,
+		type MemoryStatus,
+	} from '@/lib/api';
 	import Form from '../win/Form.svelte';
 
 	// how the RAM is split: the reserve for the system, the rest all groups
@@ -8,30 +13,30 @@
 	let reserve = $state('');
 	let error = $state<string | null>(null);
 
-	async function load() {
-		try {
-			status = await get('/settings/memory');
-			reserve = status!.default ? '' : String(status!.reserveMb);
-			error = null;
-		} catch (e: any) {
-			error = e.message;
-		}
+	const fetchStatus = newest();
+	function load() {
+		fetchStatus(
+			memoryStatus(),
+			s => {
+				status = s;
+				reserve = s.default ? '' : String(s.reserveMb);
+				error = null;
+			},
+			e => (error = e.message),
+		);
 	}
 	load();
 
 	async function save() {
 		const v = reserve.trim();
-		const reserveMb = v === '' ? null : Number(v);
-		if (reserveMb !== null && !Number.isInteger(reserveMb))
+		if (v !== '' && !/^\d+$/.test(v))
 			throw new Error('The reserve is a whole number of MB or empty');
-		const report = await post('/settings/memory', { reserveMb });
-		if (!report.ok)
-			throw new Error(
-				report.log
-					.filter((l: string) => l.startsWith('error'))
-					.join('\n'),
-			);
-		await load();
+		try {
+			await setMemoryReserve(v === '' ? null : Number(v));
+		} finally {
+			// saved even when apply failed
+			load();
+		}
 	}
 
 	const mb = (v: number | null) => (v === null ? '?' : `${v} MB`);

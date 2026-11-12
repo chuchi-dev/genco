@@ -363,6 +363,11 @@ export function fileState(
 
 export type ApplyReport = { ok: boolean; log: string[] };
 
+/** The error lines of an apply. */
+export function applyErrors(report: ApplyReport): string {
+	return report.log.filter(l => l.startsWith('error')).join('\n');
+}
+
 export type DatabaseInfo = {
 	name: string;
 	exists: boolean;
@@ -720,6 +725,20 @@ export async function download(
 	const t = await ticket(target);
 	const sep = q ? '&' : '?';
 	window.location.href = `${target}${sep}ticket=${encodeURIComponent(t)}`;
+}
+
+/** How the RAM is split between the groups and the system. */
+export function memoryStatus(): Promise<MemoryStatus> {
+	return get('/settings/memory');
+}
+
+/**
+ * Sets the reserve for the system, `null` for the default; apply runs
+ * right away and its errors throw.
+ */
+export async function setMemoryReserve(reserveMb: number | null) {
+	const report: ApplyReport = await post('/settings/memory', { reserveMb });
+	if (!report.ok) throw new Error(applyErrors(report));
 }
 
 /** Puts a group in quarantine with the reason, apply runs right away. */

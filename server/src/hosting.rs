@@ -411,7 +411,7 @@ pub fn set_limits(conn: &Connection, id: i64, limits: &Limits) -> Result<()> {
 		)
 		.optional()?
 		.flatten();
-	limits::check_here(limits, crate::memory::reserve(conn), kept)?;
+	limits::check_here(limits, crate::memory::groups_cap(conn), kept)?;
 	conn.execute(
 		"UPDATE domain_groups SET memory_max_mb = ?1, memory_high_mb = ?2,
 		cpu_percent = ?3, tasks_max = ?4 WHERE id = ?5",

@@ -10,6 +10,7 @@
 	import { GROUP_TABS } from '@/lib/groupTabs';
 	import {
 		KIND_NAMES,
+		applyErrors,
 		formatTime,
 		get,
 		liftQuarantine,
@@ -123,10 +124,7 @@
 			if (!report.ok) {
 				message.show(
 					'Quarantine',
-					'Applied with errors:\n' +
-						report.log
-							.filter(l => l.startsWith('error'))
-							.join('\n'),
+					'Applied with errors:\n' + applyErrors(report),
 				);
 			}
 		} catch (e: any) {

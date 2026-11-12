@@ -32,13 +32,20 @@ struct Setting {
 }
 
 /// The reserve for the system on this server, set or the default.
-pub fn reserve(conn: &Connection) -> u32 {
-	let (ram, _) = limits::server_memory();
-	let set: Setting = crate::db::get_json(conn, "memory").unwrap_or_default();
-	let (min, max) = limits::reserve_bounds(ram);
+fn reserve(conn: &Connection) -> u32 {
+	reserve_of(limits::server_memory().0, &setting(conn))
+}
+
+fn setting(conn: &Connection) -> Setting {
+	crate::db::get_json(conn, "memory").unwrap_or_default()
+}
+
+/// A reserve that no longer fits the RAM (a resized VM) is clamped.
+fn reserve_of(ram_mb: u32, set: &Setting) -> u32 {
+	let (min, max) = limits::reserve_bounds(ram_mb);
 	set.reserve_mb
 		.map(|r| r.clamp(min, max))
-		.unwrap_or_else(|| limits::default_reserve(ram))
+		.unwrap_or_else(|| limits::default_reserve(ram_mb))
 }
 
 /// What all groups together may use on this server.
@@ -49,17 +56,58 @@ pub fn groups_cap(conn: &Connection) -> u32 {
 /// Sets the reserve, `None` for the default; apply makes it hold.
 pub fn set_reserve(conn: &Connection, reserve_mb: Option<u32>) -> Result<()> {
 	let (ram, _) = limits::server_memory();
-	let (min, max) = limits::reserve_bounds(ram);
-	if let Some(r) = reserve_mb
-		&& !(min..=max).contains(&r)
-	{
+	check_reserve(ram, reserve_mb, groups_used())?;
+	let set = Setting { reserve_mb };
+	set_setting(conn, "memory", &serde_json::to_string(&set).unwrap())?;
+	Ok(())
+}
+
+/// Within the bounds, and the new cap leaves the groups what they use now
+/// without their page cache: below that the kernel kills in the groups
+/// right away.
+fn check_reserve(
+	ram_mb: u32,
+	reserve_mb: Option<u32>,
+	groups_used_mb: Option<u32>,
+) -> Result<()> {
+	let Some(r) = reserve_mb else {
+		return Ok(());
+	};
+	let (min, max) = limits::reserve_bounds(ram_mb);
+	if !(min..=max).contains(&r) {
 		return Err(Error::Invalid(format!(
 			"the reserve is {min} MB to {max} MB, half the RAM"
 		)));
 	}
-	let set = Setting { reserve_mb };
-	set_setting(conn, "memory", &serde_json::to_string(&set).unwrap())?;
+	let cap = limits::groups_cap(ram_mb, r);
+	if let Some(used) = groups_used_mb
+		&& cap < used
+	{
+		return Err(Error::Invalid(format!(
+			"the groups use {used} MB now, a reserve of {r} MB leaves them \
+			{cap} MB; at most {} MB",
+			(ram_mb - used).min(max)
+		)));
+	}
 	Ok(())
+}
+
+fn read_groups(file: &str) -> Option<String> {
+	std::fs::read_to_string(format!("{GROUPS_CGROUP}/{file}")).ok()
+}
+
+/// What the groups use now without their page cache, which the kernel
+/// takes back first, in MB.
+fn groups_used() -> Option<u32> {
+	let current: u64 = read_groups("memory.current")?.trim().parse().ok()?;
+	let stat = read_groups("memory.stat")?;
+	let file: u64 = stat
+		.lines()
+		.find_map(|l| l.strip_prefix("file "))?
+		.trim()
+		.parse()
+		.ok()?;
+	Some((current.saturating_sub(file) >> 20) as u32)
 }
 
 /// The split and what the groups and the system use, for the panel, the
@@ -79,6 +127,7 @@ pub struct Status {
 	pub cap_mb: u32,
 	/// the groups' own limits added up (the default for those without)
 	pub limits_mb: u32,
+	/// without their page cache, like the system's number
 	pub groups_now_mb: Option<u32>,
 	/// since the groups' slice started (the last boot, mostly)
 	pub groups_peak_mb: Option<u32>,
@@ -88,15 +137,10 @@ pub struct Status {
 
 pub fn status(conn: &Connection) -> Result<Status> {
 	let (ram, swap) = limits::server_memory();
-	let set: Setting = crate::db::get_json(conn, "memory").unwrap_or_default();
-	let reserve_mb = reserve(conn);
+	let set = setting(conn);
+	let reserve_mb = reserve_of(ram, &set);
 	let (min, max) = limits::reserve_bounds(ram);
-	let read = |file: &str| -> Option<u32> {
-		let v =
-			std::fs::read_to_string(format!("{GROUPS_CGROUP}/{file}")).ok()?;
-		Some((v.trim().parse::<u64>().ok()? >> 20) as u32)
-	};
-	let groups_now = read("memory.current");
+	let groups_now = groups_used();
 	let info = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
 	let used = crate::stats::meminfo(&info, "MemTotal:")
 		.zip(crate::stats::meminfo(&info, "MemAvailable:"))
@@ -115,7 +159,9 @@ pub fn status(conn: &Connection) -> Result<Status> {
 			.map(|g| g.limits.memory_max())
 			.sum(),
 		groups_now_mb: groups_now,
-		groups_peak_mb: read("memory.peak"),
+		groups_peak_mb: read_groups("memory.peak")
+			.and_then(|v| v.trim().parse::<u64>().ok())
+			.map(|v| (v >> 20) as u32),
 		system_now_mb: used.zip(groups_now).map(|(u, g)| u.saturating_sub(g)),
 	})
 }
@@ -150,11 +196,9 @@ impl Status {
 	}
 }
 
-/// `genco memory`: the split, or a new reserve.
+/// `genco memory reserve`: a new reserve.
 #[derive(Debug, clap::Parser)]
 pub enum MemoryCmd {
-	/// Show the split between the groups and the system and what each uses
-	Show,
 	/// Keep this much for the system (2G, 1536M, 1536) or `default`;
 	/// applies at once
 	Reserve { size: String },
@@ -197,19 +241,27 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn the_reserve_is_a_setting_within_bounds() {
-		let db = Db::memory();
-		let conn = db.conn();
-		let (ram, _) = limits::server_memory();
-		assert_eq!(reserve(&conn), limits::default_reserve(ram));
+	fn the_reserve_stays_within_bounds() {
+		assert!(check_reserve(4000, None, Some(3900)).is_ok());
+		assert!(check_reserve(4000, Some(511), None).is_err());
+		assert!(check_reserve(4000, Some(2001), None).is_err());
+		assert!(check_reserve(4000, Some(512), None).is_ok());
+		assert!(check_reserve(4000, Some(2000), None).is_ok());
+		// the groups use 2500 MB without their cache
+		assert!(check_reserve(4000, Some(1500), Some(2500)).is_ok());
+		assert!(check_reserve(4000, Some(1600), Some(2500)).is_err());
+	}
 
-		let (min, max) = limits::reserve_bounds(ram);
-		assert!(set_reserve(&conn, Some(min - 1)).is_err());
-		assert!(set_reserve(&conn, Some(max + 1)).is_err());
-		set_reserve(&conn, Some(min)).unwrap();
-		assert_eq!(reserve(&conn), min);
-		assert!(!status(&conn).unwrap().default);
-		set_reserve(&conn, None).unwrap();
-		assert!(status(&conn).unwrap().default);
+	#[test]
+	fn a_set_reserve_is_clamped_to_the_ram() {
+		let set = |r| Setting { reserve_mb: r };
+		assert_eq!(reserve_of(4000, &set(None)), 1000);
+		assert_eq!(reserve_of(4000, &set(Some(1500))), 1500);
+		// the VM shrank to 2 GB
+		assert_eq!(reserve_of(2000, &set(Some(1500))), 1000);
+
+		let db = Db::memory();
+		set_setting(&db.conn(), "memory", r#"{"reserveMb":700}"#).unwrap();
+		assert_eq!(setting(&db.conn()).reserve_mb, Some(700));
 	}
 }
