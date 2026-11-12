@@ -1,5 +1,5 @@
 //! Memory of the whole server: all groups share `genco.slice`, capped at
-//! the RAM without a reserve for the system (limits.rs), so groups whose
+//! the RAM without the reserve for the system (memory.rs), so groups whose
 //! own limits add up to more than the RAM run out among themselves. The
 //! shared services get a low OOM score: when the kernel has to kill
 //! outside the groups after all, it picks something else than the
@@ -28,11 +28,10 @@ const SYSTEM_SLICE: &str = "/sys/fs/cgroup/system.slice";
 
 /// genco.slice and a drop-in with the OOM score for each protected service
 /// that runs here.
-pub(super) fn memory_files() -> Vec<File> {
-	let (ram, _) = crate::limits::server_memory();
+pub(super) fn memory_files(cap_mb: u32) -> Vec<File> {
 	let mut files = vec![File {
 		path: render::unit_path(GROUPS_SLICE),
-		content: crate::limits::groups_slice_unit(ram),
+		content: crate::limits::groups_slice_unit(cap_mb),
 		private_to: None,
 	}];
 	for (unit, _) in protected_units() {
@@ -86,10 +85,13 @@ fn protected(unit: &str) -> bool {
 /// The cap on the running slice, and the OOM score of the protected
 /// services' processes right away (the drop-in counts from their next
 /// start).
-pub(super) async fn memory(r: &mut Report, changed: &HashSet<PathBuf>) {
+pub(super) async fn memory(
+	r: &mut Report,
+	changed: &HashSet<PathBuf>,
+	cap_mb: u32,
+) {
 	if changed.contains(&render::unit_path(GROUPS_SLICE)) {
-		let (ram, _) = crate::limits::server_memory();
-		let cap = format!("MemoryMax={}M", crate::limits::groups_cap(ram));
+		let cap = format!("MemoryMax={cap_mb}M");
 		if r.run(&[
 			"systemctl",
 			"set-property",

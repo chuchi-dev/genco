@@ -438,10 +438,18 @@ now; `genco tree` has each group's `limits` (`null` is the default, its
 `defaults` what an empty one means).
 
 **All groups together.** The groups' slices are in `genco.slice`, which
-genco caps at the RAM without a reserve for the system: a quarter of the
-RAM, at least 768 MB, at most half (3.9 GB of RAM: 2.9 GB for the
-groups). So the groups' own limits may add up to far more than the RAM,
-groups rarely peak together; when they do, the kernel takes memory back
+genco caps at the RAM without the reserve for the system: by default a
+quarter of the RAM, at least 768 MB, at most half (3.9 GB of RAM: 2.9 GB
+for the groups). Settings → Memory and `genco memory` show the split and
+what the groups and the system use; the reserve is a setting there
+(`genco memory reserve 1.5G`, `default`), 512 MB to half the RAM, and
+applies at once. genco's agent moves it too, in the daily health check
+or on an alert, when the system runs short while the groups have room or
+the other way round, and says why. A reserve that leaves the groups
+less than they use now without their page cache is refused. A new group
+limit is at most the cap; one a group already has stays, the cap holds
+it anyway. So the groups' own limits may add up to far more than the
+RAM, groups rarely peak together; when they do, the kernel takes memory back
 from them and kills within the groups, never the databases, nginx, mail
 or genco. The shared services (not genco, whose children such as imports
 and the agent's commands would inherit it) also get a low OOM score

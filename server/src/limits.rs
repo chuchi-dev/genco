@@ -77,27 +77,24 @@ impl Limits {
 		}
 	}
 
-	/// Within what the server has: `ram_mb` and `cores`. A group may
-	/// have at most what all groups together may use (`groups_cap`); a
-	/// memory limit it already has (`kept_mb`) stays allowed, the cap of
-	/// all groups holds it anyway.
+	/// Within what the server has: `cap_mb`, what all groups may use
+	/// together (`groups_cap`), and `cores`. A memory limit the group
+	/// already has (`kept_mb`) stays allowed, the cap of all groups holds
+	/// it anyway.
 	pub fn check(
 		&self,
-		ram_mb: u32,
+		cap_mb: u32,
 		cores: u32,
 		kept_mb: Option<u32>,
 	) -> Result<()> {
 		let max = self.memory_max();
-		let cap = groups_cap(ram_mb);
 		if self.memory_max_mb.is_some_and(|m| Some(m) != kept_mb)
-			&& !(128..=cap).contains(&max)
+			&& !(128..=cap_mb).contains(&max)
 		{
 			return Err(Error::Invalid(format!(
 				"the memory limit is 128 MB to {}, what all groups may use \
-				together (the server's {} without {} for the system)",
-				size(cap),
-				size(ram_mb),
-				size(reserve(ram_mb))
+				together (`genco memory`)",
+				size(cap_mb)
 			)));
 		}
 		if !(64..=max).contains(&self.memory_high()) {
@@ -154,18 +151,14 @@ pub fn with_defaults<S: serde::Serializer>(
 	s: S,
 ) -> std::result::Result<S::Ok, S::Error> {
 	#[derive(Serialize)]
-	#[serde(rename_all = "camelCase")]
 	struct Shown<'a> {
 		#[serde(flatten)]
 		limits: &'a Limits,
 		defaults: Defaults,
-		/// what all groups may use together, the most one may have
-		groups_cap_mb: u32,
 	}
 	Shown {
 		limits,
 		defaults: limits.defaults(),
-		groups_cap_mb: groups_cap(server_memory().0),
 	}
 	.serialize(s)
 }
@@ -252,29 +245,42 @@ fn cores() -> u32 {
 	std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
 }
 
-/// Checks the limits against this server, `kept_mb` is the memory limit
-/// the group has now.
-pub fn check_here(limits: &Limits, kept_mb: Option<u32>) -> Result<()> {
-	limits.check(server_memory().0, cores(), kept_mb)
+/// Checks the limits against this server with what all groups may use
+/// (`cap_mb`), `kept_mb` is the memory limit the group has now.
+pub fn check_here(
+	limits: &Limits,
+	cap_mb: u32,
+	kept_mb: Option<u32>,
+) -> Result<()> {
+	limits.check(cap_mb, cores(), kept_mb)
 }
 
+/// The least an admin or the agent may keep for the system.
+pub const MIN_RESERVE_MB: u32 = 512;
+
 /// The memory genco keeps for the system (the databases, nginx, mail,
-/// genco itself): a quarter of the RAM, at least 768 MB, at most half.
-pub fn reserve(ram_mb: u32) -> u32 {
+/// genco itself) unless set (memory.rs): a quarter of the RAM, at least
+/// 768 MB, at most half.
+pub fn default_reserve(ram_mb: u32) -> u32 {
 	(ram_mb / 4).max(768).min(ram_mb / 2)
 }
 
+/// What a reserve may be: `MIN_RESERVE_MB` to half the RAM.
+pub fn reserve_bounds(ram_mb: u32) -> (u32, u32) {
+	(MIN_RESERVE_MB.min(ram_mb / 2), ram_mb / 2)
+}
+
 /// What all groups together may use (`genco.slice`): the RAM without the
-/// `reserve`. Their own limits may add up to much more, they rarely peak
+/// reserve. Their own limits may add up to much more, they rarely peak
 /// together; when they do, a group runs out, never the system.
-pub fn groups_cap(ram_mb: u32) -> u32 {
-	ram_mb - reserve(ram_mb)
+pub fn groups_cap(ram_mb: u32, reserve_mb: u32) -> u32 {
+	ram_mb.saturating_sub(reserve_mb)
 }
 
 /// The unit of the slice all groups' slices are in.
-pub fn groups_slice_unit(ram_mb: u32) -> String {
+pub fn groups_slice_unit(cap_mb: u32) -> String {
 	format!(
-		"{}: genco sets it from the RAM
+		"{}: genco memory reserve changes it
 [Unit]
 Description=All groups of genco
 
@@ -282,7 +288,7 @@ Description=All groups of genco
 MemoryMax={}
 ",
 		crate::render::HEADER,
-		unit_size(groups_cap(ram_mb))
+		unit_size(cap_mb)
 	)
 }
 
@@ -533,7 +539,7 @@ mod tests {
 
 	#[test]
 	fn bounds_follow_the_server() {
-		let ok = |l: Limits| l.check(4000, 2, None).is_ok();
+		let ok = |l: Limits| l.check(3000, 2, None).is_ok();
 		assert!(ok(Limits::default()));
 		let mem = |mb| Limits {
 			memory_max_mb: Some(mb),
@@ -545,8 +551,8 @@ mod tests {
 		assert!(ok(mem(3000)));
 		assert!(!ok(mem(3001)));
 		// one it had before the cap stays
-		assert!(mem(3500).check(4000, 2, Some(3500)).is_ok());
-		assert!(mem(3600).check(4000, 2, Some(3500)).is_err());
+		assert!(mem(3500).check(3000, 2, Some(3500)).is_ok());
+		assert!(mem(3600).check(3000, 2, Some(3500)).is_err());
 		// a soft limit above the max
 		assert!(!ok(Limits {
 			memory_high_mb: Some(2048),
@@ -570,13 +576,15 @@ mod tests {
 
 	#[test]
 	fn the_system_keeps_a_reserve() {
-		assert_eq!(reserve(4000), 1000);
-		assert_eq!(groups_cap(4000), 3000);
-		assert_eq!(reserve(2048), 768);
-		assert_eq!(reserve(1024), 512);
-		assert_eq!(reserve(16384), 4096);
-		assert!(groups_slice_unit(4000).contains("MemoryMax=3000M\n"));
-		assert!(groups_slice_unit(4096).contains("MemoryMax=3G\n"));
+		assert_eq!(default_reserve(4000), 1000);
+		assert_eq!(groups_cap(4000, 1000), 3000);
+		assert_eq!(default_reserve(2048), 768);
+		assert_eq!(default_reserve(1024), 512);
+		assert_eq!(default_reserve(16384), 4096);
+		assert_eq!(reserve_bounds(4000), (512, 2000));
+		assert_eq!(reserve_bounds(800), (400, 400));
+		assert!(groups_slice_unit(3000).contains("MemoryMax=3000M\n"));
+		assert!(groups_slice_unit(3072).contains("MemoryMax=3G\n"));
 	}
 
 	#[test]

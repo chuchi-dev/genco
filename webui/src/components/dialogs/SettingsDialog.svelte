@@ -5,6 +5,7 @@
 	import BackupSettings from './BackupSettings.svelte';
 	import FirewallSettings from './FirewallSettings.svelte';
 	import MailSettings from './MailSettings.svelte';
+	import MemorySettings from './MemorySettings.svelte';
 	import NotifySettings from './NotifySettings.svelte';
 	import RunnerSettings from './RunnerSettings.svelte';
 	import UpdateSettings from './UpdateSettings.svelte';
@@ -19,6 +20,7 @@
 		{ id: 'update', label: 'Updates' },
 		{ id: 'runners', label: 'Runners' },
 		{ id: 'firewall', label: 'Firewall' },
+		{ id: 'memory', label: 'Memory' },
 	];
 	let tab = $state('mail');
 </script>
@@ -34,6 +36,7 @@
 		<div class="tab" hidden={tab !== 'update'}><UpdateSettings /></div>
 		<div class="tab" hidden={tab !== 'runners'}><RunnerSettings /></div>
 		<div class="tab" hidden={tab !== 'firewall'}><FirewallSettings /></div>
+		<div class="tab" hidden={tab !== 'memory'}><MemorySettings /></div>
 	</Tabs>
 </Dialog>
 

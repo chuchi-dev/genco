@@ -307,6 +307,10 @@ terminal.
       the RAM without a reserve (genco.slice), shared services with a
       low OOM score, alerts on memory pressure and OOM kills instead of
       the sum of limits, the group's usage and 24 h peak beside its limit
+- [x] the reserve for the system as a setting (operator 2026-11-12):
+      Settings → Memory, `genco memory [reserve <size|default>]`,
+      512 MB to half the RAM, moved by the agent when the split doesn't
+      fit what the groups and the system use
 - [x] drop-ins that override genco's units reported by apply, the minute
       check and the config view; `genco group adopt-limits`
 - [x] ImageMagick limits for groups with PHP, from the group's memory

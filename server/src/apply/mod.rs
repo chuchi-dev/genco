@@ -151,6 +151,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 		return r;
 	};
 	let blocked = blocked(&mut r, db);
+	let cap = crate::memory::groups_cap(&db.conn());
 	let old_names = crate::panel::old_names(&db.conn());
 	relay_sasl(&mut r, db).await;
 
@@ -161,7 +162,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 			deploy_key(&mut r, g).await;
 		}
 	}
-	sync(&mut r, cfg, &groups, &blocked, &old_names).await;
+	sync(&mut r, cfg, &groups, &blocked, &old_names, cap).await;
 	databases(&mut r, &groups).await;
 
 	// with a new certificate the sites get https, the apps the mail host
@@ -170,7 +171,7 @@ pub async fn apply(cfg: &Config, db: &Db) -> Report {
 		for g in &mut groups {
 			g.mail_host = host.clone();
 		}
-		sync(&mut r, cfg, &groups, &blocked, &old_names).await;
+		sync(&mut r, cfg, &groups, &blocked, &old_names, cap).await;
 	}
 
 	// genco doesn't touch them, an admin moves them into the group's
@@ -192,6 +193,7 @@ async fn sync(
 	groups: &[Group],
 	blocked: &[String],
 	old_names: &[String],
+	cap_mb: u32,
 ) {
 	let certs = host::certs(groups);
 	let mut files: Vec<File> = groups
@@ -199,7 +201,7 @@ async fn sync(
 		.flat_map(|g| render::group_files(g, &certs))
 		.collect();
 	files.extend(panel_files(cfg, old_names));
-	files.extend(memory_files());
+	files.extend(memory_files(cap_mb));
 	files.push(firewall_file(cfg, groups, blocked));
 	files.push(File {
 		path: render::RESERVED_PORTS.into(),
@@ -225,7 +227,7 @@ async fn sync(
 		r.run(&["systemctl", "daemon-reload"]).await;
 	}
 
-	memory(r, &changed).await;
+	memory(r, &changed, cap_mb).await;
 	for g in groups {
 		set_limits(r, g, &changed).await;
 		start_units(r, g, &changed).await;
