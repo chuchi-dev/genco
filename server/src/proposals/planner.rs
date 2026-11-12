@@ -128,7 +128,7 @@ impl Planner {
 
 	/// Asks the model until it answers without a tool call.
 	async fn plan(&self, id: i64) -> Result<plans::New, String> {
-		let (input, model) = {
+		let input = {
 			let conn = self.db.conn();
 			let p = get_one(&conn, id).map_err(|e| e.to_string())?;
 			let history = plans::of(&conn, id).map_err(|e| e.to_string())?;
@@ -141,11 +141,10 @@ impl Planner {
 				)
 				.map_err(|e| e.to_string())?;
 			let change = change.0.zip(change.1);
-			(
-				input(&p, &history, change),
-				crate::llm::model(&self.cfg, &self.db),
-			)
+			input(&p, &history, change)
 		};
+		// takes the connection itself, not inside the block above
+		let model = crate::llm::model(&self.cfg, &self.db);
 		let mut req = Request {
 			input,
 			instructions: PROMPT
