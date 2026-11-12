@@ -3,12 +3,17 @@
 
 use super::*;
 
-/// Starts the group's units, restarts those whose config changed.
+/// Starts the group's units, restarts those whose config changed; a
+/// group in quarantine gets them stopped instead.
 pub(super) async fn start_units(
 	r: &mut Report,
 	g: &Group,
 	changed: &HashSet<PathBuf>,
 ) {
+	if g.quarantine.is_some() {
+		stop_units(r, g).await;
+		return;
+	}
 	for v in render::php_versions(g) {
 		let unit = render::php_unit(&g.name, v);
 		let conf = render::php_config(&g.name, v);
@@ -82,6 +87,40 @@ pub(super) async fn start_units(
 		let restart = changed.contains(&render::unit_path(&timer));
 		start_unit(r, &timer, restart).await;
 	}
+}
+
+/// Stops and disables every unit of a group in quarantine, then its slice
+/// with whatever else runs in it (a deploy's or a schedule's processes);
+/// lifted, `start_units` enables and starts them again.
+async fn stop_units(r: &mut Report, g: &Group) {
+	let mut units: Vec<String> = render::php_versions(g)
+		.into_iter()
+		.map(|v| render::php_unit(&g.name, v))
+		.collect();
+	for d in g.domains.iter().filter(|d| render::has_app(d)) {
+		for &slot in render::slots(d) {
+			units.push(render::slot_unit(&g.name, &d.name, slot));
+		}
+	}
+	units.extend(
+		g.workers
+			.iter()
+			.map(|w| render::worker_unit(&g.name, &w.name)),
+	);
+	for s in &g.schedules {
+		units.push(render::schedule_timer(&g.name, &s.name));
+		units.push(render::schedule_unit(&g.name, &s.name));
+	}
+	if !units.is_empty() {
+		let mut args = vec!["systemctl", "disable", "-q", "--now"];
+		args.extend(units.iter().map(String::as_str));
+		r.run(&args).await;
+	}
+	r.run(&["systemctl", "stop", &render::slice(&g.name)]).await;
+	r.info(format!(
+		"{} is in quarantine, its services are stopped",
+		g.name
+	));
 }
 
 /// A changed slice's limits: systemd reads its file on daemon-reload but

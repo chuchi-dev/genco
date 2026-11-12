@@ -530,6 +530,13 @@ const MIGRATIONS: &[&str] = &[
 	UPDATE proposals SET text = coalesce(original_text, text),
 		status = 'planning' WHERE status = 'pending';
 "#,
+	// a group in quarantine: its services stopped, its sites answer 503,
+	// its SMTP login off, no deploys (quarantine.rs)
+	r#"
+	ALTER TABLE domain_groups ADD COLUMN quarantine_reason TEXT;
+	ALTER TABLE domain_groups ADD COLUMN quarantined_by TEXT;
+	ALTER TABLE domain_groups ADD COLUMN quarantined_at INTEGER;
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

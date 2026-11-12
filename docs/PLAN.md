@@ -340,7 +340,20 @@ terminal.
 - [x] A rejection can have a reason for the proposing agent, an expired
   proposal tells it once
 
+### 11e. Quarantine and signs of a hack (operator 2026-11-12)
+- [x] quarantine a group (panel, CLI, genco's agent): services stopped,
+      sites 503, SMTP login and deploys off; lifted by an admin or the
+      agent (when asked, or after it cleaned the cause)
+- [x] signs of a compromised group in the minute check (CPU, programs
+      from /tmp or deleted, shells under PHP-FPM, mining pool ports, mail
+      bursts, PHP files in uploads): they only wake the agent
+
 ### Later
+- Automatic bans without the llm (operator 2026-11-12, postponed):
+  rate limits per site, genco bans an IP that floods or scans for a
+  short time, longer when it comes back; admins' addresses protected.
+- A check of the sites from outside (operator 2026-11-12, postponed):
+  not generally, maybe from noah or an external service.
 - GitHub deploys tested, malware scanning (Imunify or CrowdSec,
   ClamAV).
 - A dashboard on another device or domain that shows the status of all

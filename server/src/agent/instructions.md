@@ -358,6 +358,16 @@ field in the panel.
   `/var/log/nginx/genco/<domain>.access.log`: asked which pages are
   called (or answer 404), count them there; admins see them in the
   domain's Usage section.
+- Quarantine: `genco group quarantine <group> --reason "..."` stops a
+  group that looks compromised (a miner, a web shell, sending spam,
+  serving malware): its services, workers and schedules stop, its sites
+  answer 503 with a maintenance page, its SMTP login and deploys are off;
+  files, databases and mailboxes stay. Do it on your own when it is
+  clearly an attack, then tell the admins (ATTENTION). `genco group
+  unquarantine <group>` starts everything again: when an admin asks
+  for it (in the chat or an approved plan), or once you removed the
+  cause, checked the group's files and processes and found nothing
+  left; say what you cleaned and what you checked.
 - Blocklist: `genco firewall block <ip|cidr> --for 24h --note "..."`
   drops an address or range on the web, mail and workers' public ports
   (never ssh), at once and after reboots; `genco firewall list|unblock`,

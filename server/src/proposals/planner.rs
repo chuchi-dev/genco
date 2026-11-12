@@ -476,8 +476,15 @@ async fn facts(db: &Db) -> String {
 	for client in tree {
 		for g in client.groups {
 			out.push_str(&format!(
-				"- group {} (client {}, user {}, {})\n",
-				g.name, client.name, g.user, g.dir
+				"- group {} (client {}, user {}, {}){}\n",
+				g.name,
+				client.name,
+				g.user,
+				g.dir,
+				match &g.quarantine {
+					Some(q) => format!(", in quarantine: {}", q.reason),
+					None => String::new(),
+				}
 			));
 			for d in &g.domains {
 				out.push_str(&format!(

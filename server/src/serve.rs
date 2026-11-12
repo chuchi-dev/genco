@@ -178,9 +178,15 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 	if runner.has_llm() {
 		runner.onboard();
 	}
-	checks::spawn(cfg.clone(), db.clone(), runner.clone(), events.clone());
 	let stats = stats::StatsDb::open(&stats::path(&cfg))?;
 	stats::spawn(db.clone(), stats.clone());
+	checks::spawn(
+		cfg.clone(),
+		db.clone(),
+		stats.clone(),
+		runner.clone(),
+		events.clone(),
+	);
 
 	let state = AppState {
 		cfg: cfg.clone(),
@@ -215,6 +221,7 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 		.merge(llm::routes())
 		.merge(peers::routes())
 		.merge(proposals::routes())
+		.merge(quarantine::routes())
 		.merge(approvals::routes())
 		.merge(update::routes())
 		.merge(appenv::routes())

@@ -108,6 +108,8 @@ pub struct Group {
 	/// for that name, apps connect to it (set by apply)
 	#[serde(skip)]
 	pub mail_host: Option<String>,
+	/// stopped because it looks compromised, see quarantine.rs
+	pub quarantine: Option<crate::quarantine::Quarantine>,
 }
 
 /// What a group's PHP may use, for all its PHP domains.
@@ -293,7 +295,8 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 
 	let mut stmt = conn.prepare(
 		"SELECT id, name, client_id, notes, repo, branch, php, smtp_password,
-		smtp_hash, memory_max_mb, memory_high_mb, cpu_percent, tasks_max
+		smtp_hash, memory_max_mb, memory_high_mb, cpu_percent, tasks_max,
+		quarantine_reason, quarantined_by, quarantined_at
 		FROM domain_groups ORDER BY name",
 	)?;
 	let groups: Vec<Group> = stmt
@@ -322,6 +325,7 @@ pub fn tree(conn: &Connection) -> rusqlite::Result<Vec<Client>> {
 					tasks_max: row.get(12)?,
 				},
 				mail_host: None,
+				quarantine: crate::quarantine::from_row(row, 13)?,
 				domains: util::matching(&domains, |d| d.group_id == id),
 				databases: util::matching(&databases, |d| d.group_id == id),
 				mail_domains: util::matching(&mail_domains, |d| {
