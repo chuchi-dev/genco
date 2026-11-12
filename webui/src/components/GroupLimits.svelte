@@ -21,20 +21,27 @@
 		cpuPercent: text(group.limits.cpuPercent),
 		tasksMax: text(group.limits.tasksMax),
 	});
-	let warning = $state<string | null>(null);
-	// what the group uses now and what the kernel holds it to
-	let usage = $state<{ memory: number | null; limit: number | null }>({
-		memory: null,
-		limit: null,
-	});
+	// what the group uses now, its most in the last day and what the kernel
+	// holds it to
+	let usage = $state<{
+		memory: number | null;
+		peak: number | null;
+		limit: number | null;
+	}>({ memory: null, peak: null, limit: null });
 
 	const defaults = $derived(group.limits.defaults);
 
 	$effect(() => {
-		get(`/stats?scope=group:${group.id}&range=1h`)
+		get(`/stats?scope=group:${group.id}&range=24h`)
 			.then((s: Stats) => {
-				const last = s.points.findLast(p => p.memory !== null);
-				usage = { memory: last?.memory ?? null, limit: s.memoryLimit };
+				const memory = s.points
+					.map(p => p.memory)
+					.filter((m): m is number => m !== null);
+				usage = {
+					memory: memory.at(-1) ?? null,
+					peak: memory.length ? Math.max(...memory) : null,
+					limit: s.memoryLimit,
+				};
 			})
 			.catch(() => {});
 	});
@@ -53,7 +60,7 @@
 			cpuPercent: n(fields.cpuPercent),
 			tasksMax: n(fields.tasksMax),
 		};
-		warning = (await saveGroup(group, { limits })).warning;
+		await saveGroup(group, { limits });
 	}
 </script>
 
@@ -66,8 +73,10 @@
 		{#if usage.memory !== null}
 			Now it uses {formatBytes(usage.memory)}{usage.limit
 				? ` of ${formatBytes(usage.limit)}`
-				: ''}.
+				: ''}, at most {formatBytes(usage.peak ?? 0)} in the last 24 hours.
 		{/if}
+		All groups together may use {group.limits.groupsCapMb} MB, the rest of the
+		RAM stays for the databases, mail and genco; their limits may add up to more.
 	</p>
 	<Form onsubmit={save} ok="Save" done="Saved">
 		<label for="gl-memory">Memory limit:</label>
@@ -111,7 +120,6 @@
 			processes and threads
 		</span>
 	</Form>
-	{#if warning}<p class="error">{warning}</p>{/if}
 </fieldset>
 
 <style lang="scss">

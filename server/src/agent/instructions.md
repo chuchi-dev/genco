@@ -268,8 +268,11 @@ field in the panel.
   never with drop-ins (`/etc/systemd/system/genco-*.slice.d/`,
   `genco-*.service.d/`) or `systemctl set-property`: they override genco and are reported as a
   problem; `genco group adopt-limits <group>` moves a slice drop-in's
-  limits into the settings. Check the RAM first, genco warns when the
-  groups' limits add up to more than the server has.
+  limits into the settings. All groups together are capped at the RAM
+  without a reserve for the system (`genco.slice`), a group's limit at
+  most that; their limits may add up to more. Base a limit on what the
+  group really uses (Usage, `memory.peak` of its slice), alerts come on
+  memory pressure and OOM kills.
 - Craft with Imagick: transforms of large originals take 500-700 MB.
   genco limits ImageMagick per process for groups with PHP
   (MAGICK_MEMORY_LIMIT a quarter of the soft limit, at most 256 MiB, then
