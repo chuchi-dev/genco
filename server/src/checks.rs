@@ -56,6 +56,8 @@ impl Problem {
 pub struct Checker {
 	seen: HashMap<String, u32>,
 	signals: crate::signals::Signals,
+	/// the OOM kills of each group's slice in the last round
+	oom_kills: HashMap<String, u64>,
 }
 
 impl Checker {
@@ -65,6 +67,7 @@ impl Checker {
 		let groups = hosting::groups(&db.conn()).unwrap_or_default();
 		let mut found = find(db, &groups).await;
 		found.extend(self.signals.find(&groups, stats).await);
+		found.extend(oom_kills(&groups, &mut self.oom_kills));
 		let keys: HashSet<&str> =
 			found.iter().map(|p| p.key.as_str()).collect();
 		self.seen.retain(|k, _| keys.contains(k.as_str()));
@@ -264,7 +267,6 @@ async fn find(db: &Db, groups: &[Group]) -> Vec<Problem> {
 	found.extend(memory());
 	found.extend(limits(groups));
 	found.extend(memory_pressure());
-	found.extend(oom_kills(groups));
 	found.extend(certificates(groups).await);
 	found.extend(jobs(&db.conn()).unwrap_or_default());
 	found
@@ -425,25 +427,30 @@ fn pressure_full(psi: &str) -> Option<f64> {
 }
 
 /// Processes the kernel killed in a group because it ran out of memory,
-/// its own limit or that of all groups: the count is in the key, every
-/// new kill alerts.
-fn oom_kills(groups: &[Group]) -> Vec<Problem> {
+/// its own limit or that of all groups, since the last round: the
+/// slice's count only grows (`last` holds it), a round without new kills
+/// clears the problem.
+fn oom_kills(
+	groups: &[Group],
+	last: &mut HashMap<String, u64>,
+) -> Vec<Problem> {
 	let mut found = vec![];
 	for g in groups {
-		let path = format!(
-			"/sys/fs/cgroup/genco.slice/{}/memory.events",
-			crate::render::slice(&g.name)
-		);
+		let path = std::path::Path::new(crate::stats::CGROUPS)
+			.join(crate::render::slice(&g.name))
+			.join("memory.events");
 		let Ok(events) = std::fs::read_to_string(path) else {
 			continue;
 		};
 		let kills = oom_kill_count(&events);
-		if kills > 0 {
+		let before = last.insert(g.name.clone(), kills);
+		let new = kills.saturating_sub(before.unwrap_or(kills));
+		if new > 0 {
 			found.push(
 				Problem::new(
-					format!("oom:{}:{kills}", g.name),
+					format!("oom:{}", g.name),
 					format!(
-						"the kernel killed {kills} processes of the group {} \
+						"the kernel killed {new} processes of the group {} \
 						for lack of memory (its limit {} MB, or all groups' \
 						cap)",
 						g.name,

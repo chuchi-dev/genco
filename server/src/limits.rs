@@ -78,11 +78,20 @@ impl Limits {
 	}
 
 	/// Within what the server has: `ram_mb` and `cores`. A group may
-	/// have at most what all groups together may use (`groups_cap`).
-	pub fn check(&self, ram_mb: u32, cores: u32) -> Result<()> {
+	/// have at most what all groups together may use (`groups_cap`); a
+	/// memory limit it already has (`kept_mb`) stays allowed, the cap of
+	/// all groups holds it anyway.
+	pub fn check(
+		&self,
+		ram_mb: u32,
+		cores: u32,
+		kept_mb: Option<u32>,
+	) -> Result<()> {
 		let max = self.memory_max();
 		let cap = groups_cap(ram_mb);
-		if self.memory_max_mb.is_some() && !(128..=cap).contains(&max) {
+		if self.memory_max_mb.is_some_and(|m| Some(m) != kept_mb)
+			&& !(128..=cap).contains(&max)
+		{
 			return Err(Error::Invalid(format!(
 				"the memory limit is 128 MB to {}, what all groups may use \
 				together (the server's {} without {} for the system)",
@@ -243,9 +252,10 @@ fn cores() -> u32 {
 	std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
 }
 
-/// Checks the limits against this server.
-pub fn check_here(limits: &Limits) -> Result<()> {
-	limits.check(server_memory().0, cores())
+/// Checks the limits against this server, `kept_mb` is the memory limit
+/// the group has now.
+pub fn check_here(limits: &Limits, kept_mb: Option<u32>) -> Result<()> {
+	limits.check(server_memory().0, cores(), kept_mb)
 }
 
 /// The memory genco keeps for the system (the databases, nginx, mail,
@@ -523,7 +533,7 @@ mod tests {
 
 	#[test]
 	fn bounds_follow_the_server() {
-		let ok = |l: Limits| l.check(4000, 2).is_ok();
+		let ok = |l: Limits| l.check(4000, 2, None).is_ok();
 		assert!(ok(Limits::default()));
 		let mem = |mb| Limits {
 			memory_max_mb: Some(mb),
@@ -534,6 +544,9 @@ mod tests {
 		// what all groups may use together, a quarter stays for the system
 		assert!(ok(mem(3000)));
 		assert!(!ok(mem(3001)));
+		// one it had before the cap stays
+		assert!(mem(3500).check(4000, 2, Some(3500)).is_ok());
+		assert!(mem(3600).check(4000, 2, Some(3500)).is_err());
 		// a soft limit above the max
 		assert!(!ok(Limits {
 			memory_high_mb: Some(2048),

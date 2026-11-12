@@ -3,7 +3,8 @@
 //! own limits add up to more than the RAM run out among themselves. The
 //! shared services get a low OOM score: when the kernel has to kill
 //! outside the groups after all, it picks something else than the
-//! databases, nginx, mail or genco.
+//! databases, nginx or mail. Not genco: what it starts (the agent's
+//! commands, imports and deploys as the group's user) would inherit it.
 
 use super::*;
 
@@ -20,7 +21,6 @@ const PROTECTED: &[&str] = &[
 	"dovecot.service",
 	"rspamd.service",
 	"redis-server.service",
-	"genco.service",
 ];
 /// What they get, the kernel's scale goes from -1000 (never) to 1000.
 const OOM_SCORE: i32 = -600;
@@ -129,7 +129,7 @@ mod tests {
 		assert!(protected("postgresql@15-main.service"));
 		assert!(protected("postfix@-.service"));
 		assert!(protected("postfix.service"));
-		assert!(protected("genco.service"));
+		assert!(!protected("genco.service"));
 		assert!(!protected("genco-shop-php8.4.service"));
 		assert!(!protected("postgresql.service.d"));
 		assert!(!protected("cron.service"));

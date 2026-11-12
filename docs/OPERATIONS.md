@@ -443,9 +443,11 @@ RAM, at least 768 MB, at most half (3.9 GB of RAM: 2.9 GB for the
 groups). So the groups' own limits may add up to far more than the RAM,
 groups rarely peak together; when they do, the kernel takes memory back
 from them and kills within the groups, never the databases, nginx, mail
-or genco. Those also get a low OOM score (`OOMScoreAdjust=-600`, a
-drop-in `genco-memory.conf` per service and set on their running
-processes), in case the kernel has to kill outside the groups after all.
+or genco. The shared services (not genco, whose children such as imports
+and the agent's commands would inherit it) also get a low OOM score
+(`OOMScoreAdjust=-600`, a drop-in `genco-memory.conf` per service and set
+on their running processes), in case the kernel has to kill outside the
+groups after all.
 The group's General tab shows what it uses now and at most in the last
 24 hours next to its limit. The minute check alerts on real shortage
 instead of the sum of limits: when every task waited for memory in 10%

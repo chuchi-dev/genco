@@ -565,6 +565,24 @@ export type Stats = {
 	domains: { name: string; requests: number; errors: number; tx: number }[];
 };
 
+export type MemoryUsage = {
+	memory: number | null;
+	peak: number | null;
+	limit: number | null;
+};
+
+/** The memory now, the most over the stats' range and the limit. */
+export function memoryUsage(s: Stats): MemoryUsage {
+	const memory = s.points
+		.map(p => p.memory)
+		.filter((m): m is number => m !== null);
+	return {
+		memory: memory.at(-1) ?? null,
+		peak: memory.length ? Math.max(...memory) : null,
+		limit: s.memoryLimit,
+	};
+}
+
 export type TopPage = {
 	path: string;
 	requests: number;

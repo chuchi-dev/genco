@@ -4,7 +4,7 @@
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use std::sync::Arc;
@@ -403,7 +403,15 @@ pub fn set_php(conn: &Connection, id: i64, php: &PhpSettings) -> Result<()> {
 
 /// Checks the limits against the server and stores them.
 pub fn set_limits(conn: &Connection, id: i64, limits: &Limits) -> Result<()> {
-	limits::check_here(limits)?;
+	let kept: Option<u32> = conn
+		.query_row(
+			"SELECT memory_max_mb FROM domain_groups WHERE id = ?1",
+			[id],
+			|r| r.get(0),
+		)
+		.optional()?
+		.flatten();
+	limits::check_here(limits, kept)?;
 	conn.execute(
 		"UPDATE domain_groups SET memory_max_mb = ?1, memory_high_mb = ?2,
 		cpu_percent = ?3, tasks_max = ?4 WHERE id = ?5",
