@@ -186,6 +186,17 @@ export type Group = {
 	schedules: Schedule[];
 	php: PhpSettings;
 	limits: Limits & { defaults: LimitDefaults };
+	/** stopped because it looks compromised */
+	quarantine: Quarantine | null;
+};
+
+/** a group in quarantine: services stopped, sites answer 503, no SMTP
+ * login, no deploys */
+export type Quarantine = {
+	reason: string;
+	/** an admin, `agent`, `terminal` */
+	by: string;
+	at: number;
 };
 
 /** what a group's slice may use, null is the default */

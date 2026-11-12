@@ -37,6 +37,7 @@ mod peers;
 mod pg;
 mod procs;
 mod proposals;
+mod quarantine;
 mod render;
 mod routines;
 mod runner;
@@ -45,6 +46,7 @@ mod secrets;
 mod senders;
 mod serve;
 mod setup;
+mod signals;
 mod stats;
 mod status;
 mod tokens;
@@ -450,6 +452,12 @@ async fn run(args: Args) -> Result<(), String> {
 			println!("{msg}");
 			apply_cmd(cfg).await
 		}
+		Cmd::Group(cli::GroupCmd::Quarantine { name, reason }) => {
+			quarantine_cmd(cfg, &name, Some(&reason)).await
+		}
+		Cmd::Group(cli::GroupCmd::Unquarantine { name }) => {
+			quarantine_cmd(cfg, &name, None).await
+		}
 		Cmd::Group(cmd) => edit(cfg, |_, conn| cli::group(conn, cmd)),
 		Cmd::Domain(cmd) => edit(cfg, |cfg, conn| cli::domain(cfg, conn, cmd)),
 		Cmd::Database(cli::DatabaseCmd::Import { name, file }) => {
@@ -505,6 +513,40 @@ async fn run(args: Args) -> Result<(), String> {
 			Ok(())
 		}
 	}
+}
+
+/// Puts a group in quarantine with the reason, or lifts it without; then
+/// applies.
+async fn quarantine_cmd(
+	cfg: Config,
+	name: &str,
+	reason: Option<&str>,
+) -> Result<(), String> {
+	let db = Db::open(&cfg.db_path())?;
+	let group = hosting::group_by_name(&db.conn(), name)
+		.map_err(|e| e.to_string())?
+		.ok_or(format!("no group {name}"))?;
+	match reason {
+		Some(reason) => {
+			quarantine::set(
+				&db.conn(),
+				group.id,
+				reason,
+				activity::cli_actor(),
+			)
+			.map_err(|e| e.to_string())?;
+			println!("{name} is in quarantine");
+		}
+		None => {
+			if !quarantine::lift(&db.conn(), group.id)
+				.map_err(|e| e.to_string())?
+			{
+				return Err(format!("{name} isn't in quarantine"));
+			}
+			println!("lifted the quarantine of {name}");
+		}
+	}
+	apply_cmd(cfg).await
 }
 
 /// Every command that changes something goes into the activity log, as

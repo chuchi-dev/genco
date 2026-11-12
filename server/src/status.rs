@@ -60,6 +60,8 @@ struct GroupStatus {
 	/// unit and its state (active, failed, …)
 	services: Vec<(String, String)>,
 	last_deploy: Option<Run>,
+	/// since when the group is in quarantine (quarantine.rs)
+	quarantined_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -247,6 +249,7 @@ async fn status(
 		groups.push(GroupStatus {
 			domains: g.domains.iter().map(|d| d.name.clone()).collect(),
 			databases: g.databases.iter().map(|d| d.name.clone()).collect(),
+			quarantined_at: g.quarantine.as_ref().map(|q| q.at),
 			name: g.name,
 			client,
 			services,

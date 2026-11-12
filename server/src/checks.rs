@@ -12,6 +12,7 @@ use crate::agent::Runner;
 use crate::conversations::{self as convs, Kind, MessageData};
 use crate::db::{Db, now};
 use crate::hosting::{self, Group};
+use crate::stats::StatsDb;
 use crate::util::sh;
 
 const ALERT: &str = include_str!("agent/alert.md");
@@ -32,7 +33,7 @@ pub struct Problem {
 }
 
 impl Problem {
-	fn new(key: impl Into<String>, detail: impl Into<String>) -> Self {
+	pub fn new(key: impl Into<String>, detail: impl Into<String>) -> Self {
 		Self {
 			key: key.into(),
 			detail: detail.into(),
@@ -40,23 +41,27 @@ impl Problem {
 		}
 	}
 
-	fn minutes(mut self, minutes: u32) -> Self {
+	pub fn minutes(mut self, minutes: u32) -> Self {
 		self.minutes = minutes;
 		self
 	}
 }
 
-/// How many minutes in a row each problem was seen.
+/// How many minutes in a row each problem was seen, and the state of the
+/// signs of a compromised group.
 #[derive(Default)]
 pub struct Checker {
 	seen: HashMap<String, u32>,
+	signals: crate::signals::Signals,
 }
 
 impl Checker {
 	/// One round: runs the checks, records the problems and starts an
 	/// alert for the new ones.
-	pub async fn round(&mut self, db: &Db, runner: &Runner) {
-		let found = find(db).await;
+	pub async fn round(&mut self, db: &Db, stats: &StatsDb, runner: &Runner) {
+		let mut found = find(db).await;
+		let groups = hosting::groups(&db.conn()).unwrap_or_default();
+		found.extend(self.signals.find(&groups, Some(stats)).await);
 		let keys: HashSet<&str> =
 			found.iter().map(|p| p.key.as_str()).collect();
 		self.seen.retain(|k, _| keys.contains(k.as_str()));
@@ -199,12 +204,18 @@ async fn failed_units() -> Vec<Problem> {
 /// A site counts as down when nginx can't be reached or it answers with
 /// an error 500 or above for three minutes.
 async fn sites(groups: &[Group]) -> Vec<Problem> {
-	// an app before its first deploy answers 502, nobody waits for it yet
-	let domains = groups.iter().flat_map(|g| {
-		g.domains.iter().filter(|d| {
-			!crate::render::has_app(d) || crate::render::app_ready(&g.name, d)
-		})
-	});
+	// an app before its first deploy answers 502, nobody waits for it yet;
+	// a group in quarantine answers 503 on purpose
+	let domains =
+		groups
+			.iter()
+			.filter(|g| g.quarantine.is_none())
+			.flat_map(|g| {
+				g.domains.iter().filter(|d| {
+					!crate::render::has_app(d)
+						|| crate::render::app_ready(&g.name, d)
+				})
+			});
 	let checks = domains.map(|d| async move {
 		let (scheme, port) = if crate::host::has_cert(&d.name) {
 			("https", 443)
@@ -402,6 +413,7 @@ fn jobs(conn: &Connection) -> rusqlite::Result<Vec<Problem>> {
 pub fn spawn(
 	cfg: std::sync::Arc<crate::config::Config>,
 	db: Db,
+	stats: StatsDb,
 	runner: Runner,
 	events: crate::events::Events,
 ) {
@@ -411,7 +423,7 @@ pub fn spawn(
 		tick.tick().await;
 		loop {
 			tick.tick().await;
-			checker.round(&db, &runner).await;
+			checker.round(&db, &stats, &runner).await;
 			crate::activity::prune(&db.conn());
 			crate::job::prune(&db);
 			crate::routines::due(&db, &runner).await;

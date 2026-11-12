@@ -115,14 +115,24 @@ pub fn files(
 	// without a userdb, they can send but never open a mailbox
 	let mut smtp =
 		"# written by genco, changes here are overwritten\n".to_string();
-	for s in domains.iter().flat_map(|d| &d.send_only_addresses) {
-		smtp.push_str(&format!("{}:{}\n", s.address, s.password_hash));
+	// a group in quarantine sends nothing (quarantine.rs)
+	let quarantined = |group_id: i64| {
+		groups
+			.iter()
+			.any(|g| g.id == group_id && g.quarantine.is_some())
+	};
+	for d in domains.iter().filter(|d| !quarantined(d.group_id)) {
+		for s in &d.send_only_addresses {
+			smtp.push_str(&format!("{}:{}\n", s.address, s.password_hash));
+		}
 	}
 	for g in groups.iter().filter(|g| !g.mail_domains.is_empty()) {
 		let Some((password, hash)) = &g.smtp else {
 			continue;
 		};
-		smtp.push_str(&format!("{}:{hash}\n", smtp_user(&g.name)));
+		if g.quarantine.is_none() {
+			smtp.push_str(&format!("{}:{hash}\n", smtp_user(&g.name)));
+		}
 		files.push(File {
 			path: smtp_password_path(&g.name),
 			content: format!("{password}\n"),

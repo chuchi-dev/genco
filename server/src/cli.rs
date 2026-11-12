@@ -74,6 +74,17 @@ pub enum GroupCmd {
 	AdoptLimits { name: String },
 	/// Print the public key the group deploys with, for the repository
 	DeployKey { name: String },
+	/// Stop a group that looks compromised: its services, workers and
+	/// schedules stop, its sites answer 503, its SMTP login and deploys
+	/// are off; files, databases and mailboxes stay. Applies at once
+	Quarantine {
+		name: String,
+		/// what was found, the admins see it
+		#[clap(long)]
+		reason: String,
+	},
+	/// Lift the quarantine of a group and start everything again
+	Unquarantine { name: String },
 }
 
 #[derive(Debug, Parser)]
@@ -391,7 +402,11 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 		tx.commit()?;
 		return Ok(msg);
 	}
-	if let GroupCmd::DeployKey { .. } | GroupCmd::AdoptLimits { .. } = cmd {
+	if let GroupCmd::DeployKey { .. }
+	| GroupCmd::AdoptLimits { .. }
+	| GroupCmd::Quarantine { .. }
+	| GroupCmd::Unquarantine { .. } = cmd
+	{
 		unreachable!("main runs them");
 	}
 	let GroupCmd::Add { name, client } = cmd else {

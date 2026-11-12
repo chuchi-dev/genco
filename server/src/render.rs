@@ -615,6 +615,12 @@ fn nginx_site(group: &Group, d: &Domain, cert: bool) -> String {
 	// (also in the public folder of an app)
 	body.push_str("\tdisable_symlinks if_not_owner;\n");
 
+	// nothing of the group's runs or is served, a redirect has nothing
+	if group.quarantine.is_some() && d.kind != Kind::Redirect {
+		body.push_str(QUARANTINE_PAGE);
+		return server_blocks(name, cert, &body);
+	}
+
 	match d.kind {
 		Kind::Static => body.push_str(&format!(
 			"	root {root};
@@ -702,6 +708,15 @@ fn nginx_site(group: &Group, d: &Domain, cert: bool) -> String {
 	push_extra(&mut body, d);
 	server_blocks(name, cert, &body)
 }
+
+/// What every page of a site in quarantine answers.
+const QUARANTINE_PAGE: &str = "
+	location / {
+		default_type text/html;
+		add_header Retry-After 3600 always;
+		return 503 '<!doctype html><meta charset=utf-8><title>Maintenance</title><p>This site is down for maintenance.</p>';
+	}
+";
 
 /// nginx serves the files of the public folder itself, everything else
 /// goes to the app.
@@ -1175,6 +1190,29 @@ mod tests {
 			.find(|f| f.path == Path::new(path))
 			.unwrap_or_else(|| panic!("no file {path}"))
 			.content
+	}
+
+	#[test]
+	fn a_group_in_quarantine_serves_only_the_maintenance_page() {
+		let mut g = group(vec![
+			domain(1, "shop.ch", Kind::Php),
+			domain(2, "app.shop.ch", Kind::Node),
+			domain(3, "old.shop.ch", Kind::Redirect),
+		]);
+		g.quarantine = Some(crate::quarantine::Quarantine {
+			reason: "miner".into(),
+			by: "agent".into(),
+			at: 0,
+		});
+		let files = group_files(&g, &HashSet::new());
+		for site in ["shop.ch", "app.shop.ch"] {
+			let conf = find(&files, &format!("/etc/nginx/genco/{site}.conf"));
+			assert!(conf.contains("return 503"), "{conf}");
+			assert!(!conf.contains("fastcgi_pass"), "{conf}");
+			assert!(!conf.contains("proxy_pass"), "{conf}");
+		}
+		let redirect = find(&files, "/etc/nginx/genco/old.shop.ch.conf");
+		assert!(!redirect.contains("return 503"), "{redirect}");
 	}
 
 	#[test]

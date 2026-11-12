@@ -10,12 +10,15 @@
 	import { GROUP_TABS } from '@/lib/groupTabs';
 	import {
 		KIND_NAMES,
+		del,
+		formatTime,
 		get,
 		newest,
+		post,
 		saveGroup,
 		type ConfigFile,
 	} from '@/lib/api';
-	import { dialogs, requestDelete } from '@/lib/dialogs.svelte';
+	import { dialogs, message, requestDelete } from '@/lib/dialogs.svelte';
 	import { go } from '@/lib/router.svelte';
 	import Button from '@/components/win/Button.svelte';
 	import Form from '@/components/win/Form.svelte';
@@ -96,6 +99,30 @@
 		);
 	});
 
+	/** Puts the group in quarantine or lifts it, apply runs right away. */
+	async function quarantine() {
+		try {
+			if (group.quarantine) {
+				const yes = await message.confirm(
+					'Lift Quarantine',
+					`Start the services of ${group.name} again and serve its sites? Only when the cause is removed.`,
+				);
+				if (!yes) return;
+				await del(`/groups/${group.id}/quarantine`);
+			} else {
+				const reason = await message.ask(
+					'Quarantine',
+					`Stop every service of ${group.name}, its sites answer 503, its SMTP login and deploys are off. Files, databases and mailboxes stay. Why?`,
+				);
+				if (!reason) return;
+				await post(`/groups/${group.id}/quarantine`, { reason });
+			}
+			await tree.load();
+		} catch (e: any) {
+			message.show('Quarantine', e.message);
+		}
+	}
+
 	async function save() {
 		const n = (v: string) => {
 			const x = Number(v);
@@ -121,6 +148,13 @@
 	selected={tab}
 	onselect={t => go(`/groups/${group.id}/${t}`, true)}
 >
+	{#if group.quarantine}
+		<p class="error">
+			In quarantine since {formatTime(group.quarantine.at, true)}
+			({group.quarantine.by}): {group.quarantine.reason}. Its services are
+			stopped, its sites answer 503, its SMTP login and deploys are off.
+		</p>
+	{/if}
 	{#if tab === 'general'}
 		<dl class="props">
 			<dt>Linux user:</dt>
@@ -193,6 +227,9 @@
 		{/if}
 		<hr class="groove" />
 		<div class="row-buttons">
+			<Button onclick={quarantine}>
+				{group.quarantine ? 'Lift Quarantine…' : 'Quarantine…'}
+			</Button>
 			<Button
 				onclick={() =>
 					requestDelete(

@@ -366,6 +366,44 @@ window answers with an error. Top up the key, or put another one into
 `openrouter-key = "..."` as the fallback. Then run
 `systemctl restart genco`.
 
+### Quarantine
+
+A group that looks compromised (a miner, a web shell, spam, malware on
+its sites) can be put in quarantine: on the group's General tab
+(Quarantine…, with the reason), or `genco group quarantine <group>
+--reason "..."`. apply runs at once and stops and disables its PHP-FPM,
+apps, workers and schedules (and whatever else runs in its slice), its
+sites answer `503` with a small maintenance page (redirect domains stay),
+its SMTP login and send-only addresses stop working and deploys and
+rollbacks are refused. Its files, databases and mailboxes stay as they
+are, mail to its mailboxes still arrives. The group's page shows since
+when, by whom and why; the minute check doesn't report its sites while
+it lasts. Lift Quarantine… or `genco group unquarantine <group>` starts
+everything again.
+
+genco's agent may do both itself: it quarantines a group when an alert
+shows a clear attack and tells the admins (attention), and lifts it when
+an admin asks (in the chat or an approved plan) or once it removed the
+cause and checked the group's files and processes.
+
+The minute check looks for signs of a compromised group and starts an
+alert for genco's agent, it never acts on its own:
+
+- the group uses 90% of its CPU limit for 10 minutes, not while it
+  deploys (a miner);
+- a process of the group runs a program from `/tmp`, `/var/tmp`,
+  `/dev/shm`, or one that was deleted (outside `/usr`);
+- a shell, netcat, perl or python runs under the group's PHP-FPM for two
+  minutes (a web shell);
+- the group keeps a connection to a port of mining pools or IRC bots
+  (3333, 4444, 5555, 6666, 6667, 7777, 9999, 14433, 14444, 45560, 45700);
+- its SMTP login sent at least 300 mails today and more than five times
+  the most of a day in the week before (spam);
+- new PHP files (`.php*`, `.phtml`, `.phar`) of the last 20 minutes in an
+  `upload`, `uploads`, `media` or `files` folder of the group (not in
+  `vendor`, `node_modules`, `.git`), looked for every 15 minutes at the
+  lowest priority and not while it deploys.
+
 ### Group limits
 
 Every group runs in its own systemd slice, `genco-<group>.slice`: all its

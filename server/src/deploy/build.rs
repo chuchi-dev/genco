@@ -13,6 +13,8 @@ pub(super) async fn deploy(ctx: &Ctx, id: i64, log: &mut Log) -> Res<()> {
 			.map_err(|e| e.to_string())?;
 		(d, group)
 	};
+	// queued before the group went into quarantine
+	crate::quarantine::check_deploy(&group)?;
 	let base = render::group_dir(&group.name);
 	let shell = GroupShell::new(&group);
 	let stamp = util::stamp().await;
