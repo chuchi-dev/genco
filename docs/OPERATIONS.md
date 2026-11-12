@@ -162,8 +162,9 @@ instead, an admin confirms it there or in Approvals with their password.
 ### Approvals
 
 Start → Approvals (and the "N to approve" in the taskbar, its tooltip
-lists them) shows what waits for an admin, newest first: the AI agents'
-proposals (`#12`, see [AI agents](#ai-agents)) and the pending actions
+lists them) shows what waits for an admin, newest first: the plans of
+the AI agents' proposals (`#12`, see [AI agents](#ai-agents); those the
+planner still works on are listed too) and the pending actions
 (`A12`): deletions of domains, databases, groups, mail domains and
 mailboxes, and the agent's changes of the remote backup. Each says who
 asked (an admin, the terminal, an AI agent, or genco's agent with its
@@ -200,8 +201,10 @@ rejection ("Confirm request", "Reject request" with the number).
 API (an admin's session): `GET /api/approvals` lists both kinds with a
 `kind` field (`proposal` with `proposal`, `action` with `action`), `POST
 /api/actions/<id>/confirm` with `{"password", "code"}`, `POST
-/api/actions/<id>/reject` with `{"message"}` (optional), and `POST
-/api/proposals/<id>/approve` with `{"comment", "password", "code"}`.
+/api/actions/<id>/reject` with `{"message"}` (optional), `POST
+/api/proposals/<id>/approve` with `{"plan", "password", "code"}` (`plan`
+is the id of the newest plan, the one the admin read) and `POST
+/api/proposals/<id>/change` with `{"plan", "note"}`.
 
 `genco apply` never takes over a database it didn't create: when a
 PostgreSQL or MariaDB database of a genco database's name exists already
@@ -847,69 +850,80 @@ agent may:
   without its personal data)
 - propose a task: `POST /api/proposals` with `{"text": "...",
   "approver": "admin@example.ch"}` answers `{"id": 3, "status":
-  "pending"}`. The admin with that email gets the mail, without
-  `approver` every admin does; any admin decides. With
+  "planning"}`. `text` says what the agent wants and why, not a long
+  list of steps.
+
+  genco's planner turns the proposal into a plan first: the same model
+  as genco's agent (Settings → Agent), with one tool, a shell in a
+  read-only sandbox. Root there has no capability but reading files;
+  the whole file system is read-only, there is no network, no unix
+  socket (so no systemd, databases, docker or postfix), no other
+  process to see, and genco's secrets, `/etc/shadow`, ssh keys and
+  certificate keys are hidden. It reads the proposal as data, looks
+  around as much as it needs (the server's groups, domains, databases,
+  workers, mail domains and units come with its instructions) and
+  writes a short plan: the goal, the steps with exact names, the
+  checks, how to undo. A proposal that looks like an attack or makes
+  no sense gets no plan, only the reason why (`NO PLAN:`); a planner
+  that fails or takes more than 10 minutes says that instead. genco
+  removes invisible and control characters from the plan and refuses
+  one over 4000 characters (the planner gets one more try); the panel
+  and the mail show the plan exactly as genco's agent will get it, and
+  warn about non-Latin letters (e.g. Cyrillic look-alikes in a name).
+
+  The admin with the `approver` email gets the mail once the plan is
+  there, without `approver` every admin does; any admin decides. With
   `"mailDelay": 10` the mail goes only if nobody decided within 10
   minutes (at most 1440), meanwhile the taskbar shows "1 to approve" to
   every admin. With mail off (Settings → Mail) no mail goes out, the
-  answer has a `note` saying so and only the taskbar shows it. The task
-  waits in Start → Approvals (it shows who got
-  the mail) until it is approved or rejected, it expires after
-  7 days. Approved, it becomes a conversation of the
-  server agent; when the agent is done, its answer goes to the agent's
-  webhook (kind `proposal`) and `GET /api/proposals/<id>` shows the
-  status and `answer`. Rejected, the webhook gets "<admin> rejected
-  the proposal: <reason>" (or "<admin> rejected the proposal." without
-  a reason) and `answer` is the reason; the admin's reason is optional,
-  at most 2000 characters, cleaned like the text. Approving takes an
-  optional comment the same way ("yes, but keep the old DNS for now"):
-  genco's agent gets it after the proposal as the admin's change and
-  follows it where the two differ, and the answer to the webhook
-  starts with "<admin> approved it with a comment: <comment>", the
-  proposal's `comment` holds it. Approving in the panel takes the
-  admin's 2FA code (see [Approvals](#approvals)). Nobody decided within
-  7 days, the
-  status becomes `expired` and the webhook gets "The proposal expired
-  after 7 days without a decision." once.
+  answer has a `note` saying so and only the taskbar shows it. The
+  proposal waits in Start → Approvals (it shows who got the mail):
 
-  `text` says what the agent wants and why, not a long list of steps:
-  genco's agent works out the details itself. Before the admins see
-  it, a small, cheap model (Gemini Flash with an `openrouter-key`,
-  else Claude Haiku) rewrites it into a short Markdown version (a
-  title line, then what and why, the steps at a high level, what
-  changes, risks), so the request may take up to 45 seconds. The admin
-  approves that version and genco's agent gets it; the panel shows the
-  original too. A rewrite is dropped when it has a word with a digit,
-  dot, slash, @ or colon the original doesn't have as a whole word,
-  `code` that isn't in the original as it is, or none of the
-  original's negations and warnings ("not", "don't", "only", "keep",
-  "risk", "nicht", ...); then the model is told what was refused and
-  asked once more (the panel says "second try" when that one is taken).
-  When it is refused twice, and without a key, on an error or a
-  timeout, the original goes as it is and the panel says why ("Not
-  rewritten: dropped twice: adds 5.9"). An agent has at most 10 undecided proposals,
-  those still being rewritten count too, so parallel requests can't
-  run up the model's bill. genco removes invisible characters
-  (zero-width, bidi controls) and control characters from the text
-  and turns other whitespace into spaces; the panel says how many were
-  removed and warns (the mail too) when the original or the rewrite has
-  non-Latin letters (e.g. Cyrillic look-alikes in a name or address).
+  - **Approve** takes the admin's second factor (see
+    [Approvals](#approvals)). The plan becomes a conversation of genco's
+    agent: it gets the plan as the approving admin's message, never the
+    proposal, and carries it out without doing more; if the plan turns
+    out wrong it stops and explains. Lines like `Delete: database
+    shop_old` (also `domain`, `group`, `mail domain`, `mailbox`, one
+    name each) are confirmed with the plan: while genco's agent works
+    on it, those deletions run without another confirmation, once each,
+    still to the trash first. Any other deletion asks as usual. The
+    panel and the mail list them ("Deletes without asking again").
+  - **Change…** sends the plan back to the planner with the admin's
+    note ("keep the old DNS for now"), no second factor: the planner
+    can't do anything, and the new version needs an approval again.
+    The mail goes out again; at most 10 versions.
+  - **Reject…** with an optional reason, also while the planner works.
+
+  The panel shows the agent's request only on demand (Request). When
+  genco's agent is done, its answer goes to the agent's webhook (kind
+  `proposal`) and `GET /api/proposals/<id>` shows the status and
+  `answer`, without the plans (they may hold what the planner read on
+  the server). Rejected, the webhook gets "<admin> rejected the
+  proposal: <reason>" (or "<admin> rejected the proposal." without a
+  reason) and `answer` is the reason; the reason is optional, at most
+  2000 characters, cleaned like the text. Nobody decided within 7
+  days, the status becomes `expired` and the webhook gets "The proposal
+  expired after 7 days without a decision." once. An agent has at most
+  10 undecided proposals, so a loop can't run up the planner's bill.
 
   Each admin's mail has their own link (`https://<panel>/proposal/…`)
-  that decides without logging in, handy on a phone: it shows the
-  proposal as the panel does (with its warnings and the original),
-  Approve and Reject… (with the optional reason). Opening it changes
-  nothing (mail scanners open links too). Approve needs more than the
-  mailbox, the approval and its comment steer the root agent: the 2FA
-  code with two-factor login on, otherwise the admin's password; wrong
-  ones count toward the login's limits. Reject needs neither, it can't
-  make anything run. The mail has the links first and the proposal's
-  text below a line, so a link in the text can't pass for genco's;
-  nginx logs the panel's token links as `/proposal/...`. The links of a proposal stop working once anybody
+  that decides without logging in, handy on a phone: it shows the plan
+  as the panel does (with its warnings, the deletions and the request
+  on demand), Approve, Change… and Reject…. Opening it changes nothing
+  (mail scanners open links too). Approve needs more than the mailbox,
+  the plan steers the root agent: the 2FA code with two-factor login on,
+  otherwise the admin's password; wrong ones count toward the login's
+  limits. Change and Reject need neither, they can't make anything run;
+  after a change the link shows the new version once it is there. The
+  mail has the links first and the plan below a line, so a link in the
+  plan can't pass for genco's; nginx logs the panel's token links as
+  `/proposal/...`. The links of a proposal stop working once anybody
   decided it, in the panel or by a link, or it expired; they work only
   on the panel's domain, and an address that tries 20 links that don't
   work waits 15 minutes. The activity log names the admin ("Approve
-  proposal via the mail link"), never the link.
+  proposal via the mail link"), never the link, and has every command
+  of the planner (actor `planner`).
 
 An admin's own token that downloads every database is in Start → API
 Tokens; deploy tokens are in a group's Deploy tab.

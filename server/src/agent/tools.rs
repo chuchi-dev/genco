@@ -114,7 +114,7 @@ fn resolve(path: &str, workspace: &Path) -> PathBuf {
 }
 
 /// Keeps the start and the end of long outputs.
-fn truncate(s: &str) -> String {
+pub(crate) fn truncate(s: &str) -> String {
 	if s.len() <= MAX_OUTPUT {
 		return s.to_string();
 	}

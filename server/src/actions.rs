@@ -26,6 +26,7 @@ use crate::error::{Error, Result};
 use crate::events::{Event, Events};
 use crate::hosting;
 use crate::mail;
+use crate::proposals::plans;
 use crate::render;
 use crate::tokens;
 use crate::users::{self, Authed, User};
@@ -327,6 +328,14 @@ struct New {
 }
 
 async fn create(cfg: &Config, db: &Db, new: New) -> Result<Requested> {
+	// the connection mustn't be held over the await
+	let planned = match new.conversation_id {
+		Some(c) => in_plan(&db.conn(), c, new.kind, new.target_id)?,
+		None => None,
+	};
+	if let Some(planned) = planned {
+		return run_planned(cfg, db, new, planned).await;
+	}
 	let by_password = mail::off(db);
 	let domain = cfg.domain.as_deref().unwrap_or_default();
 	if domain.is_empty() && !by_password {
@@ -385,6 +394,101 @@ async fn create(cfg: &Config, db: &Db, new: New) -> Result<Requested> {
 			"Waiting for confirmation of {n}: every admin got a mail with a \
 			link to confirm it, an admin with two-factor login can confirm \
 			it in Start → Approvals too ({description})"
+		),
+		confirm: None,
+	})
+}
+
+/// The approved plan genco's agent works on in `conversation` confirms
+/// this deletion, if it names it and it didn't run yet (plans.rs).
+fn in_plan(
+	conn: &Connection,
+	conversation: i64,
+	kind: Kind,
+	target_id: i64,
+) -> Result<Option<plans::Confirmed>> {
+	let Some(name) = target_name(conn, kind, target_id)? else {
+		return Ok(None);
+	};
+	let deletion = plans::Deletion {
+		kind,
+		name: name.to_lowercase(),
+	};
+	plans::confirmed(conn, conversation, &deletion)
+}
+
+/// The name a plan's `Delete:` line gives the target, `None` for what
+/// isn't a deletion.
+fn target_name(
+	conn: &Connection,
+	kind: Kind,
+	id: i64,
+) -> Result<Option<String>> {
+	let groups = hosting::groups(conn)?;
+	let mail = || groups.iter().flat_map(|g| &g.mail_domains);
+	let name = match kind {
+		Kind::Domain => hosting::find_domain(conn, |d| d.id == id)?.1.name,
+		Kind::Database => hosting::find_database(conn, |d| d.id == id)?.1.name,
+		Kind::Group => {
+			let g = groups.iter().find(|g| g.id == id);
+			g.ok_or(Error::NotFound)?.name.clone()
+		}
+		Kind::MailDomain => {
+			let d = mail().find(|d| d.id == id);
+			d.ok_or(Error::NotFound)?.name.clone()
+		}
+		Kind::Mailbox => {
+			let b = mail().flat_map(|d| &d.mailboxes).find(|b| b.id == id);
+			b.ok_or(Error::NotFound)?.address.clone()
+		}
+		Kind::RemoteSet | Kind::RemoteOff => return Ok(None),
+	};
+	Ok(Some(name))
+}
+
+/// Runs a deletion the approved plan confirmed: stored like any action,
+/// with the plan's line, so it runs once.
+async fn run_planned(
+	cfg: &Config,
+	db: &Db,
+	new: New,
+	planned: plans::Confirmed,
+) -> Result<Requested> {
+	let id = {
+		let conn = db.conn();
+		conn.execute(
+			"INSERT INTO pending_actions (kind, target_id, description,
+			token_hash, requested_by, status, created_at, payload,
+			conversation_id, plan_id, plan_entry)
+			VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10)",
+			params![
+				new.kind.as_str(),
+				new.target_id,
+				new.description,
+				tokens::hash(&util::random_hex(24)),
+				new.requested_by,
+				now(),
+				new.sealed,
+				new.conversation_id,
+				planned.plan_id,
+				planned.entry
+			],
+		)?;
+		conn.last_insert_rowid()
+	};
+	let action = get_one(&db.conn(), id)?;
+	let by = format!("{} (plan of proposal #{})", planned.by, planned.proposal);
+	let outcome = execute(cfg, db, &Events::new(), &action, &by).await?;
+	let done = if outcome.ok { "ran" } else { "failed" };
+	Ok(Requested {
+		message: format!(
+			"{} {done} without another confirmation: {} approved \"{}\" in \
+			the plan of proposal #{}.\n{}",
+			action.number,
+			planned.by,
+			planned.entry,
+			planned.proposal,
+			outcome.log.join("\n")
 		),
 		confirm: None,
 	})
@@ -1191,6 +1295,65 @@ mod tests {
 			describe(&conn, Kind::Database, 7),
 			Err(Error::NotFound)
 		));
+	}
+
+	#[test]
+	fn the_approved_plan_confirms_its_deletions_once() {
+		let db = Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+				VALUES ('shop', 1, 0);
+			INSERT INTO domains (group_id, name, kind, created_at)
+				VALUES (1, 'shop.ch', 'static', 0);
+			INSERT INTO domains (group_id, name, kind, created_at)
+				VALUES (1, 'keep.ch', 'static', 0);
+			INSERT INTO peers (name, key, key_hash, created_at)
+				VALUES ('noah', 'k', 'h', 0);
+			INSERT INTO conversations (title, status, created_at, updated_at)
+				VALUES ('#1', 'idle', 0, 0);
+			INSERT INTO proposals (peer_id, text, status, created_at,
+				conversation_id, decided_by)
+				VALUES (1, 'x', 'approved', 0, 1, 'Sören');
+			INSERT INTO proposal_plans (proposal_id, text, created_at)
+				VALUES (1, '1. Move it
+Delete: domain Shop.ch', 0);
+			UPDATE proposals SET plan_id = 1;",
+		)
+		.unwrap();
+
+		let planned = in_plan(&conn, 1, Kind::Domain, 1).unwrap().unwrap();
+		assert_eq!(
+			(
+				planned.entry.as_str(),
+				planned.by.as_str(),
+				planned.proposal
+			),
+			("domain shop.ch", "Sören", 1)
+		);
+		// not another domain, not another conversation
+		assert!(in_plan(&conn, 1, Kind::Domain, 2).unwrap().is_none());
+		assert!(in_plan(&conn, 2, Kind::Domain, 1).unwrap().is_none());
+
+		// once
+		conn.execute(
+			"INSERT INTO pending_actions (kind, target_id, description,
+			token_hash, requested_by, status, created_at, plan_id,
+			plan_entry) VALUES ('delete_domain', 1, 'x', 'h', 'agent',
+			'done', 0, 1, 'domain shop.ch')",
+			[],
+		)
+		.unwrap();
+		assert!(in_plan(&conn, 1, Kind::Domain, 1).unwrap().is_none());
+
+		// only while genco's agent works on the plan
+		conn.execute_batch(
+			"DELETE FROM pending_actions;
+			UPDATE proposals SET status = 'answered';",
+		)
+		.unwrap();
+		assert!(in_plan(&conn, 1, Kind::Domain, 1).unwrap().is_none());
 	}
 
 	#[test]

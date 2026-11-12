@@ -1,4 +1,4 @@
-import { get, type Approval, type PendingAction } from './api';
+import { get, type Approval, type PendingAction, type Plan } from './api';
 
 // Start → Approvals: the AI agents' proposals and the pending actions
 // (deletions, the agent's remote backup changes); the taskbar shows the
@@ -10,8 +10,14 @@ class ApprovalStore {
 		this.list = await get('/approvals');
 	}
 
+	/** what an admin can decide on now, for the taskbar */
 	get waiting(): Approval[] {
 		return this.list.filter(a => status(a) === 'pending');
+	}
+
+	/** also the proposals the planner works on */
+	get undecided(): Approval[] {
+		return this.list.filter(a => undecided(a));
 	}
 }
 
@@ -31,7 +37,18 @@ export function status(a: Approval): string {
 	return a.kind === 'proposal' ? a.proposal.status : a.action.status;
 }
 
+/** waiting for an admin or the planner */
+export function undecided(a: Approval): boolean {
+	return ['pending', 'planning'].includes(status(a));
+}
+
+/** the newest plan of a proposal, the one an admin decides on */
+export function newestPlan(a: Approval): Plan | null {
+	return a.kind === 'proposal' ? (a.proposal.plans.at(-1) ?? null) : null;
+}
+
 const PROPOSAL_STATUS: Record<string, string> = {
+	planning: 'being planned',
 	pending: 'waiting',
 	approved: 'the agent works on it',
 	answered: 'answered',
@@ -65,8 +82,9 @@ export function expiresAt(a: Approval): number {
 
 /** whether this admin can confirm it in the panel: with 2FA, or the
  * password when nothing was mailed (mailed before mail went off still
- * needs 2FA, the server says so) */
+ * needs 2FA, the server says so); a proposal needs a plan */
 export function canConfirm(a: Approval, totp: boolean, mailOff: boolean) {
+	if (a.kind === 'proposal' && newestPlan(a)?.refused !== false) return false;
 	if (totp) return true;
 	return a.kind === 'proposal' ? mailOff : a.action.byPassword;
 }
@@ -85,9 +103,18 @@ export function approvalKind(a: Approval): string {
 	return a.kind === 'proposal' ? 'Proposal' : KINDS[a.action.kind];
 }
 
-/** the first line of a proposal, the first sentence of an action */
+/** the first line of a proposal's plan (of its text before plans
+ * existed), the first sentence of an action */
 export function approvalTitle(a: Approval): string {
-	if (a.kind === 'proposal') return a.proposal.text.split('\n')[0];
+	if (a.kind === 'proposal') {
+		const plan = newestPlan(a);
+		if (!plan) {
+			if (a.proposal.status === 'planning') return 'Being planned…';
+			return a.proposal.text.split('\n')[0];
+		}
+		if (plan.refused) return `No plan: ${plan.text.split('\n')[0]}`;
+		return plan.text.split('\n')[0].replace(/^[#\s]+/, '');
+	}
 	return a.action.description.split('. ')[0].replace(/\.$/, '');
 }
 
