@@ -170,11 +170,10 @@ pub(crate) async fn serve(cfg: Config) -> Result<(), String> {
 	if let Err(e) = peers::adopt_old_webhook(&db) {
 		tracing::error!("the old notification webhook: {e}");
 	}
-	if let Err(e) = proposals::clean_pending(&db) {
-		tracing::error!("cleaning the waiting proposals: {e}");
-	}
 	let runner = Runner::new(cfg.clone(), db.clone(), events.clone());
 	runner.resume_interrupted();
+	proposals::planner(cfg.clone(), db.clone(), events.clone(), &runner)
+		.resume();
 	end_interrupted(&db)?;
 	if runner.has_llm() {
 		runner.onboard();

@@ -1,5 +1,7 @@
 mod tools;
 
+pub(crate) use tools::{output_text, truncate};
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -71,7 +73,7 @@ impl Runner {
 		}))
 	}
 
-	/// The llm client, shared with the proposals' rewrite.
+	/// The llm client, shared with the proposals' planner.
 	pub fn llm(&self) -> &Llm {
 		&self.0.llm
 	}

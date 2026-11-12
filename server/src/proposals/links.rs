@@ -1,12 +1,14 @@
 //! The personal link of each admin in a proposal's mail: it shows the
-//! proposal without a login and approves or rejects it, easy on a phone.
-//! Approving needs a second factor besides the mailbox, the approval and
-//! its comment steer genco's agent: the 2FA code, or the admin's password
-//! without 2FA, both counted per account like at the login. Rejecting
-//! needs none, it can't make anything run. Opening a link changes nothing,
-//! mail scanners fetch links. The links of a proposal stop working once it
-//! is decided, any way, or expired. They work only on the panel's domain,
-//! and links that don't work count per client address (`MAX_FAILURES`).
+//! newest plan without a login and approves it, sends it back to the
+//! planner with a change, or rejects the proposal, easy on a phone.
+//! Approving needs a second factor besides the mailbox, the approved plan
+//! steers genco's agent: the 2FA code, or the admin's password without
+//! 2FA, both counted per account like at the login. A change or a
+//! rejection needs none, neither can make anything run. Opening a link
+//! changes nothing, mail scanners fetch links. The links of a proposal
+//! stop working once it is decided, any way, or expired. They work only
+//! on the panel's domain, and links that don't work count per client
+//! address (`MAX_FAILURES`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +20,10 @@ use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use serde::{Deserialize, Serialize};
 
-use super::{Proposal, RejectReq, admin_note, approved, get_one, reject_as};
+use super::{
+	ChangeReq, Proposal, RejectReq, approved, changed, current_plan, get_one,
+	open, planner, reject_as,
+};
 use crate::AppState;
 use crate::activity;
 use crate::agent::Runner;
@@ -48,7 +53,7 @@ pub(super) fn create(
 	Ok(token)
 }
 
-/// The waiting proposal of a link and its admin; `NotFound` for a link
+/// The undecided proposal of a link and its admin; `NotFound` for a link
 /// that doesn't (or no longer) work.
 fn find(conn: &Connection, token: &str) -> Result<(Proposal, User)> {
 	let (proposal_id, user_id): (i64, i64) = conn
@@ -61,7 +66,7 @@ fn find(conn: &Connection, token: &str) -> Result<(Proposal, User)> {
 		.optional()?
 		.ok_or(Error::NotFound)?;
 	let p = get_one(conn, proposal_id)?;
-	if p.status != "pending" {
+	if !open(&p.status) {
 		return Err(Error::NotFound);
 	}
 	Ok((p, users::by_id(conn, user_id)?))
@@ -112,7 +117,8 @@ struct LinkView {
 	totp: bool,
 }
 
-/// What the link's page shows: the proposal, nothing else of the server.
+/// What the link's page shows: the proposal with its plans, nothing else
+/// of the server.
 async fn show(
 	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
@@ -129,17 +135,17 @@ async fn show(
 
 #[derive(Debug, Default, Deserialize)]
 struct ApproveReq {
-	/// the admin's change to the task, empty for none
+	/// the plan the admin read
 	#[serde(default)]
-	comment: String,
+	plan: i64,
 	/// the session-less step-up: the code with 2FA, else the password
 	#[serde(flatten)]
 	auth: users::StepUp,
 }
 
-/// Approves as the link's admin with the second factor, returns the
-/// conversation for the runner. The comment is checked first: a comment
-/// too long mustn't use up the code.
+/// Approves the plan as the link's admin with the second factor, returns
+/// the conversation for the runner. The plan is checked first: an old
+/// version mustn't use up the code.
 async fn approve_link(
 	cfg: &Config,
 	db: &Db,
@@ -149,7 +155,7 @@ async fn approve_link(
 	req: &ApproveReq,
 ) -> Result<i64> {
 	let (p, user) = check(cfg, db, headers, token).await?;
-	let comment = admin_note(&req.comment)?;
+	current_plan(&p, req.plan)?;
 	let action = "Approve proposal via the mail link";
 	if let Err(e) = users::verify_step_up(db, &user, &req.auth).await {
 		log(&db.conn(), &user, action, &p, false);
@@ -157,8 +163,7 @@ async fn approve_link(
 	}
 
 	let conn = db.conn();
-	let conversation =
-		approved(&conn, events, p.id, &user, comment.as_deref())?;
+	let conversation = approved(&conn, events, p.id, &user, req.plan)?;
 	log(&conn, &user, action, &p, true);
 	Ok(conversation)
 }
@@ -175,6 +180,44 @@ async fn approve(
 	let req = req.unwrap_or_default().0;
 	let c = approve_link(&cfg, &db, &events, &headers, &token, &req).await?;
 	runner.start(c);
+	Ok(Json(()))
+}
+
+/// Sends the plan back to the planner as the link's admin, no code needed:
+/// the new plan needs an approval again. Returns the proposal for the
+/// planner.
+async fn change_link(
+	cfg: &Config,
+	db: &Db,
+	headers: &HeaderMap,
+	token: &str,
+	req: &ChangeReq,
+) -> Result<i64> {
+	let (p, user) = check(cfg, db, headers, token).await?;
+	let conn = db.conn();
+	changed(&conn, p.id, &user, req)?;
+	log(
+		&conn,
+		&user,
+		"Ask for a changed plan via the mail link",
+		&p,
+		true,
+	);
+	Ok(p.id)
+}
+
+async fn change(
+	State(cfg): State<Arc<Config>>,
+	State(db): State<Db>,
+	State(events): State<Events>,
+	State(runner): State<Runner>,
+	headers: HeaderMap,
+	Path(token): Path<String>,
+	Json(req): Json<ChangeReq>,
+) -> Result<Json<()>> {
+	let id = change_link(&cfg, &db, &headers, &token, &req).await?;
+	events.send(crate::events::Event::Approvals);
+	planner(cfg, db, events, &runner).start(id);
 	Ok(Json(()))
 }
 
@@ -216,6 +259,7 @@ pub(super) fn routes() -> Router<AppState> {
 	Router::new()
 		.route("/proposal-links/{token}", get(show))
 		.route("/proposal-links/{token}/approve", post(approve))
+		.route("/proposal-links/{token}/change", post(change))
 		.route("/proposal-links/{token}/reject", post(reject))
 }
 
@@ -224,7 +268,8 @@ mod tests {
 	use totp_rs::{Algorithm, Secret, TOTP};
 
 	use super::*;
-	use crate::proposals::{MAX_NOTE, expire, insert, rewrite::Draft};
+	use crate::proposals::expire;
+	use crate::proposals::tests::{add, newest};
 
 	const DOMAIN: &str = "panel.example.ch";
 	const PASSWORD: &str = "the admin's password";
@@ -279,7 +324,8 @@ mod tests {
 		move || totp.generate((now() / 1000) as u64)
 	}
 
-	/// A waiting proposal of the agent, for `approver` or every admin.
+	/// A proposal of the agent with one plan, waiting for `approver` or
+	/// every admin. Its plan has its id: every test proposal has one.
 	fn proposal(conn: &Connection, approver: Option<i64>) -> i64 {
 		conn.execute(
 			"INSERT OR IGNORE INTO peers (id, name, key, key_hash, created_at)
@@ -287,29 +333,30 @@ mod tests {
 			[],
 		)
 		.unwrap();
-		let flights = super::super::InFlight(Default::default());
-		let draft = Draft::new("Update Craft").unwrap();
-		insert(conn, flights.reserve(conn, 1).unwrap(), &draft, approver)
-			.unwrap()
+		let id = add(conn, 1, "Update Craft", approver).unwrap();
+		assert_eq!(newest(conn, id), id);
+		id
 	}
 
-	fn code(code: &str) -> ApproveReq {
+	/// Approves the plan `plan` with the code.
+	fn code(code: &str, plan: i64) -> ApproveReq {
 		ApproveReq {
+			plan,
 			auth: users::StepUp {
 				code: code.into(),
 				..Default::default()
 			},
-			..Default::default()
 		}
 	}
 
-	fn password(password: &str) -> ApproveReq {
+	/// Approves the plan `plan` with the password.
+	fn password(password: &str, plan: i64) -> ApproveReq {
 		ApproveReq {
+			plan,
 			auth: users::StepUp {
 				password: password.into(),
 				..Default::default()
 			},
-			..Default::default()
 		}
 	}
 
@@ -391,9 +438,10 @@ mod tests {
 		let ta = create(&db.conn(), id, 821).unwrap();
 		let tb = create(&db.conn(), id, 822).unwrap();
 
-		let c = approve_link(&cfg, &db, &events, &h, &tb, &password(PASSWORD))
-			.await
-			.unwrap();
+		let c =
+			approve_link(&cfg, &db, &events, &h, &tb, &password(PASSWORD, id))
+				.await
+				.unwrap();
 		let p = get_one(&db.conn(), id).unwrap();
 		assert_eq!(p.status, "approved");
 		assert_eq!(p.decided_by.as_deref(), Some("b"));
@@ -410,15 +458,21 @@ mod tests {
 
 		// neither link works anymore, nor a decision in the panel
 		for t in [&ta, &tb] {
-			let again =
-				approve_link(&cfg, &db, &events, &h, t, &password(PASSWORD))
-					.await;
+			let again = approve_link(
+				&cfg,
+				&db,
+				&events,
+				&h,
+				t,
+				&password(PASSWORD, id),
+			)
+			.await;
 			assert!(matches!(again, Err(Error::NotFound)));
 			let again = reject_link(&cfg, &db, &events, &h, t, "").await;
 			assert!(matches!(again, Err(Error::NotFound)));
 		}
 		assert_eq!(links(&db), 0);
-		assert!(approved(&db.conn(), &events, id, &a, None).is_err());
+		assert!(approved(&db.conn(), &events, id, &a, id).is_err());
 	}
 
 	#[tokio::test]
@@ -428,7 +482,7 @@ mod tests {
 		let a = admin(&db.conn(), 831, "a");
 		let decided = proposal(&db.conn(), None);
 		let token = create(&db.conn(), decided, 831).unwrap();
-		approved(&db.conn(), &events, decided, &a, None).unwrap();
+		approved(&db.conn(), &events, decided, &a, decided).unwrap();
 		assert!(matches!(
 			check(&cfg, &db, &h, &token).await,
 			Err(Error::NotFound)
@@ -440,9 +494,15 @@ mod tests {
 		db.conn()
 			.execute("UPDATE proposals SET created_at = 0 WHERE id = ?1", [old])
 			.unwrap();
-		let tried =
-			approve_link(&cfg, &db, &events, &h, &token, &password(PASSWORD))
-				.await;
+		let tried = approve_link(
+			&cfg,
+			&db,
+			&events,
+			&h,
+			&token,
+			&password(PASSWORD, old),
+		)
+		.await;
 		assert!(matches!(tried, Err(Error::NotFound)));
 		expire(&db.conn()).unwrap();
 		assert_eq!(status(&db, old), "expired");
@@ -477,7 +537,8 @@ mod tests {
 		assert!(!user.totp);
 
 		// the mailbox alone doesn't approve
-		for req in [password(""), password("wrong"), code("123456")] {
+		for req in [password("", id), password("wrong", id), code("123456", id)]
+		{
 			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
 			assert!(tried.await.is_err());
 			assert_eq!(status(&db, id), "pending");
@@ -489,7 +550,7 @@ mod tests {
 			})
 			.unwrap();
 		assert_eq!(failed, 3);
-		approve_link(&cfg, &db, &events, &h, &token, &password(PASSWORD))
+		approve_link(&cfg, &db, &events, &h, &token, &password(PASSWORD, id))
 			.await
 			.unwrap();
 		assert_eq!(status(&db, id), "approved");
@@ -508,12 +569,12 @@ mod tests {
 		}
 
 		for _ in 0..2 {
-			let req = password("wrong");
+			let req = password("wrong", id);
 			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
 			assert!(tried.await.is_err());
 		}
 		// the two through the link used up the rest
-		let req = password(PASSWORD);
+		let req = password(PASSWORD, id);
 		let tried = approve_link(&cfg, &db, &events, &h, &token, &req).await;
 		assert!(
 			matches!(tried, Err(Error::Invalid(e)) if e.contains("too many"))
@@ -533,12 +594,12 @@ mod tests {
 		assert!(user.totp);
 
 		// the password doesn't do instead of the code
-		for req in [code(""), code("000000"), password(PASSWORD)] {
+		for req in [code("", id), code("000000", id), password(PASSWORD, id)] {
 			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
 			assert!(tried.await.is_err());
 			assert_eq!(status(&db, id), "pending");
 		}
-		approve_link(&cfg, &db, &events, &h, &token, &code(&now_code()))
+		approve_link(&cfg, &db, &events, &h, &token, &code(&now_code(), id))
 			.await
 			.unwrap();
 		assert_eq!(status(&db, id), "approved");
@@ -558,18 +619,18 @@ mod tests {
 		}
 
 		for _ in 0..2 {
-			let req = code("000000");
+			let req = code("000000", id);
 			let tried = approve_link(&cfg, &db, &events, &h, &token, &req);
 			assert!(tried.await.is_err());
 		}
-		let req = code(&now_code());
+		let req = code(&now_code(), id);
 		let tried = approve_link(&cfg, &db, &events, &h, &token, &req).await;
 		assert!(tried.is_err());
 		assert_eq!(status(&db, id), "pending");
 	}
 
 	#[tokio::test]
-	async fn a_long_comment_doesnt_use_up_the_code() {
+	async fn an_old_plan_doesnt_use_up_the_code() {
 		let db = Db::memory();
 		let (cfg, h, events) = (cfg(), headers("10.0.0.13"), Events::new());
 		let id = proposal(&db.conn(), None);
@@ -577,27 +638,35 @@ mod tests {
 		let now_code = with_2fa(&db, &a);
 		let token = create(&db.conn(), id, a.id).unwrap();
 
-		let mut req = ApproveReq {
-			comment: "x".repeat(MAX_NOTE + 1),
-			auth: users::StepUp {
-				code: now_code(),
-				..Default::default()
-			},
+		// the admin asks for a change through the link, no code needed
+		let change = ChangeReq {
+			plan: id,
+			note: "Keep the old DNS.".into(),
 		};
-		let tried = approve_link(&cfg, &db, &events, &h, &token, &req).await;
-		assert!(
-			matches!(tried, Err(Error::Invalid(e)) if e.contains("characters"))
-		);
+		let changed = change_link(&cfg, &db, &h, &token, &change).await;
+		assert_eq!(changed.unwrap(), id);
+		assert_eq!(status(&db, id), "planning");
+		let new = crate::proposals::tests::plan(&db.conn(), id, "v2");
+
+		let code = now_code();
+		let tried = approve_link(
+			&cfg,
+			&db,
+			&events,
+			&h,
+			&token,
+			&self::code(&code, id),
+		)
+		.await;
+		assert!(matches!(tried, Err(Error::Invalid(e)) if e.contains("newer")));
 		assert_eq!(status(&db, id), "pending");
 
-		// the same code still works
-		req.comment = "Keep the old DNS.".into();
-		approve_link(&cfg, &db, &events, &h, &token, &req)
+		// the same code still works for the new plan
+		approve_link(&cfg, &db, &events, &h, &token, &self::code(&code, new))
 			.await
 			.unwrap();
 		let p = get_one(&db.conn(), id).unwrap();
-		assert_eq!(p.status, "approved");
-		assert_eq!(p.comment.as_deref(), Some("Keep the old DNS."));
+		assert_eq!((p.status.as_str(), p.plan_id), ("approved", Some(new)));
 	}
 
 	#[tokio::test]

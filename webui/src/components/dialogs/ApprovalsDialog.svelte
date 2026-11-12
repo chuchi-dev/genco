@@ -11,9 +11,11 @@
 		canConfirm as confirmable,
 		createdAt,
 		expiresAt,
+		newestPlan,
 		requestedBy,
 		status,
 		statusText,
+		undecided,
 	} from '@/lib/approvals.svelte';
 	import { conversations } from '@/lib/conversations.svelte';
 	import { dialogs } from '@/lib/dialogs.svelte';
@@ -24,34 +26,37 @@
 	import Dialog from '../win/Dialog.svelte';
 	import ListView from '../win/ListView.svelte';
 	import ApproveDialog from './ApproveDialog.svelte';
+	import ChangePlanDialog from './ChangePlanDialog.svelte';
 	import ConfirmActionDialog from './ConfirmActionDialog.svelte';
 	import RejectDialog from './RejectDialog.svelte';
 
-	// Start → Approvals: the AI agents' proposals (#12) and the pending
-	// actions (A12: deletions, the agent's remote backup changes) that wait
-	// for an admin, the decided ones of 30 days below. Confirming here
-	// takes the 2FA code; without 2FA only the mail's link confirms,
-	// rejecting works here for any admin.
+	// Start → Approvals: the plans of the AI agents' proposals (#12) and
+	// the pending actions (A12: deletions, the agent's remote backup
+	// changes) that wait for an admin, the decided ones of 30 days below.
+	// Confirming here takes the 2FA code; without 2FA only the mail's link
+	// confirms. Asking for a changed plan and rejecting work here for any
+	// admin.
 	let { onclose }: { onclose: () => void } = $props();
 
 	let selected = $state<string | null>(null);
-	// raw: the text exactly as stored, what the server agent gets;
-	// original: what the agent sent, before the rewrite
-	let view = $state<'formatted' | 'raw' | 'original'>('formatted');
+	// raw: the plan exactly as genco's agent gets it; request: what the
+	// agent sent, only the planner reads it
+	let view = $state<'formatted' | 'raw' | 'request'>('formatted');
 	let error = $state<string | null>(null);
 	let confirming = $state<Approval | null>(null);
 	let rejecting = $state<Approval | null>(null);
+	let changing = $state<Approval | null>(null);
 
-	const waiting = $derived(approvals.waiting);
-	const history = $derived(
-		approvals.list.filter(a => status(a) !== 'pending'),
-	);
+	const waiting = $derived(approvals.undecided);
+	const history = $derived(approvals.list.filter(a => !undecided(a)));
 	const item = $derived(
 		approvals.list.find(a => approvalKey(a) === selected),
 	);
 	const proposal = $derived(item?.kind === 'proposal' ? item.proposal : null);
 	const action = $derived(item?.kind === 'action' ? item.action : null);
 	const pending = $derived(item ? status(item) === 'pending' : false);
+	const open = $derived(item ? undecided(item) : false);
+	const plan = $derived(item ? newestPlan(item) : null);
 	// without 2FA the mail's link confirms; with no mail the password does
 	const canConfirm = $derived(
 		!!item && confirmable(item, !!session.user?.totp, mail.off),
@@ -92,6 +97,7 @@
 	function closed() {
 		confirming = null;
 		rejecting = null;
+		changing = null;
 		load();
 	}
 </script>
@@ -106,7 +112,7 @@
 	width={780}
 	height={Math.min(innerHeight * 0.8, 860)}
 >
-	<p>Waiting for an admin:</p>
+	<p>Waiting for an admin or the planner:</p>
 	<ListView
 		items={waiting}
 		key={approvalKey}
@@ -167,9 +173,10 @@
 		{:else}
 			<p class="hint">
 				Proposals of AI agents and deletions (or the agent's changes of
-				the remote backup) wait here until an admin decides. A proposal
-				approved, the server agent works on it in a new conversation; an
-				action confirmed, it runs.
+				the remote backup) wait here until an admin decides. genco's
+				planner turns a proposal into a plan first; a plan approved, the
+				server agent carries it out in a new conversation. An action
+				confirmed, it runs.
 			</p>
 		{/if}
 		{#if pending && !canConfirm}
@@ -186,21 +193,27 @@
 		>
 			{action ? (action.deletion ? 'Delete…' : 'Confirm…') : 'Approve…'}
 		</Button>
-		<Button onclick={() => (rejecting = item ?? null)} disabled={!pending}>
+		<Button
+			onclick={() => (changing = item ?? null)}
+			disabled={!pending || !proposal}
+		>
+			Change…
+		</Button>
+		<Button onclick={() => (rejecting = item ?? null)} disabled={!open}>
 			Reject…
 		</Button>
 		<Button
 			onclick={() => (view = view === 'raw' ? 'formatted' : 'raw')}
-			disabled={!proposal}
+			disabled={!plan || view === 'request'}
 		>
 			{view === 'raw' ? 'Formatted' : 'Raw Text'}
 		</Button>
 		<Button
 			onclick={() =>
-				(view = view === 'original' ? 'formatted' : 'original')}
-			disabled={!proposal?.rewrittenBy}
+				(view = view === 'request' ? 'formatted' : 'request')}
+			disabled={!proposal}
 		>
-			{view === 'original' ? 'Rewritten' : 'Original'}
+			{view === 'request' ? 'Plan' : 'Request'}
 		</Button>
 		<Button
 			onclick={() => conversation && setChat(conversation)}
@@ -213,14 +226,22 @@
 	</div>
 </Dialog>
 
-{#if confirming?.kind === 'proposal'}
+{#if confirming?.kind === 'proposal' && newestPlan(confirming)}
 	<ApproveDialog
 		proposal={confirming.proposal}
+		plan={newestPlan(confirming)!}
 		onapproved={approved}
 		onclose={() => (confirming = null)}
 	/>
 {:else if confirming?.kind === 'action'}
 	<ConfirmActionDialog action={confirming.action} onclose={closed} />
+{/if}
+{#if changing?.kind === 'proposal' && newestPlan(changing)}
+	<ChangePlanDialog
+		proposal={changing.proposal}
+		plan={newestPlan(changing)!}
+		onclose={closed}
+	/>
 {/if}
 {#if rejecting?.kind === 'proposal'}
 	<RejectDialog

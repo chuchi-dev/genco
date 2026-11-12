@@ -235,7 +235,7 @@
 		for (const a of approvals.list) {
 			const texts =
 				a.kind === 'proposal'
-					? [a.proposal.text, a.proposal.originalText]
+					? [a.proposal.text, ...a.proposal.plans.map(p => p.text)]
 					: [a.action.description];
 			if (has(approvalNumber(a), ...texts))
 				out.push({

@@ -1,33 +1,32 @@
 <script lang="ts">
-	import { post, type Proposal } from '@/lib/api';
+	import { post, type Plan, type Proposal } from '@/lib/api';
 	import Dialog from '../win/Dialog.svelte';
 	import Form from '../win/Form.svelte';
-	import NoteField from '../NoteField.svelte';
 	import SecondFactor from '../SecondFactor.svelte';
 
-	// approves a proposal, the comment changes the task: genco's agent
-	// follows it where it differs from the proposal, and the proposing
-	// agent gets it with the answer. The 2FA code (the password
-	// without 2FA) confirms it.
+	// approves the newest plan of a proposal: genco's agent carries it out.
+	// The 2FA code (the password without 2FA) confirms it.
 	let {
 		proposal,
+		plan,
 		onapproved,
 		onclose,
 	}: {
 		proposal: Proposal;
+		/** the plan the admin read, the server refuses an older one */
+		plan: Plan;
 		/** gets the new conversation */
 		onapproved: (conversation: number) => void;
 		onclose: () => void;
 	} = $props();
 
-	let comment = $state('');
 	let password = $state('');
 	let code = $state('');
 
 	async function approve() {
 		onapproved(
 			await post(`/proposals/${proposal.id}/approve`, {
-				comment,
+				plan: plan.id,
 				password,
 				code,
 			}),
@@ -42,16 +41,12 @@
 	width={440}
 >
 	<p>
-		The server agent works on this task from {proposal.from} as if an admin asked.
+		genco's agent carries out plan v{plan.version} as if you asked{plan
+			.deletes.length
+			? `, it deletes ${plan.deletes.join(', ')} without asking again`
+			: ''}. Its answer goes to {proposal.from}.
 	</p>
 	<Form onsubmit={approve} oncancel={onclose} ok="Approve">
-		<NoteField
-			id="ap-comment"
-			label="Comment:"
-			placeholder="optional, genco's agent and {proposal.from} see it, e.g. yes, but keep the old DNS for now"
-			autofocus
-			bind:value={comment}
-		/>
 		<SecondFactor bind:password bind:code />
 	</Form>
 </Dialog>

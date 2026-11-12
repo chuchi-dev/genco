@@ -331,9 +331,12 @@ terminal.
   tab), then the agent gets them. Routine things go through scoped tokens without the LLM (deploy,
   database download). A cleaning LLM may flag suspicious requests in the
   mail, it is no protection on its own.
-- [x] A small model rewrites a proposal into a short formatted version
-  (operator 2026-11-03): the admin approves that, genco's agent gets it,
-  the panel shows the original too
+- [x] ~~A small model rewrites a proposal into a short formatted version
+  (operator 2026-11-03)~~, replaced by plans (operator 2026-11-12): a
+  planner in a read-only sandbox turns a proposal into a short plan, the
+  admin approves it (2FA), asks for a change (a new version) or rejects
+  it; genco's agent gets only the approved plan, never the proposal; the
+  plan's `Delete:` lines are confirmed with it, once each
 - [x] A rejection can have a reason for the proposing agent, an expired
   proposal tells it once
 

@@ -3,21 +3,25 @@
 	import Markdown from './Markdown.svelte';
 	import ProposalText from './ProposalText.svelte';
 
-	// a proposal in Start → Approvals: its text, who decided and what went
+	// a proposal in Start → Approvals: its plan, who decided and what went
 	// back to the agent
 	let {
 		proposal,
 		view,
 	}: {
 		proposal: Proposal;
-		view: 'formatted' | 'raw' | 'original';
+		view: 'formatted' | 'raw' | 'request';
 	} = $props();
+
+	const approved = $derived(
+		proposal.plans.find(p => p.id === proposal.planId),
+	);
 </script>
 
 <ProposalText {proposal} {view} />
 {#if proposal.status === 'pending'}
 	<p class="hint">
-		Waits for an admin to approve or reject it{proposal.approverEmail
+		Waits for an admin to approve it, ask for a change or reject it{proposal.approverEmail
 			? `, the mail went to ${proposal.approverEmail}`
 			: ''}.
 	</p>
@@ -25,13 +29,8 @@
 {#if proposal.decidedBy}
 	<p class="hint">
 		{proposal.status === 'rejected' ? 'Rejected' : 'Approved'} by
-		{proposal.decidedBy}{proposal.comment ? ' with a change:' : '.'}
+		{proposal.decidedBy}{approved ? ` (plan v${approved.version})` : ''}.
 	</p>
-	{#if proposal.comment}
-		<div class="text selectable">
-			<Markdown text={proposal.comment} />
-		</div>
-	{/if}
 {/if}
 {#if proposal.status === 'expired'}
 	<p class="hint">
@@ -56,7 +55,7 @@
 		margin: 8px 0 4px;
 	}
 
-	// the answer, formatted like the proposal
+	// the answer, formatted like the plan
 	.text {
 		@include sunken;
 		flex: 1 1 140px;

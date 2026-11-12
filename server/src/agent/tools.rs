@@ -113,8 +113,29 @@ fn resolve(path: &str, workspace: &Path) -> PathBuf {
 	workspace.join(path)
 }
 
+/// A command's exit code, stdout and stderr as a tool returns them.
+pub(crate) fn output_text(out: &std::process::Output) -> String {
+	let mut s = match out.status.code() {
+		Some(code) => format!("exit code: {code}\n"),
+		None => "killed by signal\n".to_string(),
+	};
+	if !out.stdout.is_empty() {
+		s.push_str(&format!(
+			"stdout:\n{}\n",
+			String::from_utf8_lossy(&out.stdout)
+		));
+	}
+	if !out.stderr.is_empty() {
+		s.push_str(&format!(
+			"stderr:\n{}\n",
+			String::from_utf8_lossy(&out.stderr)
+		));
+	}
+	s
+}
+
 /// Keeps the start and the end of long outputs.
-fn truncate(s: &str) -> String {
+pub(crate) fn truncate(s: &str) -> String {
 	if s.len() <= MAX_OUTPUT {
 		return s.to_string();
 	}
@@ -199,22 +220,7 @@ async fn shell(
 	// background processes started by the command may keep running
 	guard.0 = None;
 
-	let mut s = match out.status.code() {
-		Some(code) => format!("exit code: {code}\n"),
-		None => "killed by signal\n".to_string(),
-	};
-	if !out.stdout.is_empty() {
-		s.push_str(&format!(
-			"stdout:\n{}\n",
-			String::from_utf8_lossy(&out.stdout)
-		));
-	}
-	if !out.stderr.is_empty() {
-		s.push_str(&format!(
-			"stderr:\n{}\n",
-			String::from_utf8_lossy(&out.stderr)
-		));
-	}
+	let mut s = output_text(&out);
 
 	// gets truncated, the agent can grep the file instead of running the
 	// command again

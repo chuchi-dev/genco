@@ -501,6 +501,35 @@ const MIGRATIONS: &[&str] = &[
 		created_at INTEGER NOT NULL
 	);
 "#,
+	// a sandboxed planner turns a proposal into a plan, each change an
+	// admin asks for is a new version; the admin approves a plan and
+	// genco's agent gets only that; the change waits in the proposal
+	// while the planner works on it. Deletions the approved plan names run
+	// without another confirmation, once each (proposals/plans.rs). The
+	// rewrite of proposals is gone, a waiting one gets planned.
+	r#"
+	CREATE TABLE proposal_plans (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		proposal_id INTEGER NOT NULL
+			REFERENCES proposals(id) ON DELETE CASCADE,
+		text TEXT NOT NULL,
+		refused INTEGER NOT NULL DEFAULT 0,
+		removed_chars INTEGER NOT NULL DEFAULT 0,
+		note TEXT,
+		note_by TEXT,
+		created_at INTEGER NOT NULL
+	);
+	ALTER TABLE proposals ADD COLUMN plan_id INTEGER
+		REFERENCES proposal_plans(id) ON DELETE SET NULL;
+	ALTER TABLE proposals ADD COLUMN change_note TEXT;
+	ALTER TABLE proposals ADD COLUMN change_by TEXT;
+	ALTER TABLE pending_actions ADD COLUMN plan_id INTEGER;
+	ALTER TABLE pending_actions ADD COLUMN plan_entry TEXT;
+	CREATE UNIQUE INDEX pending_actions_plan_entry
+		ON pending_actions(plan_id, plan_entry) WHERE plan_id IS NOT NULL;
+	UPDATE proposals SET text = coalesce(original_text, text),
+		status = 'planning' WHERE status = 'pending';
+"#,
 ];
 
 /// A single shared connection. The queries are tiny, so we accept briefly

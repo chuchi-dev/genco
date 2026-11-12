@@ -422,37 +422,61 @@ export type Peer = {
 	lastUsed: number | null;
 };
 
+/** a version of a proposal's plan, written by genco's planner */
+export type Plan = {
+	id: number;
+	/** 1 for the first plan of the proposal */
+	version: number;
+	/** the plan exactly as genco's agent gets it; with `refused` why the
+	 * planner wrote none */
+	text: string;
+	refused: boolean;
+	/** invisible and control characters removed from the planner's text */
+	removedChars: number;
+	/** look-alikes of ASCII letters may hide in it */
+	mixedScripts: boolean;
+	/** the deletions it confirms, e.g. "database shop_old" */
+	deletes: string[];
+	/** `Delete:` lines genco doesn't understand, those still ask */
+	otherDeletes: string[];
+	/** the admin's change that led to this version */
+	note: string | null;
+	noteBy: string | null;
+	createdAt: number;
+};
+
 export type Proposal = {
 	id: number;
 	from: string;
-	/** what the admin approves: the rewrite, else the original */
+	/** the agent's text, cleaned: only the planner reads it */
 	text: string;
-	/** the agent's text, cleaned */
-	originalText: string;
-	/** the model that rewrote the text, null when it wasn't rewritten */
-	rewrittenBy: string | null;
-	/** created since rewrites exist, false for older proposals */
-	rewriteTried: boolean;
-	/** why it wasn't rewritten, e.g. "timeout" */
-	rewriteNote: string | null;
-	/** invisible and control characters removed from the original */
+	/** invisible and control characters removed from it */
 	removedChars: number;
 	/** letters outside the Latin script, look-alikes may hide in it */
 	mixedScripts: boolean;
-	/** the same for the rewrite */
-	rewriteMixedScripts: boolean;
+	/** oldest first, the newest is the one an admin decides on */
+	plans: Plan[];
+	/** the plan an admin approved */
+	planId: number | null;
+	/** the change the planner works on now */
+	changeNote: string | null;
+	changeBy: string | null;
 	/** the admin who decides, null for any */
 	approver: string | null;
 	approverEmail: string | null;
-	status: 'pending' | 'approved' | 'answered' | 'rejected' | 'expired';
+	status:
+		| 'planning'
+		| 'pending'
+		| 'approved'
+		| 'answered'
+		| 'rejected'
+		| 'expired';
 	decidedBy: string | null;
 	conversationId: number | null;
 	/** what went back: the agent's answer, or the reason of a rejection */
 	answer: string | null;
-	/** what the admin added when approving, ranks above the text */
-	comment: string | null;
 	createdAt: number;
-	/** when a pending one expires */
+	/** when an undecided one expires */
 	expiresAt: number;
 };
 

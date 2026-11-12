@@ -182,6 +182,7 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("POST", "/peers/*/test", "Test webhook"),
 		("POST", "/proposals", "Propose a task"),
 		("POST", "/proposals/*/approve", "Approve proposal"),
+		("POST", "/proposals/*/change", "Ask for a changed plan"),
 		("POST", "/proposals/*/reject", "Reject proposal"),
 		("POST", "/update/check", "Check for updates"),
 		("POST", "/update/install", "Start update"),

@@ -44,30 +44,36 @@
 	import ProposalText from '@/components/ProposalText.svelte';
 	import NoteField from '@/components/NoteField.svelte';
 
-	// the link of a proposal's mail: the admin it went to approves or
-	// rejects it without logging in, also on a phone. Opening it changes
+	// the link of a proposal's mail: the admin it went to approves the
+	// plan, sends it back to the planner with a change or rejects the
+	// proposal without logging in, also on a phone. Opening it changes
 	// nothing, mail scanners open links too.
 	let { token, link }: { token: string; link: LinkView | null } = $props();
 
 	// the link's token doesn't stay in the address bar and the history
 	history.replaceState(history.state, '', '/proposal');
 
-	let view = $state<'formatted' | 'original'>('formatted');
-	let rejecting = $state(false);
+	let view = $state<'formatted' | 'request'>('formatted');
+	let mode = $state<'approve' | 'change' | 'reject'>('approve');
 	let code = $state('');
 	let password = $state('');
 	let reason = $state('');
-	let comment = $state('');
-	// the comment goes back to the proposing agent with the answer too
-	const commentHint = $derived(
-		`optional, genco's agent and ${link?.proposal.from} see it, e.g. keep the old DNS for now`,
-	);
+	let note = $state('');
 	// what happened, or that the link doesn't work (anymore)
 	let done = $state<string | null>(null);
 	let gone = $state(false);
 
+	const proposal = $derived(link?.proposal);
+	const plan = $derived(proposal?.plans.at(-1));
+	const planning = $derived(proposal?.status === 'planning');
+
 	/** Decides, a link that stopped working meanwhile says so. */
-	async function decide(action: string, body: object, text: string) {
+	async function decide(
+		action: string,
+		body: object,
+		text: string,
+		end = true,
+	) {
 		try {
 			await post(`/proposal-links/${token}/${action}`, body);
 		} catch (e) {
@@ -75,31 +81,42 @@
 			gone = true;
 		}
 		if (!gone) done = text;
-		sessionStorage.removeItem(KEY);
+		if (end || gone) sessionStorage.removeItem(KEY);
 	}
 
 	const approve = () =>
 		decide(
 			'approve',
-			link!.totp ? { code, comment } : { password, comment },
-			`Approved: genco's agent works on it, its answer goes back to ${link!.proposal.from}.`,
+			link!.totp
+				? { plan: plan!.id, code }
+				: { plan: plan!.id, password },
+			`Approved: genco's agent carries out the plan, its answer goes back to ${proposal!.from}.`,
+		);
+
+	// the link stays: it shows the new version once the planner is done
+	const change = () =>
+		decide(
+			'change',
+			{ plan: plan!.id, note },
+			'Sent to the planner. You get a mail with the new version, or reload this page in a minute.',
+			false,
 		);
 
 	const reject = () =>
 		decide(
 			'reject',
 			{ message: reason },
-			`Rejected, ${link!.proposal.from} was told.`,
+			`Rejected, ${proposal!.from} was told.`,
 		);
 </script>
 
 <div class="page">
 	<Window
-		title={link ? `Proposal #${link.proposal.id}` : 'Proposal'}
+		title={proposal ? `Proposal #${proposal.id}` : 'Proposal'}
 		icon="agent"
 	>
 		<div class="content">
-			{#if gone || !link}
+			{#if gone || !link || !proposal}
 				<p>
 					This link no longer works (the proposal was decided or
 					expired). Open the panel to see it.
@@ -107,34 +124,67 @@
 			{:else if done}
 				<p>{done}</p>
 			{:else}
-				<ProposalText proposal={link.proposal} {view} />
-				{#if rejecting}
+				<ProposalText {proposal} {view} />
+				{#if mode === 'reject'}
 					<Form
 						onsubmit={reject}
-						oncancel={() => (rejecting = false)}
+						oncancel={() => (mode = 'approve')}
 						ok="Reject"
 					>
 						<NoteField
 							id="pl-reason"
 							label="Reason:"
-							placeholder="optional, sent to {link.proposal.from}"
+							placeholder="optional, sent to {proposal.from}"
 							autofocus
 							bind:value={reason}
 						/>
 					</Form>
+				{:else if mode === 'change' && plan}
+					<Form
+						onsubmit={change}
+						oncancel={() => (mode = 'approve')}
+						ok="Send"
+					>
+						<NoteField
+							id="pl-note"
+							label="Change:"
+							placeholder="e.g. keep the old DNS for now, only the shop"
+							autofocus
+							bind:value={note}
+						/>
+					</Form>
+				{:else if planning || !plan || plan.refused}
+					<p class="hint">
+						{planning
+							? 'The planner works on a new version, you get a mail when it is there. Reload this page to see it.'
+							: 'There is no plan to approve: ask the planner for another try with a change, or reject it.'}
+					</p>
+					<div class="row-buttons">
+						{#if plan && !planning}
+							<Button onclick={() => (mode = 'change')}>
+								Change…
+							</Button>
+						{/if}
+						<Button onclick={() => (mode = 'reject')}
+							>Reject…</Button
+						>
+						<Button
+							onclick={() =>
+								(view =
+									view === 'request'
+										? 'formatted'
+										: 'request')}
+						>
+							{view === 'request' ? 'Plan' : 'Request'}
+						</Button>
+					</div>
 				{:else}
 					<p class="hint">
-						Approved, genco's agent works on this task as if you ({link.name})
-						asked. Nothing happens without an approval.
+						Approved, genco's agent carries out this plan as if you
+						({link.name}) asked. Nothing happens without an
+						approval.
 					</p>
 					<Form onsubmit={approve} ok="Approve">
-						<NoteField
-							id="pl-comment"
-							label="Comment:"
-							placeholder={commentHint}
-							rows={3}
-							bind:value={comment}
-						/>
 						{#if link.totp}
 							<label for="pl-code">Two-factor code:</label>
 							<input
@@ -153,22 +203,21 @@
 							/>
 						{/if}
 						{#snippet extra()}
-							<Button onclick={() => (rejecting = true)}>
+							<Button onclick={() => (mode = 'change')}>
+								Change…
+							</Button>
+							<Button onclick={() => (mode = 'reject')}>
 								Reject…
 							</Button>
-							{#if link.proposal.rewrittenBy}
-								<Button
-									onclick={() =>
-										(view =
-											view === 'original'
-												? 'formatted'
-												: 'original')}
-								>
-									{view === 'original'
-										? 'Rewritten'
-										: 'Original'}
-								</Button>
-							{/if}
+							<Button
+								onclick={() =>
+									(view =
+										view === 'request'
+											? 'formatted'
+											: 'request')}
+							>
+								{view === 'request' ? 'Plan' : 'Request'}
+							</Button>
 						{/snippet}
 					</Form>
 				{/if}
