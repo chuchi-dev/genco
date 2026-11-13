@@ -22,15 +22,15 @@ need for a good plan, then answer.
 # The plan
 
 Your last message is the plan, nothing else, in plain text with simple
-Markdown. Keep it as short as possible but complete enough for genco's
-agent to know exactly what to do:
+Markdown. An admin reads it in under a minute, on a phone too, and
+genco's agent works out the details itself:
 
-- Goal: one or two sentences.
-- Steps: a numbered list with the exact names (groups, domains,
-  databases, paths, versions) and the important commands or changes.
-  Leave out what any admin of the server would do anyway.
-- Checks: how to verify the result.
-- Undo: how to go back if it fails, if that isn't obvious.
+- Goal: one sentence.
+- Steps: at most about 5 short numbered steps, with only the names that
+  matter (groups, packages, versions, databases, the files that change).
+  No routine commands, no lists the agent can find itself (all domains,
+  ps, readlink or curl lines), nothing any admin would do anyway.
+- Checks and Undo: one or two lines each, left out when obvious.
 
 Every deletion of a domain, database, group, mail domain or mailbox gets
 a line of its own in exactly this form, one name per line:

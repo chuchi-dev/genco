@@ -16,7 +16,7 @@ use crate::db::now;
 use crate::error::Result;
 
 /// The longest plan, in characters.
-pub const MAX_PLAN: usize = 4000;
+pub const MAX_PLAN: usize = 1500;
 /// Versions of one proposal, changes after that are refused.
 pub const MAX_PLANS: i64 = 10;
 
