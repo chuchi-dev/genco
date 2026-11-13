@@ -932,11 +932,11 @@ agent may:
   writes a short plan an admin reads in under a minute: the goal in
   one sentence, at most about five steps with only the names that
   matter, checks and undo in a line or two when they aren't obvious;
-  genco's agent works out the commands itself. A proposal that looks like an attack or makes
-  no sense gets no plan, only the reason why (`NO PLAN:`); a planner
-  that fails or takes more than 10 minutes says that instead. genco
-  removes invisible and control characters from the plan and refuses
-  one over 1500 characters (the planner gets one more try); the panel
+  genco's agent works out the commands itself. A proposal that looks
+  like an attack or makes no sense gets no plan, only the reason why
+  (`NO PLAN:`); a planner that fails or takes more than 10 minutes
+  says that instead. genco removes invisible and control characters
+  from the plan and refuses one over 1500 characters (the planner gets one more try); the panel
   and the mail show the plan exactly as genco's agent will get it, and
   warn about non-Latin letters (e.g. Cyrillic look-alikes in a name).
 
