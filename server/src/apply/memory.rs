@@ -34,7 +34,11 @@ pub(super) fn memory_files(cap_mb: u32) -> Vec<File> {
 		content: crate::limits::groups_slice_unit(cap_mb),
 		private_to: None,
 	}];
-	for (unit, _) in protected_units() {
+	// a unit that sets a lower score itself (PostgreSQL's -900) keeps it
+	for (unit, _) in protected_units()
+		.into_iter()
+		.filter(|(u, _)| own_score(u).is_none_or(|s| s > OOM_SCORE))
+	{
 		files.push(File {
 			path: Path::new("/etc/systemd/system")
 				.join(format!("{unit}.d"))
@@ -105,6 +109,11 @@ pub(super) async fn memory(
 		}
 	}
 	for (unit, cgroup) in protected_units() {
+		let own = own_score(&unit).filter(|s| *s <= OOM_SCORE);
+		if own.is_some() {
+			drop_old_dropin(r, &unit).await;
+		}
+
 		let procs = cgroup.join("cgroup.procs");
 		let pids = std::fs::read_to_string(procs).unwrap_or_default();
 		for pid in pids.lines() {
@@ -112,12 +121,63 @@ pub(super) async fn memory(
 			let now: Option<i32> = std::fs::read_to_string(&path)
 				.ok()
 				.and_then(|s| s.trim().parse().ok());
-			if now.is_some_and(|n| n > OOM_SCORE)
-				&& let Err(e) = std::fs::write(&path, OOM_SCORE.to_string())
-			{
+			// a unit with its own score gets it back only where genco's
+			// old drop-in set -600: processes that raise theirs
+			// (PostgreSQL's backends to 0) keep it
+			let score = match (now, own) {
+				(Some(n), Some(own)) if n == OOM_SCORE => own,
+				(Some(n), None) if n > OOM_SCORE => OOM_SCORE,
+				_ => continue,
+			};
+			if let Err(e) = std::fs::write(&path, score.to_string()) {
 				r.info(format!("warning: OOM score of {unit} ({pid}): {e}"));
 			}
 		}
+	}
+}
+
+/// The OOM score a unit's own file sets (its template's for an
+/// instance like `postgresql@17-main.service`), not genco's drop-in.
+fn own_score(unit: &str) -> Option<i32> {
+	let name = match unit.split_once('@') {
+		Some((prefix, _)) => format!("{prefix}@.service"),
+		None => unit.to_string(),
+	};
+	let file = [
+		"/etc/systemd/system",
+		"/usr/lib/systemd/system",
+		"/lib/systemd/system",
+	]
+	.iter()
+	.find_map(|dir| std::fs::read_to_string(Path::new(dir).join(&name)).ok())?;
+	score_in(&file)
+}
+
+/// The last `OOMScoreAdjust=` of a unit file.
+fn score_in(file: &str) -> Option<i32> {
+	file.lines()
+		.rev()
+		.filter_map(|l| l.split_once('='))
+		.find(|(key, _)| key.trim() == "OOMScoreAdjust")?
+		.1
+		.trim()
+		.parse()
+		.ok()
+}
+
+/// genco's drop-in of a unit that protects itself better, from before
+/// genco looked: it would raise the unit's own score at its next start.
+async fn drop_old_dropin(r: &mut Report, unit: &str) {
+	let path = Path::new("/etc/systemd/system")
+		.join(format!("{unit}.d"))
+		.join("genco-memory.conf");
+	match std::fs::remove_file(&path) {
+		Ok(()) => {
+			r.run(&["systemctl", "daemon-reload"]).await;
+			r.info(format!("{unit} keeps its own OOM score"));
+		}
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+		Err(e) => r.error(format!("removing {}: {e}", path.display())),
 	}
 }
 
@@ -135,5 +195,14 @@ mod tests {
 		assert!(!protected("genco-shop-php8.4.service"));
 		assert!(!protected("postgresql.service.d"));
 		assert!(!protected("cron.service"));
+	}
+
+	#[test]
+	fn a_unit_s_own_score_is_read() {
+		let unit = "[Service]\nOOMScoreAdjust=-100\nType=forking\n\
+			OOMScoreAdjust=-900\n";
+		assert_eq!(score_in(unit), Some(-900));
+		assert_eq!(score_in("OOMScoreAdjust = -900\n"), Some(-900));
+		assert_eq!(score_in("[Service]\nType=simple\n"), None);
 	}
 }
