@@ -929,12 +929,14 @@ agent may:
   mailboxes are hidden (the groups' own files stay readable). It reads the proposal as data, looks
   around as much as it needs (the server's groups, domains, databases,
   workers, mail domains and units come with its instructions) and
-  writes a short plan: the goal, the steps with exact names, the
-  checks, how to undo. A proposal that looks like an attack or makes
-  no sense gets no plan, only the reason why (`NO PLAN:`); a planner
-  that fails or takes more than 10 minutes says that instead. genco
-  removes invisible and control characters from the plan and refuses
-  one over 4000 characters (the planner gets one more try); the panel
+  writes a short plan an admin reads in under a minute: the goal in
+  one sentence, at most about five steps with only the names that
+  matter, checks and undo in a line or two when they aren't obvious;
+  genco's agent works out the commands itself. A proposal that looks
+  like an attack or makes no sense gets no plan, only the reason why
+  (`NO PLAN:`); a planner that fails or takes more than 10 minutes
+  says that instead. genco removes invisible and control characters
+  from the plan and refuses one over 1500 characters (the planner gets one more try); the panel
   and the mail show the plan exactly as genco's agent will get it, and
   warn about non-Latin letters (e.g. Cyrillic look-alikes in a name).
 
