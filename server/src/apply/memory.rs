@@ -109,13 +109,11 @@ pub(super) async fn memory(
 		}
 	}
 	for (unit, cgroup) in protected_units() {
-		let score = match own_score(&unit) {
-			Some(own) if own <= OOM_SCORE => {
-				drop_old_dropin(r, &unit).await;
-				own
-			}
-			_ => OOM_SCORE,
-		};
+		let own = own_score(&unit).filter(|s| *s <= OOM_SCORE);
+		if own.is_some() {
+			drop_old_dropin(r, &unit).await;
+		}
+
 		let procs = cgroup.join("cgroup.procs");
 		let pids = std::fs::read_to_string(procs).unwrap_or_default();
 		for pid in pids.lines() {
@@ -123,9 +121,15 @@ pub(super) async fn memory(
 			let now: Option<i32> = std::fs::read_to_string(&path)
 				.ok()
 				.and_then(|s| s.trim().parse().ok());
-			if now.is_some_and(|n| n > score)
-				&& let Err(e) = std::fs::write(&path, score.to_string())
-			{
+			// a unit with its own score gets it back only where genco's
+			// old drop-in set -600: processes that raise theirs
+			// (PostgreSQL's backends to 0) keep it
+			let score = match (now, own) {
+				(Some(n), Some(own)) if n == OOM_SCORE => own,
+				(Some(n), None) if n > OOM_SCORE => OOM_SCORE,
+				_ => continue,
+			};
+			if let Err(e) = std::fs::write(&path, score.to_string()) {
 				r.info(format!("warning: OOM score of {unit} ({pid}): {e}"));
 			}
 		}
@@ -153,7 +157,9 @@ fn own_score(unit: &str) -> Option<i32> {
 fn score_in(file: &str) -> Option<i32> {
 	file.lines()
 		.rev()
-		.find_map(|l| l.trim().strip_prefix("OOMScoreAdjust="))?
+		.filter_map(|l| l.split_once('='))
+		.find(|(key, _)| key.trim() == "OOMScoreAdjust")?
+		.1
 		.trim()
 		.parse()
 		.ok()
@@ -165,9 +171,13 @@ async fn drop_old_dropin(r: &mut Report, unit: &str) {
 	let path = Path::new("/etc/systemd/system")
 		.join(format!("{unit}.d"))
 		.join("genco-memory.conf");
-	if path.exists() && std::fs::remove_file(&path).is_ok() {
-		r.run(&["systemctl", "daemon-reload"]).await;
-		r.info(format!("{unit} keeps its own OOM score"));
+	match std::fs::remove_file(&path) {
+		Ok(()) => {
+			r.run(&["systemctl", "daemon-reload"]).await;
+			r.info(format!("{unit} keeps its own OOM score"));
+		}
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+		Err(e) => r.error(format!("removing {}: {e}", path.display())),
 	}
 }
 
@@ -192,6 +202,7 @@ mod tests {
 		let unit = "[Service]\nOOMScoreAdjust=-100\nType=forking\n\
 			OOMScoreAdjust=-900\n";
 		assert_eq!(score_in(unit), Some(-900));
+		assert_eq!(score_in("OOMScoreAdjust = -900\n"), Some(-900));
 		assert_eq!(score_in("[Service]\nType=simple\n"), None);
 	}
 }
