@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { copyText } from '@/lib/clipboard';
 	import Button from './win/Button.svelte';
 	import Dialog from './win/Dialog.svelte';
 
@@ -24,11 +25,15 @@
 	let copied = $state(false);
 	let error = $state<string | null>(null);
 
+	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
 	async function copy() {
+		error = null;
 		try {
-			await navigator.clipboard.writeText(value);
+			await copyText(value);
 			copied = true;
-			setTimeout(() => (copied = false), 2000);
+			clearTimeout(copiedTimer);
+			copiedTimer = setTimeout(() => (copied = false), 2000);
 		} catch (e: any) {
 			error = e.message;
 		}
@@ -49,9 +54,5 @@
 <style>
 	p {
 		margin: 0 0 8px;
-	}
-
-	pre {
-		margin: 0 0 10px;
 	}
 </style>
