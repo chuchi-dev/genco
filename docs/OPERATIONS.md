@@ -161,8 +161,9 @@ instead, an admin confirms it there or in Approvals with their password.
 
 ### Approvals
 
-Start → Approvals (and the "N to approve" in the taskbar, its tooltip
-lists them) shows what waits for an admin, newest first: the plans of
+Start → Approvals (and the "N to approve" in the taskbar, with "N being
+planned" for proposals the planner still works on; its tooltip lists
+them) shows what waits for an admin, newest first: the plans of
 the AI agents' proposals (`#12`, see [AI agents](#ai-agents); those the
 planner still works on are listed too) and the pending actions
 (`A12`): deletions of domains, databases, groups, mail domains and

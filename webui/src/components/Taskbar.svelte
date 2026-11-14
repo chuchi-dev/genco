@@ -31,6 +31,9 @@
 
 	const attention = $derived(conversations.attention);
 	const waiting = $derived(approvals.waiting);
+	// proposals the planner still works on show too, they come next
+	const open = $derived(approvals.undecided);
+	const planning = $derived(open.length - waiting.length);
 
 	let time = $state(formatHour(Date.now()));
 
@@ -70,19 +73,24 @@
 				⚠ {attention.length}
 			</button>
 		{/if}
-		{#if waiting.length}
+		{#if open.length}
 			<button
 				class="approve"
-				title={waiting.map(approvalLine).join('\n')}
+				title={open.map(approvalLine).join('\n')}
 				onclick={() => {
-					// the only one waiting opens selected
-					if (waiting.length === 1)
-						dialogs.approval = approvalKey(waiting[0]);
+					// the only one opens selected
+					if (open.length === 1)
+						dialogs.approval = approvalKey(open[0]);
 					dialogs.open = 'approvals';
 				}}
 			>
 				<Icon name="agent" />
-				{waiting.length} to approve
+				{[
+					waiting.length ? `${waiting.length} to approve` : '',
+					planning ? `${planning} being planned` : '',
+				]
+					.filter(Boolean)
+					.join(', ')}
 			</button>
 		{/if}
 		{#if connection.lost}
