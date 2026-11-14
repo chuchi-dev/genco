@@ -33,6 +33,9 @@ const MAX_STEPS: usize = 30;
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// One command in the sandbox.
 const COMMAND_SECS: u32 = 60;
+/// Answers sent back for another try (too long, empty) before the
+/// planner fails: a plan cut down once can still be a bit too long.
+const MAX_CORRECTIONS: usize = 2;
 /// What the planner's answer starts with when it writes no plan.
 const NO_PLAN: &str = "NO PLAN:";
 /// Bytes of stdout and of stderr read from one command, the tool output
@@ -163,7 +166,7 @@ impl Planner {
 			reasoning_effort: None,
 		};
 
-		let mut corrected = false;
+		let mut corrections = 0;
 		for _ in 0..MAX_STEPS {
 			let output = self.ask(&req, &model).await?;
 			let mut text = String::new();
@@ -196,9 +199,9 @@ impl Planner {
 				};
 				match plans::clean(text, refused) {
 					Ok(new) => return Ok(new),
-					// once: shorter, or with a plan at all
-					Err(e) if !corrected => {
-						corrected = true;
+					// shorter, or with a plan at all
+					Err(e) if corrections < MAX_CORRECTIONS => {
+						corrections += 1;
 						req.input.extend([
 							Input::Text {
 								role: Role::Assistant,
@@ -206,10 +209,7 @@ impl Planner {
 							},
 							Input::Text {
 								role: Role::User,
-								content: format!(
-									"[genco] Not accepted: {e}. Answer \
-									with the whole plan again."
-								),
+								content: correction(&e),
 							},
 						]);
 						continue;
@@ -309,6 +309,17 @@ async fn read_at_most(r: impl AsyncRead + Unpin) -> Vec<u8> {
 	// what was read before an error is still the output
 	let _ = r.take(MAX_READ).read_to_end(&mut buf).await;
 	buf
+}
+
+/// Asks the planner to answer again; a plan over the limit is to be
+/// shortened well below it, a cut to just under the limit often misses.
+fn correction(e: &str) -> String {
+	format!(
+		"[genco] Not accepted: {e}. Answer with the whole plan again, at \
+		most {} characters: keep what to do and why with the exact names, \
+		drop explanations and commands genco's agent finds itself.",
+		plans::MAX_PLAN * 9 / 10
+	)
 }
 
 /// The admin sees why there is no plan and can ask for another try.
@@ -576,5 +587,14 @@ mod tests {
 		assert_eq!(texts[3].1, "NO PLAN: Not this week");
 		assert_eq!(texts[4].1, "[Ann (admin)] Change the plan: try again");
 		assert_eq!(texts[1].0, "Assistant");
+	}
+
+	#[test]
+	fn a_too_long_plan_is_sent_back_with_a_lower_target() {
+		let long = "x".repeat(plans::MAX_PLAN + 58);
+		let e = plans::clean(&long, false).unwrap_err();
+		let c = correction(&e);
+		assert!(c.contains("1558 characters, at most 1500 are allowed"));
+		assert!(c.contains("again, at most 1350 characters"));
 	}
 }
