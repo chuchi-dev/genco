@@ -30,10 +30,8 @@
 	} = $props();
 
 	const attention = $derived(conversations.attention);
-	const waiting = $derived(approvals.waiting);
-	// proposals the planner still works on show too, they come next
+	// proposals the planner still works on show too
 	const open = $derived(approvals.undecided);
-	const planning = $derived(open.length - waiting.length);
 
 	let time = $state(formatHour(Date.now()));
 
@@ -85,12 +83,7 @@
 				}}
 			>
 				<Icon name="agent" />
-				{[
-					waiting.length ? `${waiting.length} to approve` : '',
-					planning ? `${planning} being planned` : '',
-				]
-					.filter(Boolean)
-					.join(', ')}
+				{approvals.summary}
 			</button>
 		{/if}
 		{#if connection.lost}
