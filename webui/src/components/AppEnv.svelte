@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { applyErrors, get, post, type ApplyReport } from '@/lib/api';
+	import { applyErrors, get, saveEnv } from '@/lib/api';
 	import Button from '@/components/win/Button.svelte';
 
 	// environment variables of a Node or Rust app; a secret's value never
@@ -43,16 +43,14 @@
 					secret,
 					from,
 				}));
-			// saving applies: the app restarts with them
-			const report: ApplyReport = await post(
-				`/domains/${domainId}/env`,
-				list,
-			);
+			const report = await saveEnv(domainId, list);
+			// reload first: they are saved even when apply failed, a
+			// renamed secret's `from` must be its new name
+			vars = loaded(await get(`/domains/${domainId}/env`));
 			if (!report.ok)
 				throw new Error(
 					`Saved, but apply failed: ${applyErrors(report)}`,
 				);
-			vars = loaded(await get(`/domains/${domainId}/env`));
 			saved = true;
 			setTimeout(() => (saved = false), 1500);
 		} catch (e: any) {

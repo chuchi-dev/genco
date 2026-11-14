@@ -741,6 +741,17 @@ export async function setMemoryReserve(reserveMb: number | null) {
 	if (!report.ok) throw new Error(applyErrors(report));
 }
 
+/**
+ * Saves an app's environment variables, apply runs right away and the app
+ * restarts with them.
+ */
+export function saveEnv(
+	domainId: number,
+	vars: { name: string; value: string; secret: boolean; from?: string }[],
+): Promise<ApplyReport> {
+	return post(`/domains/${domainId}/env`, vars);
+}
+
 /** Puts a group in quarantine with the reason, apply runs right away. */
 export function quarantineGroup(
 	group: Group,

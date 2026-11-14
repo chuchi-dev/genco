@@ -166,7 +166,7 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("POST", "/settings/notify", "Change notifications"),
 		("POST", "/settings/model", "Change the agent's model"),
 		("POST", "/settings/memory", "Change the memory reserve"),
-		("POST", "/domains/*/env", "Change environment variables"),
+		("POST", "/domains/*/env", "Change and apply app env"),
 		("POST", "/groups/*/workers", "Add worker"),
 		("POST", "/workers/*", "Change worker"),
 		("DELETE", "/workers/*", "Delete worker"),
