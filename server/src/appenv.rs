@@ -2,6 +2,10 @@
 //! domain, written to a file only root reads, which the app's unit loads
 //! (`EnvironmentFile`, systemd reads it before it drops to the group's
 //! user). Secret values never go back to the browser or the terminal.
+//! Saving in the panel applies at once: the file is written and the app
+//! restarts with the new variables.
+
+use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::routing::get;
@@ -10,6 +14,8 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::apply;
+use crate::config::Config;
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::events::{Event, Events};
@@ -177,15 +183,26 @@ struct EnvRow {
 	from: Option<String>,
 }
 
+/// Stores the variables and applies: the app restarts with them.
 async fn set_env(
 	_authed: Authed,
+	State(cfg): State<Arc<Config>>,
 	State(db): State<Db>,
 	State(events): State<Events>,
 	Path(id): Path<i64>,
 	Json(rows): Json<Vec<EnvRow>>,
-) -> Result<Json<()>> {
-	let conn = db.conn();
-	let old = load(&conn, id)?;
+) -> Result<Json<apply::Report>> {
+	// the connection mustn't be held over the apply
+	store(&db.conn(), id, rows)?;
+	let report = apply::apply(&cfg, &db).await;
+	events.send(Event::Tree);
+	Ok(Json(report))
+}
+
+/// The panel's rows as the domain's variables; an empty value keeps a
+/// secret's.
+fn store(conn: &Connection, id: i64, rows: Vec<EnvRow>) -> Result<()> {
+	let old = load(conn, id)?;
 	let mut vars = vec![];
 	for r in rows {
 		let was = r
@@ -216,9 +233,7 @@ async fn set_env(
 		"UPDATE domains SET env = ?1 WHERE id = ?2",
 		params![serde_json::to_string(&vars).unwrap(), id],
 	)?;
-	drop(conn);
-	events.send(Event::Tree);
-	Ok(Json(()))
+	Ok(())
 }
 
 pub fn routes() -> Router<AppState> {

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { get, post } from '@/lib/api';
+	import { applyErrors, get, post, type ApplyReport } from '@/lib/api';
 	import Button from '@/components/win/Button.svelte';
 
 	// environment variables of a Node or Rust app; a secret's value never
@@ -43,7 +43,15 @@
 					secret,
 					from,
 				}));
-			await post(`/domains/${domainId}/env`, list);
+			// saving applies: the app restarts with them
+			const report: ApplyReport = await post(
+				`/domains/${domainId}/env`,
+				list,
+			);
+			if (!report.ok)
+				throw new Error(
+					`Saved, but apply failed: ${applyErrors(report)}`,
+				);
 			vars = loaded(await get(`/domains/${domainId}/env`));
 			saved = true;
 			setTimeout(() => (saved = false), 1500);
@@ -117,8 +125,8 @@
 	</Button>
 </div>
 <p class="hint">
-	The app gets them with <code>HOST</code> and <code>PORT</code> after Server →
-	Apply Changes, which restarts it.
+	The app gets them with <code>HOST</code> and <code>PORT</code>: saving
+	applies right away and restarts it.
 </p>
 
 <style lang="scss">
