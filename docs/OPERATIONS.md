@@ -455,8 +455,9 @@ from them and kills within the groups, never the databases, nginx, mail
 or genco. The shared services (not genco, whose children such as imports
 and the agent's commands would inherit it) also get a low OOM score
 (`OOMScoreAdjust=-600`, a drop-in `genco-memory.conf` per service and set
-on their running processes), in case the kernel has to kill outside the
-groups after all.
+on their running processes; a service whose own unit sets a lower one,
+like PostgreSQL's -900, keeps it), in case the kernel has to kill outside
+the groups after all.
 The group's General tab shows what it uses now and at most in the last
 24 hours next to its limit. The minute check alerts on real shortage
 instead of the sum of limits: when every task waited for memory in 10%
