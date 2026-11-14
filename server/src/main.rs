@@ -224,7 +224,8 @@ impl Cmd {
 				| Cmd::Chat { .. }
 				| Cmd::Runner(_)
 				| Cmd::Setup { .. }
-				| Cmd::Apply | Cmd::Deploy { .. }
+				| Cmd::Apply
+				| Cmd::Deploy { .. }
 				| Cmd::Backup { .. }
 				| Cmd::Memory { cmd: Some(_) }
 				| Cmd::Restic { .. }
@@ -240,7 +241,8 @@ impl Cmd {
 			self,
 			Cmd::Serve
 				| Cmd::Chat { .. }
-				| Cmd::Tree | Cmd::Docs { .. }
+				| Cmd::Tree
+				| Cmd::Docs { .. }
 				| Cmd::User(UserCmd::List)
 				| Cmd::Worker(cli::WorkerCmd::List)
 				| Cmd::Schedule(cli::ScheduleCmd::List)
@@ -252,7 +254,8 @@ impl Cmd {
 						| mailbox::MailCmd::SendOnly(
 							mailbox::SendOnlyCmd::List
 						)
-				) | Cmd::Secret(secrets::SecretCmd::List)
+				)
+				| Cmd::Secret(secrets::SecretCmd::List)
 				| Cmd::Firewall(firewall::FirewallCmd::List)
 				| Cmd::Activity { .. }
 				| Cmd::Attention(conversations::AttentionCmd::List)
