@@ -113,7 +113,11 @@
 		</ListView>
 		{#if error}<p class="error">{error}</p>{/if}
 		{#if created}
-			<OneTimeSecret value={created} />
+			<OneTimeSecret
+				title="API Token"
+				value={created}
+				onclose={() => (created = null)}
+			/>
 		{/if}
 		<p>Download a database:</p>
 		<pre class="code selectable">{example}</pre>

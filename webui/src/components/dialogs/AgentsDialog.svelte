@@ -224,13 +224,16 @@
 		{#if testResult}<p class="selectable">{testResult}</p>{/if}
 		{#if key}
 			<OneTimeSecret
+				title="AI Agent Key"
 				value={key}
 				label="The agent's key, copy it now, it is shown only once:"
-			/>
-			{#each examples as e (e.text)}
-				<p>{e.text}</p>
-				<pre class="code selectable">{e.code}</pre>
-			{/each}
+				onclose={() => (key = null)}
+			>
+				{#each examples as e (e.text)}
+					<p>{e.text}</p>
+					<pre class="code selectable">{e.code}</pre>
+				{/each}
+			</OneTimeSecret>
 		{/if}
 		<div class="row-buttons">
 			<Button onclick={() => edit(null)}>New Agent…</Button>
