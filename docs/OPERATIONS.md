@@ -119,7 +119,7 @@ into the server's config, and the CLI does the same:
 | A server without mail (port 25 blocked, no relay) | Settings → Mail → No mail: deletions are confirmed in the panel with the 2FA code (the password without 2FA), no invites, no new mail domains, reports only in the panel and webhooks |
 | genco sends mail but hosts none | Settings → Mail → uncheck Mail hosting: no new mail domains, mailboxes, forwards or send-only addresses (panel, CLI and agent refuse them); genco's own mails (confirmations, invites, proposal links) keep going. Existing mail domains stay and keep running until deleted; without any, Dovecot, Rspamd and the submission ports stay off as always. No mail implies hosting off |
 | A PostgreSQL database | `genco database add <name> --group <g> --postgres`, then `genco apply` (installs PostgreSQL the first time) |
-| Environment variables of an app | `genco domain env <name> --set NAME=value --secret NAME=value --unset NAME`, then `genco apply` |
+| Environment variables of an app | The domain's page (saving applies and restarts the app), or `genco domain env <name> --set NAME=value --secret NAME=value --unset NAME`, then `genco apply` |
 | A stored password (Start → Passwords) | `genco secret list`, `genco secret show <name>` |
 | Block an address or range from the sites and mail (never ssh) | `genco firewall block 203.0.113.7 [--for 24h] [--note "..."]`, `genco firewall unblock <ip|cidr>`, `genco firewall list`; Settings → Firewall (see below) |
 | Reset an admin's password | `genco user password <email>` (reads the password from stdin) |
