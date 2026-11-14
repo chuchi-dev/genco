@@ -187,18 +187,22 @@
 					<Form onsubmit={approve} ok="Approve">
 						{#if link.totp}
 							<label for="pl-code">Two-factor code:</label>
+							<!-- svelte-ignore a11y_autofocus -->
 							<input
 								id="pl-code"
 								inputmode="numeric"
 								autocomplete="one-time-code"
+								autofocus
 								bind:value={code}
 							/>
 						{:else}
 							<label for="pl-password">Your password:</label>
+							<!-- svelte-ignore a11y_autofocus -->
 							<input
 								id="pl-password"
 								type="password"
 								autocomplete="current-password"
+								autofocus
 								bind:value={password}
 							/>
 						{/if}

@@ -244,18 +244,18 @@
 {/if}
 
 {#if generated}
-	<fieldset>
-		<legend>Repository Password</legend>
-		<OneTimeSecret
-			value={generated}
-			label="The remote repository's password, shown only this once:"
-		/>
+	<OneTimeSecret
+		title="Repository Password"
+		value={generated}
+		label="The remote repository's password, shown only this once:"
+		onclose={() => (generated = null)}
+	>
 		<p class="error">
 			Keep it outside this server, e.g. in your password manager, with the
 			bucket's key. Without it the remote copy can't be read when the
 			server is lost.
 		</p>
-	</fieldset>
+	</OneTimeSecret>
 {/if}
 
 {#if saved}

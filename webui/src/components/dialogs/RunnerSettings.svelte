@@ -157,8 +157,10 @@
 	{/if}
 	{#if created}
 		<OneTimeSecret
+			title="New Runner"
 			label="On the build box, copy it now (the token is shown only once):"
 			value={`genco runner install\n${created}\nsystemctl restart genco-runner`}
+			onclose={() => (created = null)}
 		/>
 	{/if}
 	{#if target}

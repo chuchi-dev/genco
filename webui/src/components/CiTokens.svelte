@@ -125,7 +125,11 @@
 	</ListView>
 	{#if error}<p class="error">{error}</p>{/if}
 	{#if newToken}
-		<OneTimeSecret value={newToken} />
+		<OneTimeSecret
+			title="Deploy Token"
+			value={newToken}
+			onclose={() => (newToken = null)}
+		/>
 	{/if}
 	<div class="row-buttons">
 		<Button onclick={addToken}>New Token…</Button>

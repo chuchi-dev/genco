@@ -65,12 +65,9 @@
 		await load();
 	}
 
-	const auth = $derived(
-		`curl -fsS -H "Authorization: Bearer ${created ?? '<token>'}" \\\n `,
-	);
-	const example = $derived(
-		`${auth} ${location.origin}/api/databases/<name>/dump -o db.sql.gz`,
-	);
+	const example = (token: string) =>
+		`curl -fsS -H "Authorization: Bearer ${token}" \\\n ` +
+		` ${location.origin}/api/databases/<name>/dump -o db.sql.gz`;
 </script>
 
 <Dialog title="API Tokens" resizable icon="key" {onclose} width={560}>
@@ -113,10 +110,17 @@
 		</ListView>
 		{#if error}<p class="error">{error}</p>{/if}
 		{#if created}
-			<OneTimeSecret value={created} />
+			<OneTimeSecret
+				title="API Token"
+				value={created}
+				onclose={() => (created = null)}
+			>
+				<p>Download a database:</p>
+				<pre class="code selectable">{example(created)}</pre>
+			</OneTimeSecret>
 		{/if}
 		<p>Download a database:</p>
-		<pre class="code selectable">{example}</pre>
+		<pre class="code selectable">{example('<token>')}</pre>
 		<p class="hint">
 			Deploy tokens are made in a group's Deploy tab, the keys of AI
 			agents in Start → AI Agents.

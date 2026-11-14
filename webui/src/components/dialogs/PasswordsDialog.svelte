@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { formatTime, get, post } from '@/lib/api';
+	import { copyText } from '@/lib/clipboard';
 	import { dialogs, confirmDelete } from '@/lib/dialogs.svelte';
 	import { tree } from '@/lib/tree.svelte';
 	import Button from '../win/Button.svelte';
@@ -102,7 +103,7 @@
 		try {
 			const v = shown ?? (await value());
 			if (v === null) return;
-			await navigator.clipboard.writeText(v);
+			await copyText(v);
 			copied = true;
 			setTimeout(() => (copied = false), 2000);
 		} catch (e: any) {

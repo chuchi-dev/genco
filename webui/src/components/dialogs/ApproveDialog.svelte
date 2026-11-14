@@ -47,7 +47,7 @@
 			: ''}. Its answer goes to {proposal.from}.
 	</p>
 	<Form onsubmit={approve} oncancel={onclose} ok="Approve">
-		<SecondFactor bind:password bind:code />
+		<SecondFactor bind:password bind:code autofocus />
 	</Form>
 </Dialog>
 
