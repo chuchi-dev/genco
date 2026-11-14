@@ -2,7 +2,7 @@ import { get, type Approval, type PendingAction, type Plan } from './api';
 
 // Start → Approvals: the AI agents' proposals and the pending actions
 // (deletions, the agent's remote backup changes); the taskbar shows the
-// waiting ones, any admin decides
+// undecided ones, any admin decides
 class ApprovalStore {
 	list = $state<Approval[]>([]);
 
@@ -10,9 +10,26 @@ class ApprovalStore {
 		this.list = await get('/approvals');
 	}
 
-	/** what an admin can decide on now, for the taskbar */
+	/** what an admin can decide on now */
 	get waiting(): Approval[] {
 		return this.list.filter(a => status(a) === 'pending');
+	}
+
+	/** the proposals the planner still works on */
+	get planning(): Approval[] {
+		return this.list.filter(a => status(a) === 'planning');
+	}
+
+	/** "2 to approve, 1 being planned", each part only when there are some */
+	get summary(): string {
+		const waiting = this.waiting.length;
+		const planning = this.planning.length;
+		return [
+			waiting ? `${waiting} to approve` : '',
+			planning ? `${planning} being planned` : '',
+		]
+			.filter(Boolean)
+			.join(', ');
 	}
 
 	/** also the proposals the planner works on */
@@ -118,7 +135,7 @@ export function approvalTitle(a: Approval): string {
 	return a.action.description.split('. ')[0].replace(/\.$/, '');
 }
 
-/** the taskbar's line of a waiting one */
+/** the taskbar's line of an undecided one */
 export function approvalLine(a: Approval): string {
 	const from = a.kind === 'proposal' ? `${a.proposal.from}: ` : '';
 	return `${approvalNumber(a)} ${from}${approvalTitle(a)}`;
