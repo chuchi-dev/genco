@@ -136,6 +136,10 @@
 			text: 'Its status and answer, or the reason of a rejection (the webhook gets them too, and a message when it expires after 7 days):',
 			code: `${auth} ${location.origin}/api/proposals/<id>`,
 		},
+		{
+			text: 'Take back a proposal nobody decided yet, e.g. one you replaced (no webhook):',
+			code: `${auth} -X POST ${location.origin}/api/proposals/<id>/withdraw`,
+		},
 	]);
 </script>
 

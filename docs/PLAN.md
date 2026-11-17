@@ -346,6 +346,7 @@ terminal.
   plan's `Delete:` lines are confirmed with it, once each
 - [x] A rejection can have a reason for the proposing agent, an expired
   proposal tells it once
+- [x] The proposing agent can withdraw an undecided proposal
 
 ### 11e. Quarantine and signs of a hack (operator 2026-11-12)
 - [x] quarantine a group (panel, CLI, genco's agent): services stopped,

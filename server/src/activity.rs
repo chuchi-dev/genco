@@ -187,6 +187,7 @@ fn describe(method: &Method, path: &str) -> Option<String> {
 		("POST", "/groups/*/quarantine", "Quarantine group"),
 		("DELETE", "/groups/*/quarantine", "Lift quarantine"),
 		("POST", "/proposals/*/reject", "Reject proposal"),
+		("POST", "/proposals/*/withdraw", "Withdraw proposal"),
 		("POST", "/update/check", "Check for updates"),
 		("POST", "/update/install", "Start update"),
 		("POST", "/update/auto", "Change automatic updates"),

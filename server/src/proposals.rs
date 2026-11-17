@@ -10,8 +10,9 @@
 //! its last answer goes back to the proposing agent's webhook; the agent
 //! can also poll the proposal (without the plans). A rejection (with the
 //! admin's reason, if any) and the expiry after `VALID_DAYS` go to the
-//! webhook too. The mail (mail.rs) has a personal link for each admin, it
-//! decides without a login (links.rs).
+//! webhook too. The proposing agent can withdraw it while it is undecided.
+//! The mail (mail.rs) has a personal link for each admin, it decides
+//! without a login (links.rs).
 
 mod links;
 mod mail;
@@ -54,6 +55,9 @@ const MAX_NOTE: usize = 2000;
 /// More undecided proposals of one agent are refused, a loop mustn't mail
 /// the admins or pay the planner without end.
 const MAX_PENDING: i64 = 10;
+/// Withdrawn proposals count towards `MAX_PENDING` this long: a withdrawal
+/// doesn't stop a planner that already works on it.
+const WITHDRAWN_MS: i64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +86,8 @@ pub struct Proposal {
 	pub approver: Option<String>,
 	pub approver_email: Option<String>,
 	/// planning, pending (the plan waits for an admin), approved (genco's
-	/// agent works on it), answered, rejected, expired
+	/// agent works on it), answered, rejected, expired, withdrawn (by the
+	/// proposing agent)
 	pub status: String,
 	pub decided_by: Option<String>,
 	pub conversation_id: Option<i64>,
@@ -296,7 +301,7 @@ fn proposal_text(text: &str) -> Result<(String, usize)> {
 }
 
 /// Stores a new proposal for the planner; more than `MAX_PENDING`
-/// undecided ones of the agent are refused.
+/// undecided or recently withdrawn ones of the agent are refused.
 fn insert(
 	conn: &Connection,
 	peer_id: i64,
@@ -306,13 +311,15 @@ fn insert(
 	let (text, removed) = proposal_text(text)?;
 	let undecided: i64 = conn.query_row(
 		"SELECT count(*) FROM proposals WHERE peer_id = ?1
-		AND status IN ('planning', 'pending') AND created_at > ?2",
-		params![peer_id, now() - VALID_MS],
+		AND (status IN ('planning', 'pending') AND created_at > ?2
+		OR status = 'withdrawn' AND decided_at > ?3)",
+		params![peer_id, now() - VALID_MS, now() - WITHDRAWN_MS],
 		|r| r.get(0),
 	)?;
 	if undecided >= MAX_PENDING {
 		return Err(Error::Invalid(format!(
-			"{MAX_PENDING} proposals wait for a decision already"
+			"{MAX_PENDING} proposals wait for a decision or were withdrawn \
+			today already"
 		)));
 	}
 	conn.execute(
@@ -331,7 +338,16 @@ fn decide(
 	status: &str,
 	by: &crate::users::User,
 ) -> Result<()> {
-	let p = get_one(conn, id)?;
+	close(conn, &get_one(conn, id)?, status, Some(&by.name))
+}
+
+/// Ends an undecided proposal with `status`, only once.
+fn close(
+	conn: &Connection,
+	p: &Proposal,
+	status: &str,
+	by: Option<&str>,
+) -> Result<()> {
 	if !open(&p.status) {
 		return Err(Error::Invalid(format!(
 			"the proposal is {} already",
@@ -341,12 +357,12 @@ fn decide(
 	let changed = conn.execute(
 		"UPDATE proposals SET status = ?1, decided_by = ?2, decided_at = ?3,
 		mail_at = NULL WHERE id = ?4 AND status IN ('planning', 'pending')",
-		params![status, by.name, now(), id],
+		params![status, by, now(), p.id],
 	)?;
 	if changed != 1 {
 		return Err(Error::Invalid("the proposal is decided already".into()));
 	}
-	end_links(conn, id)?;
+	end_links(conn, p.id)?;
 	Ok(())
 }
 
@@ -805,6 +821,29 @@ async fn reject(
 	Ok(Json(()))
 }
 
+/// The proposing agent takes back an undecided proposal: a planner still
+/// at work throws its plan away and the mail links stop working.
+fn withdrawn(conn: &Connection, id: i64, peer_id: i64) -> Result<()> {
+	let p = get_one(conn, id)?;
+	if p.peer_id != peer_id {
+		return Err(Error::NotFound);
+	}
+	close(conn, &p, "withdrawn", None)
+}
+
+async fn withdraw(
+	token: ApiToken,
+	State(db): State<Db>,
+	State(events): State<Events>,
+	Path(id): Path<i64>,
+) -> Result<Json<()>> {
+	token.require(tokens::PROPOSE)?;
+	let peer = token.peer.ok_or(Error::Forbidden)?;
+	withdrawn(&db.conn(), id, peer)?;
+	events.send(Event::Approvals);
+	Ok(Json(()))
+}
+
 /// Marks the proposals nobody decided on in time as expired, once;
 /// returns the ones it marked.
 fn expire(conn: &Connection) -> Result<Vec<Proposal>> {
@@ -863,6 +902,7 @@ pub fn routes() -> Router<AppState> {
 		.route("/proposals/{id}/approve", post(approve))
 		.route("/proposals/{id}/change", post(change))
 		.route("/proposals/{id}/reject", post(reject))
+		.route("/proposals/{id}/withdraw", post(withdraw))
 		.merge(links::routes())
 }
 
@@ -1055,6 +1095,25 @@ mod tests {
 	}
 
 	#[test]
+	fn withdrawn_proposals_count_for_a_day() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let p = peer(&conn);
+		for _ in 0..MAX_PENDING {
+			let id = insert(&conn, p, "Update Craft", None).unwrap();
+			withdrawn(&conn, id, p).unwrap();
+		}
+		assert!(insert(&conn, p, "Update Craft", None).is_err());
+
+		conn.execute(
+			"UPDATE proposals SET decided_at = ?1",
+			[now() - WITHDRAWN_MS - 1],
+		)
+		.unwrap();
+		insert(&conn, p, "Update Craft", None).unwrap();
+	}
+
+	#[test]
 	fn only_one_decision() {
 		let db = Db::memory();
 		let conn = db.conn();
@@ -1068,6 +1127,26 @@ mod tests {
 		assert_eq!(p.status, "rejected");
 		assert_eq!(p.decided_by.as_deref(), Some("a"));
 		assert_eq!(p.from, "Corleone");
+	}
+
+	#[test]
+	fn only_the_proposing_agent_withdraws_undecided_ones() {
+		let db = Db::memory();
+		let conn = db.conn();
+		let p = peer(&conn);
+		let id = add(&conn, p, "Update Craft", None).unwrap();
+		assert!(withdrawn(&conn, id, p + 1).is_err());
+
+		withdrawn(&conn, id, p).unwrap();
+		assert_eq!(get_one(&conn, id).unwrap().status, "withdrawn");
+		assert!(withdrawn(&conn, id, p).is_err());
+		assert!(decide(&conn, id, "approved", &admin(&conn, "a")).is_err());
+
+		let planning = insert(&conn, p, "Update Node", None).unwrap();
+		withdrawn(&conn, planning, p).unwrap();
+		let other = add(&conn, p, "Update PHP", None).unwrap();
+		decide(&conn, other, "rejected", &admin(&conn, "b")).unwrap();
+		assert!(withdrawn(&conn, other, p).is_err());
 	}
 
 	#[test]

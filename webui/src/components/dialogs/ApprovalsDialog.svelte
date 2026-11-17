@@ -138,7 +138,7 @@
 			<td>{formatTime(expiresAt(a), true)}</td>
 		{/snippet}
 	</ListView>
-	<p>Decided and expired, last 30 days:</p>
+	<p>Decided, expired and withdrawn, last 30 days:</p>
 	<ListView
 		items={history}
 		key={approvalKey}
