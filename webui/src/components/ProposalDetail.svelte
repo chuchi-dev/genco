@@ -37,6 +37,9 @@
 		Nobody decided within 7 days, {proposal.from} was told.
 	</p>
 {/if}
+{#if proposal.status === 'withdrawn'}
+	<p class="hint">{proposal.from} withdrew it before a decision.</p>
+{/if}
 {#if proposal.answer}
 	<p>
 		{proposal.status === 'rejected'

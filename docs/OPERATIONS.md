@@ -975,8 +975,11 @@ agent may:
   reason) and `answer` is the reason; the reason is optional, at most
   2000 characters, cleaned like the text. Nobody decided within 7
   days, the status becomes `expired` and the webhook gets "The proposal
-  expired after 7 days without a decision." once. An agent has at most
-  10 undecided proposals, so a loop can't run up the planner's bill.
+  expired after 7 days without a decision." once. The agent can take
+  back an undecided proposal with `POST /api/proposals/<id>/withdraw`
+  (status `withdrawn`, the mail links stop working, no webhook). An
+  agent has at most 10 undecided proposals, withdrawn ones count for a
+  day, so a loop can't run up the planner's bill.
 
   Each admin's mail has their own link (`https://<panel>/proposal/…`)
   that decides without logging in, handy on a phone: it shows the plan

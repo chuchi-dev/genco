@@ -505,7 +505,8 @@ export type Proposal = {
 		| 'approved'
 		| 'answered'
 		| 'rejected'
-		| 'expired';
+		| 'expired'
+		| 'withdrawn';
 	decidedBy: string | null;
 	conversationId: number | null;
 	/** what went back: the agent's answer, or the reason of a rejection */

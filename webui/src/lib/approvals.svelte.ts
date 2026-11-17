@@ -1,4 +1,10 @@
-import { get, type Approval, type PendingAction, type Plan } from './api';
+import {
+	get,
+	type Approval,
+	type PendingAction,
+	type Plan,
+	type Proposal,
+} from './api';
 
 // Start → Approvals: the AI agents' proposals and the pending actions
 // (deletions, the agent's remote backup changes); the taskbar shows the
@@ -64,13 +70,14 @@ export function newestPlan(a: Approval): Plan | null {
 	return a.kind === 'proposal' ? (a.proposal.plans.at(-1) ?? null) : null;
 }
 
-const PROPOSAL_STATUS: Record<string, string> = {
+const PROPOSAL_STATUS: Record<Proposal['status'], string> = {
 	planning: 'being planned',
 	pending: 'waiting',
 	approved: 'the agent works on it',
 	answered: 'answered',
 	rejected: 'rejected',
 	expired: 'expired',
+	withdrawn: 'withdrawn',
 };
 
 const ACTION_STATUS: Record<PendingAction['status'], string> = {

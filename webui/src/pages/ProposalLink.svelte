@@ -118,8 +118,8 @@
 		<div class="content">
 			{#if gone || !link || !proposal}
 				<p>
-					This link no longer works (the proposal was decided or
-					expired). Open the panel to see it.
+					This link no longer works (the proposal was decided, expired
+					or withdrawn). Open the panel to see it.
 				</p>
 			{:else if done}
 				<p>{done}</p>
