@@ -39,6 +39,11 @@ pub(super) async fn mail(cfg: &Config, db: &Db, id: i64) {
 
 	let subject = subject(&p, plan);
 	for (user_id, email) in to {
+		// decided or withdrawn meanwhile: the others get no dead link
+		if !get_one(&db.conn(), id).is_ok_and(|p| p.status == "pending") {
+			return;
+		}
+
 		// without a domain there is no link to send
 		let link = cfg.panel_url("/proposal/").and_then(|base| {
 			match links::create(&db.conn(), id, user_id) {
