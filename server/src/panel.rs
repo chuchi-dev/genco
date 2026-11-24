@@ -2,6 +2,7 @@
 //! one redirects to it (its API keeps answering for the runners) until
 //! it is forgotten.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -30,8 +31,13 @@ pub enum PanelCmd {
 		keep_mail_host: bool,
 	},
 	/// Stop answering on an old name of the panel and remove its
-	/// certificate
-	ForgetOld { domain: String },
+	/// certificates (also mail.<old name>'s)
+	ForgetOld {
+		domain: String,
+		/// also when its /api/ was called today or yesterday
+		#[clap(long)]
+		force: bool,
+	},
 }
 
 /// The old names that still redirect to the panel.
@@ -63,7 +69,9 @@ pub async fn main(
 			force,
 			keep_mail_host,
 		} => rename(config_path, cfg, &db, &domain, force, keep_mail_host).await,
-		PanelCmd::ForgetOld { domain } => forget_old(&cfg, &db, &domain).await,
+		PanelCmd::ForgetOld { domain, force } => {
+			forget_old(&cfg, &db, &domain, force).await
+		}
 	}
 }
 
@@ -268,7 +276,12 @@ fn runners_text(db: &Db, old: &str, new: &str) {
 	);
 }
 
-async fn forget_old(cfg: &Config, db: &Db, name: &str) -> Result<(), String> {
+async fn forget_old(
+	cfg: &Config,
+	db: &Db,
+	name: &str,
+	force: bool,
+) -> Result<(), String> {
 	let mut olds = old_names(&db.conn());
 	if !olds.iter().any(|o| o == name) {
 		return Err(if olds.is_empty() {
@@ -277,19 +290,43 @@ async fn forget_old(cfg: &Config, db: &Db, name: &str) -> Result<(), String> {
 			format!("{name} is no old name, they are: {}", olds.join(", "))
 		});
 	}
+
+	// runners, CI jobs and webhooks that still have the old name
+	let calls = api_calls(name);
+	if !calls.is_empty() {
+		println!("{name}/api/ was called today or yesterday, newest first:");
+		for (ip, at) in &calls {
+			println!("  {ip}, {}", crate::util::format_time(*at).await);
+		}
+		if !force {
+			return Err("give them the new name first (runners: genco panel \
+				rename printed how), or forget it anyway with --force"
+				.into());
+		}
+	}
+
 	olds.retain(|o| o != name);
 	set_old_names(&db.conn(), &olds)?;
 
 	step(&format!("apply: removing the site of {name}"));
 	let report = crate::apply::apply(cfg, db).await;
 
+	// mail.<old name> stays in use when the mail host was kept
 	let groups = hosting::groups(&db.conn()).map_err(|e| e.to_string())?;
-	let used = taken(cfg, &groups, name).is_some()
-		|| cfg.domain.as_deref() == Some(name);
-	if crate::host::has_cert(name) && !used {
-		step(&format!("removing the certificate of {name}"));
-		crate::util::run(&["certbot", "delete", "-n", "--cert-name", name])
+	for cert in [name.to_string(), format!("mail.{name}")] {
+		let used = taken(cfg, &groups, &cert).is_some()
+			|| cfg.domain.as_deref() == Some(cert.as_str());
+		if crate::host::has_cert(&cert) && !used {
+			step(&format!("removing the certificate of {cert}"));
+			crate::util::run(&[
+				"certbot",
+				"delete",
+				"-n",
+				"--cert-name",
+				&cert,
+			])
 			.await?;
+		}
 	}
 	if !report.ok {
 		return Err("apply failed, see the errors above".into());
@@ -299,4 +336,26 @@ async fn forget_old(cfg: &Config, db: &Db, name: &str) -> Result<(), String> {
 		records for genco's mail can go"
 	);
 	Ok(())
+}
+
+/// The addresses that called `/api/` in a domain's access log and the one
+/// rotated before it (today and yesterday; older ones are compressed),
+/// with their newest call, newest first. Runners call all the time, a
+/// weekly CI job may be missed.
+fn api_calls(domain: &str) -> Vec<(String, i64)> {
+	let log = crate::stats::access_log(domain);
+	let mut newest: HashMap<String, i64> = HashMap::new();
+	for path in [format!("{log}.1"), log] {
+		let text = std::fs::read(&path).unwrap_or_default();
+		let text = String::from_utf8_lossy(&text);
+		for hit in text.lines().filter_map(crate::stats::parse_line) {
+			if hit.path.starts_with("/api/") {
+				let at = newest.entry(hit.ip.to_string()).or_default();
+				*at = (*at).max(hit.at);
+			}
+		}
+	}
+	let mut calls: Vec<_> = newest.into_iter().collect();
+	calls.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+	calls
 }
