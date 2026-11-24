@@ -311,11 +311,13 @@ async fn forget_old(
 	step(&format!("apply: removing the site of {name}"));
 	let report = crate::apply::apply(cfg, db).await;
 
-	// mail.<old name> stays in use when the mail host was kept
+	// mail.<old name> stays in use when the mail host was kept or it is
+	// another old name
 	let groups = hosting::groups(&db.conn()).map_err(|e| e.to_string())?;
 	for cert in [name.to_string(), format!("mail.{name}")] {
 		let used = taken(cfg, &groups, &cert).is_some()
-			|| cfg.domain.as_deref() == Some(cert.as_str());
+			|| cfg.domain.as_deref() == Some(cert.as_str())
+			|| olds.contains(&cert);
 		if crate::host::has_cert(&cert) && !used {
 			step(&format!("removing the certificate of {cert}"));
 			crate::util::run(&[
@@ -338,9 +340,9 @@ async fn forget_old(
 	Ok(())
 }
 
-/// The addresses that called `/api/` in a domain's access log and the one
-/// rotated before it (today and yesterday; older ones are compressed),
-/// with their newest call, newest first. Runners call all the time, a
+/// The addresses that called `/api/` successfully (scanners get 4xx) in a
+/// domain's access log and the one rotated before it (today and
+/// yesterday; older ones are compressed), with their newest call, newest first. Runners call all the time, a
 /// weekly CI job may be missed.
 fn api_calls(domain: &str) -> Vec<(String, i64)> {
 	let log = crate::stats::access_log(domain);
@@ -349,7 +351,7 @@ fn api_calls(domain: &str) -> Vec<(String, i64)> {
 		let text = std::fs::read(&path).unwrap_or_default();
 		let text = String::from_utf8_lossy(&text);
 		for hit in text.lines().filter_map(crate::stats::parse_line) {
-			if hit.path.starts_with("/api/") {
+			if hit.path.starts_with("/api/") && hit.status < 400 {
 				let at = newest.entry(hit.ip.to_string()).or_default();
 				*at = (*at).max(hit.at);
 			}

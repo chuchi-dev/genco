@@ -850,7 +850,7 @@ genco panel forget-old old.example.ch
 ```
 
 It refuses while the old name's access log of today or yesterday shows
-calls to `/api/` and lists their addresses; `--force` forgets it anyway.
+successful calls to `/api/` and lists their addresses; `--force` forgets it anyway.
 
 
 

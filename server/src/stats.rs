@@ -417,7 +417,7 @@ pub(crate) struct Hit<'a> {
 	pub at: i64,
 	/// without the query, at most `MAX_PATH` bytes
 	pub path: &'a str,
-	status: u16,
+	pub status: u16,
 	bytes: i64,
 }
 
