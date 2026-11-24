@@ -397,6 +397,8 @@ Still open:
   two slots; a Node site on a move showed it); Apply Changes still
   restarts in place.
 - Drop-down menus (Start, Run, conversations) could share one component.
+  Done: Start, Run and the menu bars use DropMenu; the conversation
+  picker is a search field with a list, no menu (2026-11-24).
 - A group's PostgreSQL role sees the names of the other databases
   (pg_database), not their content. Kept (2026-11-03): hiding them means
   revoking pg_database from the roles, which breaks pg_dump, Craft's
@@ -422,11 +424,14 @@ Still open:
   +norecurse, also an empty one from a lame server (a delegated server
   that doesn't serve the zone): a domain got "no DNS record" and no
   certificate. Treat empty/REFUSED/non-authoritative (no aa flag)
-  answers as no answer and try the next server.
+  answers as no answer and try the next server. Done: dns.rs takes
+  only authoritative answers (checked 2026-11-24).
 - `genco panel rename` that moves the mail host leaves the certificate
   of mail.<old name> behind (`certbot delete --cert-name` by hand), and
   `forget-old` can't tell whether runners still use the old name (the
-  old name's access log shows /api/ calls).
+  old name's access log shows /api/ calls). Done (2026-11-24):
+  forget-old removes mail.<old name>'s certificate too and refuses while
+  today's or yesterday's log shows /api/ calls (`--force`).
 - Moving a site with a database: an app's first start after `genco
   database add` runs its migrations on the empty database and restoring
   the dump afterwards collides. Documented (import the data before the

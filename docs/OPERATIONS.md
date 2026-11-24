@@ -842,11 +842,15 @@ command prints the records. `--keep-mail-host` keeps the old one instead
 (it writes `mail-host = "mail.<old name>"`).
 
 Once runners, CI jobs and webhooks use the new name, the old one goes
-with its certificate:
+with its certificates (also `mail.<old name>`'s unless the mail host was
+kept):
 
 ```sh
 genco panel forget-old old.example.ch
 ```
+
+It refuses while the old name's access log of today or yesterday shows
+successful calls to `/api/` and lists their addresses; `--force` forgets it anyway.
 
 
 

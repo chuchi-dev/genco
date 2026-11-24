@@ -341,7 +341,7 @@ fn net_bytes(dev: &str) -> (u64, u64) {
 	(rx, tx)
 }
 
-fn access_log(domain: &str) -> String {
+pub(crate) fn access_log(domain: &str) -> String {
 	format!("{NGINX_LOGS}/{domain}.access.log")
 }
 
@@ -411,13 +411,13 @@ impl<'a> Line<'a> {
 
 /// A request of an access log line.
 #[derive(Debug, PartialEq)]
-struct Hit<'a> {
-	ip: &'a str,
+pub(crate) struct Hit<'a> {
+	pub ip: &'a str,
 	/// milliseconds
-	at: i64,
+	pub at: i64,
 	/// without the query, at most `MAX_PATH` bytes
-	path: &'a str,
-	status: u16,
+	pub path: &'a str,
+	pub status: u16,
 	bytes: i64,
 }
 
@@ -426,7 +426,7 @@ const MAX_PATH: usize = 200;
 
 /// Nothing for a line that isn't a request (a TLS handshake on the HTTP
 /// port, a cut line).
-fn parse_line(line: &str) -> Option<Hit<'_>> {
+pub(crate) fn parse_line(line: &str) -> Option<Hit<'_>> {
 	let Line {
 		ip,
 		time,
