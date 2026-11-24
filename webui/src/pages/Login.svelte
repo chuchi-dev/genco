@@ -62,14 +62,14 @@
 					/>
 					{#if code !== null}
 						<label for="code">Code:</label>
-						<!-- svelte-ignore a11y_autofocus -->
+						<!-- autofocus would leave the focus on the password or OK -->
 						<input
 							id="code"
 							inputmode="numeric"
 							autocomplete="one-time-code"
 							placeholder="from the authenticator app"
-							autofocus
 							bind:value={code}
+							{@attach el => el.focus()}
 						/>
 					{/if}
 				</Form>
