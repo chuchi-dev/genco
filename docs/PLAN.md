@@ -437,6 +437,10 @@ Still open:
   agent's health check suggests blocks with a reason instead of fixed
   rules. Port 22 is never blocked over HTTP traffic; SSH brute force
   (keys only) isn't blocked either for now.
+- Login with 2FA: after the password the Code field appears but doesn't
+  get the focus (operator, 2026-11-24). Svelte's `autofocus` only
+  focuses when nothing else has it, and the password field or the OK
+  button still has it; focus the field when it appears (Login.svelte).
 - Chat attachments in `/var/lib/genco/uploads` are never deleted: decide
   on a cleanup (e.g. after 90 days, or with their conversation; operator
   not sure yet, 2026-11-02).
