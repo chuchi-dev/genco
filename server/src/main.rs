@@ -480,6 +480,14 @@ async fn run(args: Args) -> Result<(), String> {
 			println!("{key}");
 			Ok(())
 		}
+		Cmd::Group(cli::GroupCmd::DeployToken { group, name, admin }) => {
+			let db = Db::open(&cfg.db_path())?;
+			let token =
+				tokens::create_deploy(&db.conn(), &group, &name, &admin)
+					.map_err(|e| e.to_string())?;
+			println!("{token}");
+			Ok(())
+		}
 		Cmd::Group(cli::GroupCmd::AdoptLimits { name }) => {
 			let db = Db::open(&cfg.db_path())?;
 			let msg = cli::adopt_limits(&db, &name)
