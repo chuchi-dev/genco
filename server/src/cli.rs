@@ -74,6 +74,18 @@ pub enum GroupCmd {
 	AdoptLimits { name: String },
 	/// Print the public key the group deploys with, for the repository
 	DeployKey { name: String },
+	/// Print a new token that may only deploy the group and follow its
+	/// deploys (uploads too, no repository needed); shown once, it
+	/// belongs to the admin and goes with them
+	DeployToken {
+		group: String,
+		/// what it is for, e.g. "GitLab CI"
+		#[clap(long)]
+		name: String,
+		/// email of the admin it belongs to
+		#[clap(long)]
+		admin: String,
+	},
 	/// Stop a group that looks compromised: its services, workers and
 	/// schedules stop, its sites answer 503, its SMTP login and deploys
 	/// are off; files, databases and mailboxes stay. Applies at once
@@ -400,6 +412,7 @@ pub fn group(conn: &Connection, cmd: GroupCmd) -> Result<String> {
 		return Ok(msg);
 	}
 	if let GroupCmd::DeployKey { .. }
+	| GroupCmd::DeployToken { .. }
 	| GroupCmd::AdoptLimits { .. }
 	| GroupCmd::Quarantine { .. }
 	| GroupCmd::Unquarantine { .. } = cmd

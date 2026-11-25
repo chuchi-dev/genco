@@ -150,7 +150,6 @@
 		{/if}
 	</fieldset>
 
-	{#if error}<p class="error">{error}</p>{/if}
 	<div class="deploy-bar">
 		<input
 			placeholder="branch, tag or commit (default {group.branch})"
@@ -159,7 +158,15 @@
 		/>
 		<Button primary onclick={deploy} disabled={busy}>Deploy now</Button>
 	</div>
+{:else}
+	<p class="hint">
+		Save a repository to deploy this group from git, or upload releases with
+		a token below.
+	</p>
+{/if}
 
+{#if error}<p class="error">{error}</p>{/if}
+{#if group.repo || deploys.length}
 	<div class="split">
 		<ListView
 			items={deploys}
@@ -206,11 +213,9 @@
 			<LogView url="/deploys/{shown.id}/log" {live} />
 		{/if}
 	</div>
-
-	<CiTokens {group} {branch} />
-{:else}
-	<p class="hint">Save a repository to deploy this group from git.</p>
 {/if}
+
+<CiTokens {group} {branch} />
 
 <style lang="scss">
 	@use 'styles/win' as *;

@@ -111,6 +111,20 @@ fn create(
 	Ok(token)
 }
 
+/// A token that may only deploy `group`, for the admin with `email`
+/// (`genco group deploy-token`).
+pub fn create_deploy(
+	conn: &Connection,
+	group: &str,
+	name: &str,
+	email: &str,
+) -> Result<String> {
+	let group = crate::hosting::group_by_name(conn, group)?
+		.ok_or_else(|| Error::Invalid(format!("no group {group}")))?;
+	let user = crate::commands::user_id(conn, email).map_err(Error::Invalid)?;
+	create(conn, name, &[deploy_scope(group.id)], user)
+}
+
 /// The token of `Authorization: Bearer <token>`, trimmed.
 pub fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
 	headers
@@ -341,5 +355,27 @@ mod tests {
 
 		conn.execute("DELETE FROM users", []).unwrap();
 		assert!(list(&conn).unwrap().is_empty());
+	}
+
+	#[test]
+	fn a_deploy_token_from_the_terminal_names_group_and_admin() {
+		let db = Db::memory();
+		let conn = db.conn();
+		conn.execute_batch(
+			"INSERT INTO users (email, name, password_hash, created_at)
+			VALUES ('a@b.ch', 'a', '', 0);
+			INSERT INTO clients (name, created_at) VALUES ('c', 0);
+			INSERT INTO domain_groups (name, client_id, created_at)
+			VALUES ('x', 1, 0), ('shop', 1, 0);",
+		)
+		.unwrap();
+
+		let token = create_deploy(&conn, "shop", "upload", " A@b.ch").unwrap();
+		let t = &list(&conn).unwrap()[0];
+		assert_eq!(t.scopes, vec!["deploy:2".to_string()]);
+		assert_eq!(t.user_name.as_deref(), Some("a"));
+		assert!(token.starts_with("genco_"));
+		assert!(create_deploy(&conn, "none", "upload", "a@b.ch").is_err());
+		assert!(create_deploy(&conn, "shop", "upload", "x@b.ch").is_err());
 	}
 }

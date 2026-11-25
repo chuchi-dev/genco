@@ -176,8 +176,11 @@ field in the panel.
   release it built (`PUT /api/deploy/artifact?group=<g>&ref=<tag>` with
   a deploy token, a tarball of the release; `GET /api/deploy/target`
   tells what to build for), or `genco deploy <group> --artifact
-  <file.tar.gz>`; its build steps don't run. Domains of a
-  deployed group use roots like `current/craft/web`. Logs are in
+  <file.tar.gz>`; its build steps don't run. A group needs no
+  repository for uploads. A deploy token for a CI or an upload script:
+  `genco group deploy-token <group> --name <what for> --admin <email>`
+  prints it once; pipe it into `genco secret add`, never into the chat.
+  Domains of a deployed group use roots like `current/craft/web`. Logs are in
   `/var/lib/genco/deploys/<id>.log`.
 - `genco.toml` in the repository's root (all keys optional, unknown
   keys are an error):

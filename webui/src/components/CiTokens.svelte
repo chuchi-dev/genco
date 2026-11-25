@@ -5,7 +5,8 @@
 	import Button from './win/Button.svelte';
 	import ListView from './win/ListView.svelte';
 
-	// the tokens CI jobs deploy a group with, and a GitLab example
+	// the tokens CI jobs deploy a group with, and a GitLab example; without
+	// a repository an upload example
 	let { group, branch }: { group: Group; branch: string } = $props();
 
 	let tokens = $state<Token[]>([]);
@@ -89,10 +90,20 @@
 			'      done',
 		].join('\n'),
 	);
+
+	// packs the built release and uploads it, the answer is the deploy's id
+	const uploadExample = $derived(
+		[
+			'tar czf release.tar.gz -C build .',
+			`curl -fsS -X PUT "${location.origin}/api/deploy/artifact?group=${group.name}&ref=v1" \\`,
+			'  -H "Authorization: Bearer $GENCO_TOKEN" \\',
+			'  --data-binary @release.tar.gz',
+		].join('\n'),
+	);
 </script>
 
 <fieldset>
-	<legend>Deploy from CI</legend>
+	<legend>Deploy tokens</legend>
 	<p>
 		A CI job deploys with a token that may only deploy this group and follow
 		its deploys. Store it as the masked variable <code>GENCO_TOKEN</code>.
@@ -134,10 +145,18 @@
 	<div class="row-buttons">
 		<Button onclick={addToken}>New Token…</Button>
 	</div>
-	<p class="ci-example">
-		For GitLab, in <code>.gitlab-ci.yml</code>:
-	</p>
-	<pre class="code selectable">{ciExample}</pre>
+	{#if group.repo}
+		<p class="ci-example">
+			For GitLab, in <code>.gitlab-ci.yml</code>:
+		</p>
+		<pre class="code selectable">{ciExample}</pre>
+	{:else}
+		<p class="ci-example">
+			Upload a release built elsewhere (its build steps don't run), then
+			follow it with <code>GET /api/deploys/&lt;id&gt;</code>:
+		</p>
+		<pre class="code selectable">{uploadExample}</pre>
+	{/if}
 </fieldset>
 
 <style lang="scss">

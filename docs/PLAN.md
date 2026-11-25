@@ -95,7 +95,8 @@ terminal.
       switch, after-switch steps, app restarts, the last 5 releases kept
 - [x] `genco.toml` or detected steps (composer, Craft, npm, one level deep)
 - [x] Deploy tab: repository, key, deploys with live log, rollback, tokens
-      with a GitLab CI example; `genco deploy` in the terminal
+      with a GitLab CI example (an upload example without a repository);
+      `genco deploy` and `genco group deploy-token` in the terminal
 - [x] tested with a private GitHub repo (Craft + Node): deploy by token,
       failed build leaves the site alone, rollback
 

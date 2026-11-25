@@ -214,6 +214,12 @@ impl Planner {
 						]);
 						continue;
 					}
+					// models that refuse often answer with nothing
+					Err(_) if text.is_empty() && !refused => {
+						return Err("its model answered with no text, it may \
+							refuse the proposal"
+							.into());
+					}
 					Err(e) => return Err(e),
 				}
 			}
